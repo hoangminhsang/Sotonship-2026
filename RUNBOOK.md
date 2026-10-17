@@ -32,8 +32,10 @@ Two Python environments are used, both created inside the repo (see README
 | `.venv-pyrit` | `.venv-pyrit/bin/python` | the PyRIT-driven attack experiment; it also has every lab dep, so it can run the governance program too (`docker/requirements.txt` + `docker/requirements-pyrit.txt`) |
 
 > This runbook uses **`.venv-pyrit/bin/python`** throughout so one interpreter
-> covers both halves. `.venv/bin/python` works for every command except
-> `scripts/run_pyrit_attack.py`.
+> covers both halves. Neither environment is in the repo: `.venv-pyrit`
+> exists only after you build it (README "Attack with PyRIT", Step 1), and
+> `.venv` after README "Quick start" Option B. `.venv/bin/python` works for
+> every command except `scripts/run_pyrit_attack.py`.
 
 ### Ollama + model (needed for the live attack and `--live` governance)
 
@@ -125,12 +127,16 @@ This is `scripts/run_governance.py` — the pipeline program
 (`notebooks/release_gate_demo.ipynb` is its prototype). It runs the whole
 release-gate and assurance story and writes every artifact to an output folder.
 
-It has two modes:
+It has three modes:
 
-- **Demo (default)** — offline and deterministic. Candidate runs are rebuilt
-  from calibrated per-technique attack rates (the `RATES` table at the top of
-  the script), so the governance story is reproducible with no model.
+- **Demo (default)** — offline and deterministic. Candidate runs are
+  SCRIPTED from calibrated per-technique attack rates (the `RATES` table in
+  `lab/demo.py`, shared with the menu app), so the governance story is
+  reproducible with no model. Its numbers are not measurements.
 - **Live (`--live`)** — drives the real Ollama agent for the candidate runs.
+- **Saved (`--run RUN_DIR`)** — gates a locked run folder from
+  `results/runs/` (§1) as RC-001; RC-002 and RC-003 are replays of its traces
+  unless `--run-after` / `--run-after-d3` supply saved folders.
 
 ### Step 2.1 — Run it (demo mode, offline)
 
@@ -191,12 +197,14 @@ cat governance_out/cli_demo/risk_register_after.md
 
 ### What the program does, step by step (printed as it runs)
 
-The DEMO numbers below are scripted from the `RATES` table (see §3), not
-measured; benign success is 60/60 by construction in all three candidates.
+The DEMO numbers below are SCRIPTED from the `RATES` table in `lab/demo.py`
+(see §3), not measured; benign success is 60/60 by construction in all three
+candidates.
 
 1. **RC-001 — the insecure agent.** Build its fingerprint, measure it, gate it
-   against `lab/governance/policy.yaml` → **FAIL** (DEMO: 33/78 = 42.3%, far
-   above the 5% limit).
+   against `lab/governance/policy.yaml` → **FAIL** (SCRIPTED: 33/78 = 42.3%,
+   far above the 5% limit; `gate_RC-001.txt` reads `FAIL (1 reason)` with
+   four check lines).
 2. **Audit + decision.** Record the submission and verdict. The engineer who
    submitted it is **refused** self-review; the reviewer **BLOCKs** it with a
    reason. (A FAIL can never be APPROVED.)
@@ -204,12 +212,14 @@ measured; benign success is 60/60 by construction in all three candidates.
    (likelihood = the *measured* attack rate), and draft fix tickets.
 4. **RC-002 — defence D2 enforced.** New fingerprint (so RC-001's decision does
    **not** carry over — the re-test rule). Re-measure → attack success drops
-   (DEMO: 15/78 = 19.2%) but still **FAIL** → the reviewer **BLOCKs** it:
-   "D2 stops the leaks, but unrequested P1 tickets still land. Add D3."
+   (SCRIPTED: 15/78 = 19.2%, all of them G3 unrequested tickets that D2
+   cannot block, by design) but still **FAIL** on R-03 → the reviewer
+   **BLOCKs** it: "D2 stops the leaks, but unrequested P1 tickets still land.
+   Add D3."
    `risk_register_RC-002.md` and `evidence_register_RC-002.md` show which
    risks D2 closed and which stayed open.
-5. **RC-003 — D2 + D3 enforced.** New fingerprint again. Re-measure (DEMO:
-   0/78 = 0.0%) → **PASS**, and the reviewer **APPROVEs** it.
+5. **RC-003 — D2 + D3 enforced.** New fingerprint again. Re-measure
+   (SCRIPTED: 0/78 = 0.0%) → **PASS**, and the reviewer **APPROVEs** it.
 6. **Assurance (after).** The re-test closes the covered risks as **Mitigated**
    (`risk_register_RC-003.md` = `risk_register_after.md`) and fills the
    evidence register.
@@ -217,7 +227,7 @@ measured; benign success is 60/60 by construction in all three candidates.
    fix → re-test → approval → closed status.
 8. **Manager summary.** The one-page view: live version, current attack rate,
    open risks, last decision. Headline: `attack success 42.3% -> 19.2% (D2)
-   -> 0.0% (D2+D3)` (DEMO).
+   -> 0.0% (D2+D3)` (SCRIPTED).
 9. **Tamper-evidence.** Verify the real audit log (intact), then prove a forged
    copy is caught at the exact entry that was changed. The real log is left
    untouched. To run the check by hand on any log file (always on a **copy**,
@@ -256,16 +266,15 @@ Key flags:
 ## 3. Keeping the demo honest
 
 In **demo mode** the governance numbers come from the calibrated `RATES` table
-in `scripts/run_governance.py` (and `lab/demo.py` for the app), not from the
-attack run in §1. Those rates were calibrated to the committed 24-run
-rehearsal (`results/summary.csv`: n = 4 per technique); `T7_split` has no
-`RATES` entry and defaults to 0, and DEMO benign success is 100% by
+in `lab/demo.py` (used by both the CLI and the menu app), not from the attack
+run in §1. Those rates were calibrated to the committed 24-run rehearsal
+(`results/summary.csv`: n = 4 per technique); DEMO benign success is 100% by
 construction, not measured. If you re-run §1 and the measured per-technique
 rates change, update `RATES` to match — or run the governance program with
 `--live` (or `--run` on a saved folder) so it measures the agent directly. The
-DEMO story's numbers are RC-001 33/78 = 42.3%, RC-002 (D2) 15/78 = 19.2%,
-RC-003 (D2+D3) 0/78 = 0.0%, benign 60/60 in all three — scripted. Say "DEMO,
-scripted" next to any DEMO number you show.
+DEMO story's numbers are RC-001 33/78 = 42.3% FAIL, RC-002 (D2) 15/78 = 19.2%
+FAIL, RC-003 (D2+D3) 0/78 = 0.0% PASS, benign 60/60 in all three — all
+SCRIPTED. Label them SCRIPTED wherever you show them.
 
 ---
 
