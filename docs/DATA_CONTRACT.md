@@ -222,9 +222,15 @@ the entry without `hash`), plus the event's own keys.
 | `decision_refused` | `candidate_id`, `reviewer`, `action`, `detail` | app only |
 | `role_change` | `actor`, `action` (`add`/`remove`), `person`, `role`, `members_after` | app (`roles.change_role`) |
 
-`audit.verify_log(path)` → `LogCheck(ok, bad_seq, detail)`. A missing or empty
-file is `ok=True, "0 entries, chain intact"` (documented limit: truncation and
-deletion are not detected; see README "Honest limits").
+`audit.verify_log(path)` → `LogCheck(ok, bad_seq, detail)`. At `d825341` a
+missing or empty file is `ok=True, "0 entries, chain intact"` and a line that
+is not valid JSON raises `JSONDecodeError`. **From the governance hardening
+(fix 6), confirm after merge:** a malformed line is reported as tampering at
+that `seq`; an empty or missing log reports `'no entries (log missing or
+empty)'`; `audit.head(path)` returns `(entry_count, last_hash)` for anchoring
+outside the file; `scripts/verify_log.py <path>` exits 0 intact, 1 tampered
+(naming the entry), 2 usage. Re-chaining and tail truncation are **not**
+detected by the chain alone (README "Honest limits").
 
 ### 5.4 App state — `governance_out/`
 

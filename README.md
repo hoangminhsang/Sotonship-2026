@@ -175,7 +175,9 @@ writes — no new tests here, all deterministic and unit-tested:
   exactly what was tested; `gate` compares the metrics to `policy.yaml` and emits
   PASS/FAIL with reasons; `decision` enforces roles (the engineer can't approve
   their own work) and Approve/Block/Override; `audit` writes a hash-chained,
-  append-only log so any edit is detectable (`verify_log`).
+  append-only log and `verify_log` names the first entry that does not hold.
+  The log is tamper-evident, not tamper-proof: see "Honest limits" under
+  Disclosure for what it does and does not catch.
 - **Long loop (assurance).** Every violation class becomes a risk whose
   **likelihood is the measured attack rate, not a guess** (`risks`); each risk
   maps to a control (`fixes.py`) and to OWASP / MITRE ATLAS / NIST labels
@@ -341,14 +343,22 @@ uses these identifiers.
 
 ### Honest limits
 
-- **The audit log is tamper-evident, not tamper-proof.** The hash chain in
-  `lab/governance/audit.py` detects an edited entry, an inserted entry, a
-  deleted entry in the middle, and reordering. It does **not** detect
-  re-chaining (an attacker who rewrites an entry and recomputes every later
-  hash), truncation of the tail, or deletion of the whole file; a missing or
-  empty log verifies as "0 entries, chain intact". A real deployment anchors
-  the head hash somewhere the writer cannot reach (a second system, a signed
-  timestamp, or a write-once store).
+- **The audit log is tamper-evident, not tamper-proof.** `verify_log` catches
+  an edited entry, an inserted entry, a deleted middle entry, a reordered
+  entry and a line that is no longer valid JSON, and names the position and
+  the kind. It does NOT catch three things: (1) re-chaining — edit an entry
+  and recompute every later hash, and the chain verifies as intact; (2) tail
+  truncation — delete the last one or more entries, and the chain verifies as
+  intact; (3) deleting the file — an empty or missing log verifies as 'no
+  entries (log missing or empty)'. Plain SHA-256 has no key, so anyone who can
+  write the file can rebuild the chain. The cheap anchor is
+  `audit.head(path)`, which returns `(entry_count, last_hash)`: record it
+  outside the file (the gate report, the manager summary line 'Audit log: N
+  entries, head <hash>') and compare — a different count or hash with an
+  intact chain means the log was cut or rebuilt. A real product would add an
+  HMAC with a key held by the rule owner, or a second copy of the log.
+  (Wording from the governance hardening in the review pass; `audit.head`,
+  the malformed-line check and the "no entries" message land with it.)
 - **Names are typed, not authenticated.** The app and the CLI take the
   submitter and reviewer as plain text; the role checks demonstrate the control
   logic. A real deployment binds them to SSO identity.

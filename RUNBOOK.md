@@ -193,7 +193,16 @@ cat governance_out/risk_register_after.md
    open risks, last decision.
 9. **Tamper-evidence.** Verify the real audit log (intact), then prove a forged
    copy is caught at the exact entry that was changed. The real log is left
-   untouched.
+   untouched. To run the check by hand on any log file (always on a **copy**,
+   never the real log):
+
+   ```bash
+   .venv-pyrit/bin/python scripts/verify_log.py governance_out/audit_log_tampered_demo.jsonl
+   ```
+
+   Exit codes: `0` intact, `1` tampered (the output names the entry), `2`
+   usage. (Script added in the review pass; see README "Honest limits" for
+   what the chain does and does not catch.)
 
 ### All options
 
