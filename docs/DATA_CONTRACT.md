@@ -108,8 +108,10 @@ stores the list of traces per candidate in `governance_out/<cid>/traces.json`.
   every candidate it scores (DEMO, replay or saved run): **unsorted**, and
   `trace_path` is the legacy `results/traces/<id>__rep<k>.json`, a file that
   is never written (C-07; a fix to blank it is in progress).
-- `lab/app.py` → `runs.to_csv` → `governance_out/<cid>/runs.csv`: same as the
-  CLI (unsorted, legacy `trace_path`).
+- `lab/app.py` → `metrics.write_outputs` → `governance_out/<cid>/runs.csv`
+  and `<cid>/summary.csv` (since `f845c7f`): **sorted** like a run folder;
+  `trace_path` is copied from each trace's own `trace_path` key, or left
+  **empty** when the trace has none (DEMO traces), so no phantom path.
 
 **Committed copy:** `results/runs.csv` = the 24-run rehearsal (12 attack tests
 × 2 reps, no benign runs); never overwritten. It **predates the `attempted`
@@ -287,7 +289,7 @@ by the chain alone (README "Honest limits").
 | `candidates.json` | `{ "<cid>": { "submitted_by", "defences", "mode" (`DEMO` / `LIVE` / `SAVED`), "source", "identity_hash", "summary" (§5.1 dict, plus `mode`), "decision" (`null` / `APPROVE` / `BLOCK` / `OVERRIDE`), "created_at" } }` in insertion order |
 | `roles_overlay.json` | the policy `roles` dict after edits: `{"engineers": [...], "reviewers": [...], "rule_owner": "..."}` |
 | `<cid>/traces.json` | JSON list of traces. **DEMO traces have 11 keys only:** `test_id, kind, goal, technique, place, rep, user_task, expect_ticket, expect_asset, tool_calls, error` — no `model`, `model_digest`, `temperature`, `seed`, `final_text`, `started_at`, `duration_s`, `driver`, `run_id`; `defences` and per-call `blocked` appear only after `defences.replay`. LIVE traces are full §2 traces |
-| `<cid>/runs.csv` | §3, unsorted, legacy `trace_path` (see §3) |
+| `<cid>/runs.csv`, `<cid>/summary.csv` | §3 and §4 via `metrics.write_outputs` (sorted; `trace_path` empty for DEMO traces) |
 | `tamper_demo/audit_log_copy.jsonl` | the copy the app's tamper demo edits and verifies; the real log is untouched |
 | `<cid>/inventory.md`, `risk_register.md`, `evidence_register.md`, `summary.md` | §5.5, written by "Write ALL reports" |
 
