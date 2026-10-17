@@ -292,6 +292,14 @@ def test_governance_uses_saved_after_runs(stub, tmp_path):
                      "--run-after-d3", str(stub.root / "a3"), "--out", str(out), "--no-tamper-demo"]) == 0
     assert str(stub.root / "a" / "runs.csv") in (out / "evidence_register_RC-002.md").read_text()
     assert str(stub.root / "a3" / "runs.csv") in (out / "evidence_register_RC-003.md").read_text()
+    # A re-test run with different reps / expected_runs is not comparable: refused (A-03).
+    _run(stub, _records(), reps=2, candidate="RC-002", split="test", run_id="a-reps2", defences=("D2",))
+    import subprocess
+
+    p = subprocess.run([sys.executable, str(ROOT / "scripts" / "run_governance.py"), "--run", str(stub.root / "b"),
+                        "--run-after", str(stub.root / "a-reps2"), "--out", str(tmp_path / "y"), "--no-tamper-demo"],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert p.returncode == 2 and "reps" in p.stderr and not (tmp_path / "y").exists(), p.stderr
     # A D2-only folder is refused as the D2+D3 candidate.
     assert gov.main(["--run", str(stub.root / "b"), "--run-after-d3", str(stub.root / "a"),
                      "--out", str(tmp_path / "x"), "--no-tamper-demo"]) == 2

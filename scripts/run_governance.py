@@ -208,6 +208,23 @@ def rotate_log(audit_path: Path) -> Path:
     return target
 
 
+def regression_baseline(last_approved: dict | None, current: dict) -> tuple[float | None, str | None]:
+    """The ASR to apply the no-regression ceiling against, or why not (A-03).
+
+    Like with like only: the previous approved candidate must have the same
+    fingerprint ``test_set_sha256``, the same ``reps`` and the same mode.
+    Otherwise returns ``(None, reason)`` and the caller skips the ceiling and
+    says so; it never passes silently.
+    """
+    if not last_approved:
+        return None, None
+    differences = [k for k in ("test_set_sha256", "reps", "mode") if last_approved.get(k) != current.get(k)]
+    if differences:
+        return None, ("not comparable (different test set / reps / mode): "
+                      + ", ".join(differences) + f" differ from {last_approved.get('candidate_id', 'last approved')}")
+    return last_approved.get("asr"), None
+
+
 def _fmt_summary(s: dict, tag: str = "") -> str:
     # ``errors_with_violation`` / ``attempted_*`` arrive with the error-scoring
     # change (fix 3); read with .get so this line works before and after it.
@@ -242,6 +259,12 @@ def run(args: argparse.Namespace) -> int:
                     saved = load_saved_run(path, codes)
                     if saved[0].get("records_sha256") != saved_before[0].get("records_sha256"):
                         raise ValueError(f"--run and {flag} were not run on the same records")
+                    for key in ("reps", "expected_runs"):  # same size of evidence, or not comparable (A-03)
+                        if saved[0].get(key) != saved_before[0].get(key):
+                            raise ValueError(
+                                f"--run and {flag} differ in {key} ({saved_before[0].get(key)} vs "
+                                f"{saved[0].get(key)}); the candidates would not be comparable"
+                            )
                     saved_retests[cid] = (saved, path)
         except (run_folder.RunFolderError, ValueError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -430,7 +453,8 @@ def run(args: argparse.Namespace) -> int:
     proofs = {"RC-001": proof_before}
     prev_cid, prev_fp, prev_summary, prev_register = "RC-001", fp_001, summary_before, register_before
     register_final, ev_md_final, last_cid = register_before, "", "RC-001"
-    last_approved_asr: float | None = None
+    last_approved: dict | None = None  # asr + what it was measured on, for the regression check
+    reps = saved_before[0].get("reps") if saved_before is not None else args.reps
     section = 5
     for cid, codes, flag, block_reason in retests:
         label = "+".join(codes)
@@ -481,7 +505,16 @@ def run(args: argparse.Namespace) -> int:
 
         section += 1
         rep.section(f"{section}. Gate verdict for {cid}, then the reviewer decides")
-        verdict = gate.evaluate(summary, policy, last_approved_asr=last_approved_asr)
+        current = {"candidate_id": cid, "test_set_sha256": fp.test_set_sha256, "reps": reps, "mode": tag}
+        baseline_asr, why_not = regression_baseline(last_approved, current)
+        if why_not:
+            rep.say(f"No-regression check skipped: {why_not}")
+        elif baseline_asr is None:
+            rep.say("No-regression check: no approved candidate to compare against yet")
+        else:
+            rep.say(f"No-regression check against {last_approved['candidate_id']} "
+                    f"(ASR {baseline_asr:.1%}, same test set, reps and mode)")
+        verdict = gate.evaluate(summary, policy, last_approved_asr=baseline_asr)
         report = gate.report_text(cid, verdict)
         rep.say(report)
         rep.write(f"gate_{cid}.txt", report)
@@ -493,7 +526,7 @@ def run(args: argparse.Namespace) -> int:
                 candidate_id=cid, submitted_by=args.engineer, verdict_passed=True,
                 policy=policy, reviewer=args.reviewer, action="APPROVE",
             )
-            last_approved_asr = summary["asr"]
+            last_approved = {**current, "asr": summary["asr"]}
             rep.say(f"\nLogged decision: {ev['decision']} {cid} by {ev['reviewer']}")
         else:
             ev = decision.decide(

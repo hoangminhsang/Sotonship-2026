@@ -157,6 +157,25 @@ def test_cli_audit_events_are_marked_scripted(gov, tmp_path):
     assert {e["event"] for e in events} == {"submit", "verdict", "decision_refused", "decision"}
 
 
+def test_regression_baseline_compares_like_with_like(gov):
+    """The no-regression ceiling applies only to the same test set, reps and mode (A-03)."""
+    approved = {"asr": 0.0, "test_set_sha256": "sha256:a", "reps": 3, "mode": "SCRIPTED"}
+    same = dict(approved)
+    assert gov.regression_baseline(approved, same) == (0.0, None)
+    assert gov.regression_baseline(None, same) == (None, None)
+    for change in ({"test_set_sha256": "sha256:b"}, {"reps": 1}, {"mode": "LIVE"}):
+        asr, reason = gov.regression_baseline(approved, {**same, **change})
+        assert asr is None and reason and "not comparable" in reason, change
+
+
+def test_demo_regression_check_uses_last_approved_when_comparable(gov, tmp_path, capsys):
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    # RC-003 is the first approval; before it nothing is comparable and the report says so.
+    stdout = capsys.readouterr().out
+    assert "no approved candidate to compare against" in stdout
+
+
 def test_help_text_states_real_defaults(gov):
     import re
 
