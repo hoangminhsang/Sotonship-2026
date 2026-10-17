@@ -7,11 +7,15 @@ A step-by-step guide to reproduce the study end to end:
 2. **Governance & assurance** — turn those numbers into a release decision, a
    risk register, an audit trail, and a manager summary.
 
-All commands are run **from the repo root**:
+All commands are run **from the repo root** (the folder that holds this file,
+`README.md` and `lab/`):
 
 ```bash
-cd /home/kali/Desktop/soton_ship_2026/agent-attack-lab
+cd Sotonship-2026
 ```
+
+The pipeline runs from the `.py` files (`lab/`, `scripts/`, `python -m lab.app`).
+The notebooks under `notebooks/` are prototypes and are not part of it.
 
 ---
 
@@ -19,16 +23,17 @@ cd /home/kali/Desktop/soton_ship_2026/agent-attack-lab
 
 ### Environments
 
-Two Python environments are used:
+Two Python environments are used, both created inside the repo (see README
+"Quick start" and "Attack with PyRIT"):
 
 | Env | Interpreter | Used for |
 | --- | --- | --- |
-| `.venv-pyrit` | `.venv-pyrit/bin/python` | the attack experiment **and** the governance program (has the lab's pinned deps) |
-| `msc_dissertation` (conda) | `/home/kali/miniconda3/envs/msc_dissertation/bin/python` | the notebooks; also fine for governance in demo mode |
+| `.venv` | `.venv/bin/python` | the tests, the menu app and the governance program (`docker/requirements.txt`) |
+| `.venv-pyrit` | `.venv-pyrit/bin/python` | the PyRIT-driven attack experiment; it also has every lab dep, so it can run the governance program too (`docker/requirements.txt` + `docker/requirements-pyrit.txt`) |
 
-> Throughout this runbook we use **`.venv-pyrit/bin/python`** because it carries
-> the lab's verified dependency pins. If you prefer the conda env for the
-> governance program in demo mode, it works too.
+> This runbook uses **`.venv-pyrit/bin/python`** throughout so one interpreter
+> covers both halves. `.venv/bin/python` works for every command except
+> `scripts/run_pyrit_attack.py`.
 
 ### Ollama + model (needed for the live attack and `--live` governance)
 
@@ -77,13 +82,32 @@ per-technique table (worst first). It also writes:
 cat results/summary.csv
 ```
 
+> **TODO (fix 1):** after fix 1 merges, every run writes to its own locked
+> folder `results/runs/<run_id>/{manifest.json, records.jsonl, traces/,
+> runs.csv, summary.csv}` and no longer overwrites `results/*.csv`. The exact
+> text for this step is pending from the fix 1 agent; the file layout is in
+> `docs/DATA_CONTRACT.md` §6.
+
+Reading the CSVs in code: open `runs.csv` with
+`pd.read_csv(path, keep_default_na=False)`, or empty `error` cells become NaN
+and every run counts as an error. Rates in the CSVs are fractions 0–1
+(`docs/DATA_CONTRACT.md`).
+
+### Headline runs
+
+> **Commands finalised after fix 1 merges — see `docs/DATA_CONTRACT.md`.**
+> The committed `results/summary.csv` is a 24-run rehearsal (12 attack tests
+> × 2 reps, benign not measured). The headline run is the full test split at
+> 3 reps: 26 attack tests × 3 = 78 attack runs and 20 benign × 3 = 60 benign
+> runs. Its results are **pending**.
+
 ---
 
 ## 2. Run the governance & assurance program
 
-This is `scripts/run_governance.py` — the command-line twin of
-`notebooks/release_gate_demo.ipynb`. It runs the whole release-gate and
-assurance story and writes every artifact to an output folder.
+This is `scripts/run_governance.py` — the pipeline program
+(`notebooks/release_gate_demo.ipynb` is its prototype). It runs the whole
+release-gate and assurance story and writes every artifact to an output folder.
 
 It has two modes:
 
@@ -100,6 +124,11 @@ It has two modes:
 
 It prints the full report and writes the artifacts into `governance_out/`.
 
+> **Caution:** `governance_out/` is also the menu app's state folder, and the
+> CLI starts a fresh `audit_log.jsonl` there unless you pass `--keep-log`
+> (lane D finding D-04). If you have used the app, pass
+> `--out governance_out/cli_demo` to keep the two apart.
+
 ### Step 2.2 — (optional) Run it against the live model
 
 Make sure Ollama is up (see §0), then:
@@ -107,6 +136,14 @@ Make sure Ollama is up (see §0), then:
 ```bash
 .venv-pyrit/bin/python scripts/run_governance.py --live --sample 12
 ```
+
+> **Live-gate note (D-08 / X-05).** The policy requires
+> `min_attack_runs: 50`. At 3 reps per test, a gated live run needs at least
+> **17 attack tests (51 attack runs)**; the app's default LIVE sample of 8
+> gives 24 runs and `--sample 12` gives 36, so both FAIL with "not enough
+> proof" and step 5 below ("Gate again → PASS") cannot happen live. Use
+> `--sample 17` or more for a run that can PASS (about 17 attacks + 17 benign,
+> × 3 reps, per candidate; duration not measured).
 
 ### Step 2.3 — Read the governance artifacts
 
@@ -177,17 +214,21 @@ Key flags:
 ## 3. Keeping the demo honest
 
 In **demo mode** the governance numbers come from the calibrated `RATES` table
-in `scripts/run_governance.py`, not from the attack run in §1. Those rates were
-originally measured from a real attack run. If you re-run §1 and the measured
-per-technique rates change, update `RATES` to match — or run the governance
-program with `--live` so it measures the agent directly.
+in `scripts/run_governance.py` (and `lab/demo.py` for the app), not from the
+attack run in §1. Those rates were calibrated to the committed 24-run
+rehearsal (`results/summary.csv`: n = 4 per technique); `T7_split` has no
+`RATES` entry and defaults to 0, and DEMO benign success is 100% by
+construction, not measured. If you re-run §1 and the measured per-technique
+rates change, update `RATES` to match — or run the governance program with
+`--live` so it measures the agent directly. Say "DEMO, scripted" next to any
+DEMO number you show.
 
 ---
 
 ## 4. Quick reference — the whole thing in four commands
 
 ```bash
-cd /home/kali/Desktop/soton_ship_2026/agent-attack-lab
+cd Sotonship-2026
 
 # 1. attack (measure how often the insecure agent breaks)
 .venv-pyrit/bin/python scripts/run_pyrit_attack.py
@@ -196,6 +237,6 @@ cd /home/kali/Desktop/soton_ship_2026/agent-attack-lab
 .venv-pyrit/bin/python scripts/run_governance.py
 
 # 3. read the headline outputs
-cat results/summary.csv
+cat results/summary.csv            # TODO (fix 1): results/runs/<run_id>/summary.csv
 cat governance_out/manager_summary.md
 ```
