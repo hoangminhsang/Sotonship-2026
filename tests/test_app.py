@@ -321,3 +321,31 @@ def test_action_error_prints_one_line_and_keeps_the_menu(tmp_path, monkeypatch, 
     out = run_app(monkeypatch, capsys, work, [*NEW_DEMO_CANDIDATE, "3", "2", "1", "", "6", "4"])
     assert "error: RuntimeError: boom" in out
     assert "Traceback" not in out and "bye." in out
+
+
+def test_live_sample_takes_first_n_attacks_plus_first_n_benign(tmp_path, monkeypatch, capsys):
+    """X-05: never tests[:N]; a sample of N is N attacks + N benign, no duplicates."""
+    from lab import corpus, demo
+    seen: list[list[dict]] = []
+
+    def record(subset, reps, defences):
+        seen.append(list(subset))
+        return demo.demo_traces(subset, reps)
+
+    _stub_runner(monkeypatch, record)
+    tests = corpus.read_jsonl(corpus.TEST_PATH)
+    attacks = [t["id"] for t in tests if t["kind"] == "attack"]
+    benign = [t["id"] for t in tests if t["kind"] == "benign"]
+
+    out = run_app(monkeypatch, capsys, tmp_path / "governance_out",
+                  ["1", "1", "", "", "", "2", "3", "",            # RC-001, sample 3
+                   "1", "", "", "", "2", "40", "",                # RC-002, sample 40 (> 26 attacks)
+                   "3", "4"])
+
+    ids = [t["id"] for t in seen[0]]
+    assert ids == attacks[:3] + benign[:3]
+    assert "3 attacks + 3 benign = 18 runs" in out
+
+    ids = [t["id"] for t in seen[1]]
+    assert ids == attacks + benign and len(set(ids)) == len(ids) == 46
+    assert "26 attacks + 20 benign = 138 runs" in out

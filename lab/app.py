@@ -46,6 +46,7 @@ SCRIPTED_SOURCE = "scripted: calibrated to the 24-run rehearsal; benign not meas
 SCRIPTED_DIGEST = "none (scripted demo)"      # no model ran, so there is no digest
 TOOLS = ["read_doc", "query_assets", "create_ticket"]
 OLLAMA_DOWN = "Ollama unreachable or model missing — no candidate saved"
+REPS = 3                                       # runs per test, LIVE and scripted
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +275,12 @@ def _list_and_pause(s: GovState) -> None:
 def _run_live(runner, subset: list[dict], codes: list[str], cid: str) -> list[dict]:
     """Run the model. Passes ``candidate``/``split`` when the runner accepts them."""
     try:
-        return list(runner.run_split(subset, reps=3, defences=tuple(codes),
+        return list(runner.run_split(subset, reps=REPS, defences=tuple(codes),
                                      candidate=cid, split="test"))
     except TypeError as e:
         if "unexpected keyword" not in str(e):
             raise
-        return list(runner.run_split(subset, reps=3, defences=tuple(codes)))
+        return list(runner.run_split(subset, reps=REPS, defences=tuple(codes)))
 
 
 def redteam_run(s: GovState) -> None:
@@ -293,11 +294,15 @@ def redteam_run(s: GovState) -> None:
     if live:
         from lab import runner
         sample = ask_int("Sample size per split (LIVE is slow)", 8, lo=1)
+        # X-05: the first N attacks PLUS the first N benign records, never tests[:N].
         attacks = [t for t in s.test if t["kind"] == "attack"][:sample]
         benign = [t for t in s.test if t["kind"] == "benign"][:sample]
+        subset = attacks + benign
+        print(f"  LIVE sample: {len(attacks)} attacks + {len(benign)} benign = "
+              f"{len(subset) * REPS} runs ({REPS} reps each)")
         print("  (Ctrl-C aborts the sweep and returns to the menu)")
         try:
-            traces = _run_live(runner, attacks + benign, codes, cid)
+            traces = _run_live(runner, subset, codes, cid)
         except KeyboardInterrupt:
             print("\nLIVE sweep aborted -- no candidate saved.")
             return pause()
@@ -316,7 +321,7 @@ def redteam_run(s: GovState) -> None:
         digest = runner.model_digest()
         mode = LIVE
         source = (f"live: {agent.MODEL} {digest or '(digest unknown)'}; "
-                  f"{len(attacks)} attack + {len(benign)} benign tests x 3 reps; "
+                  f"{len(attacks)} attack + {len(benign)} benign tests x {REPS} reps; "
                   f"{errors} errored runs excluded from every rate")
     else:
         traces = demo.demo_traces(s.test)
