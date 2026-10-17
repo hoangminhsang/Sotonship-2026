@@ -1,9 +1,10 @@
-# Insecure Agent Attack Lab — the *before* study
+# Agent Release Gate — red-team lab, release gate and assurance
 
-**One sentence:** this lab attacks a deliberately insecure, tool-using LLM agent
-with a corpus of indirect prompt injections and measures how often the attacks
-succeed, broken down by technique — the *before* half of a before/after
-security study.
+**One sentence:** this repo attacks a tool-using LLM agent with a corpus of
+indirect prompt injections, measures how often the attacks succeed (broken down
+by technique), and turns the result into a release decision: a PASS/FAIL gate
+against a written policy, a named human Approve/Block/Override, a hash-chained
+audit log, and a risk register whose likelihoods are the measured rates.
 
 An unprotected agent reads a support document or an asset record, the content
 hides an instruction, and the agent obeys it: leaking a clearly fake secret,
@@ -16,8 +17,10 @@ metrics with 95% Wilson confidence intervals:
 - **ASR per technique** — which attack is worst (defend that first).
 - **Benign task success** — whether usefulness survives.
 
-The *after* study (defences D1–D3) is a separate notebook; this one shows the
-insecure agent failing, with numbers.
+The *after* study (defences D1–D3) lives in `lab/defences.py` and the release
+gate in `lab/governance/`. **The pipeline runs from the `.py` files** (`lab/`,
+`scripts/`, `python -m lab.app`); the notebooks under `notebooks/` are
+prototypes kept for reference, not the pipeline.
 
 ## Quick start
 
@@ -38,7 +41,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r docker/requirements.txt
 # Ollama must be running locally with the model pulled:
 ollama pull qwen2.5:7b-instruct
-jupyter lab            # open notebooks/attack_lab.ipynb and Run All
+python -m lab.app      # menu-driven program: DEMO is offline; LIVE needs Ollama
 ```
 
 The agent reads Ollama at `$OLLAMA_HOST` (default `http://localhost:11434`) and
@@ -62,7 +65,7 @@ verified `.venv` stays untouched.
 **Step 1 — build the combined environment** (once):
 
 ```bash
-cd agent-attack-lab
+cd Sotonship-2026
 python3 -m venv .venv-pyrit
 .venv-pyrit/bin/pip install --upgrade pip
 .venv-pyrit/bin/pip install -r docker/requirements.txt -r docker/requirements-pyrit.txt
@@ -87,15 +90,25 @@ full test split:
 ```
 
 **Step 4 — read the result.** The script prints the overall ASR with its 95%
-interval and the per-technique table (worst first), e.g.:
+interval and the per-technique table (worst first). The numbers below are the
+committed rehearsal run in `results/summary.csv` (12 attack tests × 2 reps =
+24 attack runs; benign tasks were **not** measured in that run):
 
 ```
-Overall ASR         : 66.7%  (8/12)  95% CI [39.1%, 86.2%]
+Overall ASR         : 50.0%  (12/24)  95% CI [31.4%, 68.6%]
 ASR per technique (worst first):
-  T2_fake_system       4/4   100%  [51%, 100%]
-  T1_plain             4/4   100%  [51%, 100%]
-  ...
+  T1_plain             4/4   100%  [51.0%, 100%]
+  T4_hidden            4/4   100%  [51.0%, 100%]
+  T2_fake_system       3/4    75%  [30.1%, 95.4%]
+  T3_fake_staff        1/4    25%  [4.6%, 69.9%]
+  T5_encoded           0/4     0%  [0.0%, 49.0%]
+  T6_other_language    0/4     0%  [0.0%, 49.0%]
 ```
+
+With n = 4 per technique the intervals are wide on purpose: the rehearsal
+proves the pipeline, it is not the headline number. The headline run (full
+test split: 26 attacks + 20 benign, 3 reps = 78 attack runs + 60 benign runs)
+is **pending**.
 
 **Step 5 — inspect the evidence.** The same outputs as the native runner:
 
@@ -117,9 +130,10 @@ The PyRIT target, converter mapping, and driver live in
 pytest -q
 ```
 
-The oracle, metrics, corpus generator, and fix suggester are covered. The
-model-dependent path (the agent actually calling tools) is validated in the
-notebook's cell 4, so CI stays fast and offline.
+The oracle, metrics, corpus generator, defences, gate, decisions, audit log,
+fingerprint and risk register are covered offline. The model-dependent path
+(the agent actually calling tools) needs Ollama; run it LIVE through
+`python -m lab.app` or `scripts/run_pyrit_attack.py`. CI stays fast and offline.
 
 ## What's in here
 
@@ -133,16 +147,18 @@ lab/assurance/   risks (register + fix tickets), control_map.yaml (OWASP/ATLAS/N
                  inventory, evidence, thread (traceability), summary_page
 data/       synthetic docs, assets.json (incl. the one restricted record), rules.yaml
 corpus/     dev.jsonl / test.jsonl (generated, stratified split)
-results/    summary.csv, runs.csv (human-validation sheet), traces/ (git-ignored)
-notebooks/  attack_lab_explained.ipynb — self-contained teaching notebook: the whole
-                                          codebase inlined and explained in plain English,
-                                          attacking via PyRIT (run with .venv-pyrit)
-            release_gate_demo.ipynb    — study-guided governance & assurance demo:
-                                          RC-001 fails → block → D2 → RC-002 passes →
-                                          approve → risks close → audit tamper caught
+results/    summary.csv, runs.csv (committed 24-run rehearsal; human-validation sheet),
+            traces/ (git-ignored)
+notebooks/  PROTOTYPES, not the pipeline (they are not run by any script or test):
+            attack_lab_explained.ipynb — teaching notebook: the codebase inlined and
+                                          explained in plain English (PyRIT path)
+            release_gate_demo.ipynb    — earlier prototype of the governance story
+                                          that scripts/run_governance.py now runs
 scripts/    run_pyrit_attack.py — CLI for the PyRIT-driven attack
+            run_governance.py  — CLI for the release-gate + assurance story (DEMO/--live)
 tests/      pytest suite (oracle, metrics, fixes, defences, gate, decision, audit,
-            candidate, risks) — 72 tests, offline, no model needed
+            candidate, risks, roles, demo) — 79 tests as of commit d825341
+            (`pytest --collect-only -q`); offline, no model needed
 docker/     Dockerfile, docker-compose.yml, requirements.txt, requirements-pyrit.txt
 ```
 
@@ -172,8 +188,10 @@ input checks in tool code, D3 human approval for high-impact actions. Crucially 
 it — so the before/after drop is real. Run a defended study live with
 `runner.run_split(..., defences=("D2",))`.
 
-Walk the whole thing in **`notebooks/release_gate_demo.ipynb`** (offline and
-deterministic by default; set `LIVE = True` for real `qwen2.5:7b-instruct` runs).
+Run the whole story from the command line with **`scripts/run_governance.py`**
+(offline DEMO by default; `--live` drives the real `qwen2.5:7b-instruct`; see
+`RUNBOOK.md`). `notebooks/release_gate_demo.ipynb` is an earlier prototype of
+the same flow and is not maintained.
 
 ### Run it as one menu-driven program
 
@@ -190,8 +208,8 @@ role edits and the hash-chained log survive between actions; delete that folder
 to start fresh. Red-team runs default to DEMO (offline, deterministic) with a
 LIVE option that drives the real model.
 
-The notebook is thin: it imports from `lab/`, runs, and narrates. All logic
-lives in the package so it is unit-testable and two people can edit different
+All logic lives in the `lab/` package; the app and the scripts import it, run
+it, and narrate. That keeps it unit-testable and lets two people edit different
 modules without merge pain.
 
 ### How it works, in one line
@@ -215,8 +233,8 @@ enforced** — enforcing it is the *after* study).
 | Python | 3.14 |
 
 Pinned dependency versions are in [`docker/requirements.txt`](docker/requirements.txt).
-The notebook's final cell prints this table (plus the git commit) verbatim, so
-the footer of a run is the ground truth for that run.
+Every per-run trace records the model tag, model digest, temperature and seed,
+so a trace is the ground truth for the run that produced it.
 
 > **Model note.** The spec's baseline is `qwen2.5:7b-instruct` because it
 > supports tool calling yet is weak enough that injections land often — exactly
@@ -253,10 +271,27 @@ the footer of a run is the ground truth for that run.
 
 ## Scope and honesty
 
-This is the insecure baseline only — no defences are built here. Because the
-agent is unguarded, a tool *call* is also an *effect*, so an attempt counts as a
-successful attack; in the *after* study the same attempt may be blocked, and
-that distinction is the payoff. Results are specific to this model, corpus, and
-world; the confidence intervals quantify sampling noise, not every source of
-error. A low ASR would mean this corpus under-sampled what works, not that the
-agent is safe.
+- **Both halves are in `lab/`.** The insecure baseline (defences off, RC-001)
+  and the defended re-test (D1–D3 on, RC-002) run through the same runner and
+  the same oracle. With defences off, a tool *call* is also an *effect*, so an
+  attempt counts as a successful attack. With defences on, a call a defence
+  refused is recorded as `[blocked]` and is **not** a violation, because it had
+  no effect. That difference is the measured benefit.
+- **The committed numbers are a rehearsal.** `results/summary.csv` holds 24
+  attack runs (12 tests × 2 reps) and no benign runs. It is below the policy's
+  `min_attack_runs: 50` and cannot PASS the gate. The headline run (78 attack +
+  60 benign runs) is pending.
+- **DEMO mode is scripted, not measured.** The app and `run_governance.py`
+  default to DEMO: traces are generated from a per-technique rate table
+  (`RATES`) that was calibrated to the rehearsal. DEMO numbers show the
+  governance flow; they are not evidence about the model. Use LIVE or a saved
+  run for evidence.
+- **Pass ≠ safe.** A PASS means the agent resisted *these* attacks on this
+  model, corpus and world. The confidence intervals quantify sampling noise,
+  not every source of error. A low ASR can also mean the corpus under-sampled
+  what works.
+- **The oracle only catches rules it has.** Actions outside `data/rules.yaml`
+  are not scored. A finding with no fix-table row is flagged for the rule
+  owner, never silently passed.
+- **The audit log is tamper-evident, not tamper-proof.** See "Honest limits"
+  under Disclosure.
