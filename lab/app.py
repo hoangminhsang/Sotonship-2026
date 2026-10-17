@@ -526,6 +526,9 @@ def _comparable(s: GovState, cid: str, prior_cid: str) -> list[str]:
         diffs.append("test set")
     if a.get("reps") is None or a.get("reps") != b.get("reps"):
         diffs.append("reps")
+    expected = lambda r: (r.get("tests_run") or 0) * (r.get("reps") or 0)   # noqa: E731
+    if not expected(a) or expected(a) != expected(b):
+        diffs.append("run count")
     if mode_of(a) != mode_of(b):
         diffs.append("mode")
     return diffs

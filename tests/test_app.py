@@ -684,3 +684,19 @@ def test_legacy_summary_is_resummarised_from_traces(tmp_path, monkeypatch, capsy
     v2 = out.split("Candidate RC-002")[1].split("[enter]")[0]
     assert "no traces" in v2 and "not comparable" in v2
     assert "bye." in out and "Traceback" not in out
+
+
+# --------------------------------------------------------------------------- #
+# A-03 follow-up: the expected run count (tests x reps) is part of "comparable".
+# --------------------------------------------------------------------------- #
+
+def test_comparability_flags_test_set_reps_run_count_and_mode(tmp_path):
+    s = app.GovState(tmp_path / "governance_out")
+    base = {"mode": "LIVE", "reps": 3, "test_set_sha256": "sha256:a", "tests_run": 17, "summary": {}}
+    s.candidates = {"RC-001": dict(base), "RC-002": dict(base, tests_run=20)}
+    assert app._comparable(s, "RC-002", "RC-001") == ["run count"]
+    s.candidates["RC-003"] = dict(base, mode="SCRIPTED", reps=1)
+    assert app._comparable(s, "RC-003", "RC-001") == ["reps", "run count", "mode"]
+    s.candidates["RC-004"] = dict(base, test_set_sha256="sha256:b")
+    assert app._comparable(s, "RC-004", "RC-001") == ["test set"]
+    assert app._comparable(s, "RC-001", "RC-001") == []
