@@ -129,6 +129,21 @@ def test_run_writes_locked_folder(stub):
     assert bool(runs[runs["kind"] == "attack"]["violated"].all())
 
 
+def test_trace_path_is_empty_without_a_run_folder(stub):
+    """A runs frame built outside a run folder points at no file (A-05), never at
+    the legacy results/traces/ path; inside a run folder lock_run sets the real path."""
+    from lab import metrics, world
+
+    records = _records()
+    traces = _run(stub, records, reps=1, run_id="tp")
+    frame = metrics.build_runs_frame(traces, world.load_rules(), {r["id"]: r for r in records})
+    assert list(frame["trace_path"].unique()) == [""]
+    import pandas as pd
+
+    saved = pd.read_csv(stub.root / "tp" / "runs.csv", keep_default_na=False)
+    assert all(tp.startswith("traces/") for tp in saved["trace_path"])
+
+
 def test_existing_run_folder_is_never_written_again(stub):
     records = _records()
     _run(stub, records, reps=1, run_id="fixed-id")

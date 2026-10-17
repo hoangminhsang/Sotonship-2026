@@ -132,7 +132,7 @@ def build_runs_frame(
                 "attempted": attempted,
                 "benign_success": benign_ok,
                 "error": tr.get("error") or "",
-                "trace_path": f"results/traces/{tr['test_id']}__rep{tr.get('rep')}.json",
+                "trace_path": "",  # set by lab.run_folder.lock_run when a run folder holds the trace
             }
         )
     return pd.DataFrame(rows, columns=RUN_COLUMNS)
