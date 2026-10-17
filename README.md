@@ -139,7 +139,7 @@ pytest -q
 ```
 
 The oracle, metrics, defences, gate, decisions, roles, audit log, risks and
-the demo path are covered (279 tests, offline, as of commit f845c7f on
+the demo path are covered (291 tests, offline, as of commit a121518 on
 review/hardening). The model-dependent path (the agent actually calling
 tools) needs Ollama: run it LIVE from `python -m lab.app` or
 `scripts/run_pyrit_attack.py`.
@@ -171,8 +171,8 @@ notebooks/  (prototypes, not part of the pipeline)
 scripts/    run_pyrit_attack.py — CLI for the PyRIT-driven attack
             run_governance.py  — CLI for the release-gate + assurance story (DEMO/--live)
 tests/      pytest suite (oracle, metrics, fixes, defences, gate, decision, audit,
-            candidate, risks, roles, demo, run folders, CLI, app) — 279 tests
-            as of commit f845c7f on review/hardening (`pytest --collect-only -q`);
+            candidate, risks, roles, demo, run folders, CLI, app) — 291 tests
+            as of commit a121518 on review/hardening (`pytest --collect-only -q`);
             offline, no model needed
 docker/     Dockerfile, docker-compose.yml, requirements.txt, requirements-pyrit.txt
 ```
@@ -376,6 +376,10 @@ uses these identifiers.
   HMAC with a key held by the rule owner, or a second copy of the log.
   (Wording from the governance hardening in the review pass; `audit.head`,
   the malformed-line check and the "no entries" message land with it.)
+- **A locked run folder is tamper-evident, not tamper-proof.** `verify_run`
+  catches an edited, missing or extra file and an edited `manifest.json`
+  (`manifest_sha256`). It does not catch deletion of the whole run folder; a
+  real deployment keeps a copy or a signed index of run ids elsewhere.
 - **Names are typed, not authenticated.** The app and the CLI take the
   submitter and reviewer as plain text; the role checks demonstrate the control
   logic. A real deployment binds them to SSO identity.

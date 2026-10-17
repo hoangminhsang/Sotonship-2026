@@ -188,6 +188,14 @@ ls governance_out/cli_demo/
 | `manager_summary.md` | the one-page manager view |
 | `audit_log_tampered_demo.jsonl` | a forged copy, used only to prove detection |
 
+Every artifact says which mode produced it: each `gate_*.txt` starts with
+`[SCRIPTED] Candidate …`, `[LIVE] …` or `[SAVED] …` and carries an
+`info  attempted_incl_blocked … not a limit` line before the verdict; every
+`.md` starts with `**Mode: [TAG]** <note>`; the manager summary adds a
+`**Numbers:**` bullet and the audit-log anchor (`N entries, head <hash>`).
+In DEMO every audit event carries `"scripted": true`; in LIVE/SAVED only the
+CLI's scripted reviewer decisions do.
+
 Read any of them, e.g.:
 
 ```bash
@@ -226,8 +234,11 @@ candidates.
 7. **Traceability.** Stitch one finding from first attack → risk → control →
    fix → re-test → approval → closed status.
 8. **Manager summary.** The one-page view: live version, current attack rate,
-   open risks, last decision. Headline: `attack success 42.3% -> 19.2% (D2)
-   -> 0.0% (D2+D3)` (SCRIPTED).
+   open risks, last decision. Headline, two lines: `[SCRIPTED] attack success
+   42.3% -> 19.2% (D2) -> 0.0% (D2+D3)` and `[SCRIPTED] Attempted (incl.
+   blocked): …`. The no-regression check prints "no approved candidate to
+   compare against yet" until RC-003 is approved, and "not comparable
+   (different test set / reps / mode)" if it ever has to skip the ceiling.
 9. **Tamper-evidence.** Verify the real audit log (intact), then prove a forged
    copy is caught at the exact entry that was changed. The real log is left
    untouched. To run the check by hand on any log file (always on a **copy**,
@@ -260,6 +271,8 @@ Key flags:
   without it RC-002 is a deterministic D2 replay of `--run`.
 - `--run-after-d3 RUN_DIR` — with `--run`: a saved D2+D3 run folder as RC-003
   (a D2-only folder is refused, exit 2); without it RC-003 is a D2+D3 replay.
+  Both `--run-after*` folders must match `--run` on records, `reps` and
+  `expected_runs`, or the CLI exits 2 ("would not be comparable").
 
 ---
 
