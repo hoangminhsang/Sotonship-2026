@@ -10,11 +10,17 @@ State lives under ``governance_out/`` so candidates, decisions, role edits and
 the hash-chained audit log survive between actions and between runs. Everything
 reuses the tested ``lab`` modules; nothing new is scored here.
 
+Every candidate records its **run mode**: ``SCRIPTED`` (the offline demo, whose
+traces are scripted to the rehearsal rates and whose benign leg was never
+measured) or ``LIVE`` (a real model run). Every screen that shows a number
+repeats that label, so a scripted figure can never pass for a measured one.
+
 Run it:  ``.venv/bin/python -m lab.app``
 """
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,10 +31,15 @@ from lab.assurance import risks, inventory, evidence, thread, summary_page
 from lab.governance import candidate, gate, decision, roles, load_policy, audit
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "governance_out"
-CAND_FILE = WORK / "candidates.json"
-ROLES_FILE = WORK / "roles_overlay.json"
-AUDIT_FILE = WORK / "audit_log.jsonl"
+WORK = ROOT / "governance_out"      # default workspace; GovState(work=...) overrides it
+
+# Run modes (review finding D-01). The scripted source text states what the
+# demo numbers rest on: results/summary.csv holds 24 attack runs and 0 benign.
+SCRIPTED = "SCRIPTED"
+LIVE = "LIVE"
+SCRIPTED_SOURCE = "scripted: calibrated to the 24-run rehearsal; benign not measured"
+SCRIPTED_DIGEST = "none (scripted demo)"      # no model ran, so there is no digest
+TOOLS = ["read_doc", "query_assets", "create_ticket"]
 
 
 # ---------------------------------------------------------------------------
@@ -68,14 +79,65 @@ def pause() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run-mode labels (D-01): every number on screen says where it came from.
+# ---------------------------------------------------------------------------
+
+def mode_of(rec: dict) -> str:
+    return rec.get("mode") or "UNKNOWN"
+
+
+def mode_label(rec: dict) -> str:
+    return f"[{mode_of(rec)}]"
+
+
+def tag_numbers(text: str, rec: dict, every: bool = False) -> str:
+    """Append the run-mode label to every line of ``text`` that shows a number.
+
+    ``every=True`` labels all non-blank lines (for short cards where even a
+    "none" is a claim about what ran).
+    """
+    tag = mode_label(rec)
+    return "\n".join(
+        f"{ln}  {tag}" if (every and ln.strip()) or re.search(r"\d", ln) else ln
+        for ln in text.splitlines()
+    )
+
+
+def source_line(rec: dict) -> str:
+    return f"  source: {rec.get('source') or 'unknown (record predates run-mode labels)'}"
+
+
+def result_line(cid: str, rec: dict) -> str:
+    """One line of numbers for a candidate, always labelled with its mode."""
+    sm = rec["summary"]
+    return (f"{cid} {mode_label(rec)}: ASR {sm['asr']:.1%} "
+            f"({sm['attack_violations']}/{sm['attack_runs']}), "
+            f"95% CI [{sm['asr_lo']:.1%}, {sm['asr_hi']:.1%}], "
+            f"benign {sm['benign_rate']:.0%} ({sm['benign_n']} runs), "
+            f"errors {sm.get('errors', 0)}  {mode_label(rec)}")
+
+
+def _rel(p: Path) -> str:
+    try:
+        return str(p.relative_to(ROOT))
+    except ValueError:
+        return str(p)
+
+
+# ---------------------------------------------------------------------------
 # Persistent state.
 # ---------------------------------------------------------------------------
 
 class GovState:
     """Loads/saves the whole workspace: policy+roles, candidates, audit log."""
 
-    def __init__(self) -> None:
-        WORK.mkdir(exist_ok=True)
+    def __init__(self, work: Path | None = None) -> None:
+        self.work = Path(work) if work is not None else WORK
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.cand_file = self.work / "candidates.json"
+        self.roles_file = self.work / "roles_overlay.json"
+        self.audit_file = self.work / "audit_log.jsonl"
+
         self.rules = world.load_rules()
         self.control_map = assurance.load_control_map()
         self.policy = load_policy()
@@ -86,19 +148,19 @@ class GovState:
         self.tests_by_id = {t["id"]: t for t in self.test}
 
         self.candidates: dict[str, dict] = (
-            json.loads(CAND_FILE.read_text()) if CAND_FILE.exists() else {}
+            json.loads(self.cand_file.read_text()) if self.cand_file.exists() else {}
         )
 
     # -- roles overlay (so edits survive without clobbering the commented yaml)
     def _apply_roles_overlay(self) -> None:
-        if ROLES_FILE.exists():
-            self.policy["roles"].update(json.loads(ROLES_FILE.read_text()))
+        if self.roles_file.exists():
+            self.policy["roles"].update(json.loads(self.roles_file.read_text()))
 
     def save_roles(self) -> None:
-        ROLES_FILE.write_text(json.dumps(self.policy["roles"], indent=2))
+        self.roles_file.write_text(json.dumps(self.policy["roles"], indent=2))
 
     def save_candidates(self) -> None:
-        CAND_FILE.write_text(json.dumps(self.candidates, indent=2))
+        self.cand_file.write_text(json.dumps(self.candidates, indent=2))
 
     # -- candidate helpers
     def next_candidate_id(self) -> str:
@@ -108,7 +170,10 @@ class GovState:
         return f"RC-{n:03d}"
 
     def traces_path(self, cid: str) -> Path:
-        return WORK / cid / "traces.json"
+        return self.work / cid / "traces.json"
+
+    def fingerprint_path(self, cid: str) -> Path:
+        return self.work / "candidates" / f"{cid}.json"
 
     def load_runs(self, cid: str) -> pd.DataFrame | None:
         """Rebuild a candidate's runs frame from its stored traces (correct dtypes)."""
@@ -127,7 +192,10 @@ class GovState:
         return None
 
     def log(self, event: dict) -> dict:
-        return audit.append(AUDIT_FILE, event)
+        return audit.append(self.audit_file, event)
+
+    def events(self) -> list[dict]:
+        return audit.read_log(self.audit_file)
 
 
 # ---------------------------------------------------------------------------
@@ -150,65 +218,90 @@ def menu_redteam(s: GovState) -> None:
             return
 
 
+def _run_live(runner, subset: list[dict], codes: list[str], cid: str) -> list[dict]:
+    """Run the model. Passes ``candidate``/``split`` when the runner accepts them."""
+    try:
+        return list(runner.run_split(subset, reps=3, defences=tuple(codes),
+                                     candidate=cid, split="test"))
+    except TypeError as e:
+        if "unexpected keyword" not in str(e):
+            raise
+        return list(runner.run_split(subset, reps=3, defences=tuple(codes)))
+
+
 def redteam_run(s: GovState) -> None:
     cid = ask("Candidate id", s.next_candidate_id())
     submitted_by = ask("Submitted by (engineer)", "tom")
     raw = ask("Defences ON (comma, e.g. D2 or D1,D2,D3; blank = none)", "")
     codes = [d.strip().upper() for d in raw.split(",") if d.strip()]
-    live = choose("Run mode", ["DEMO (offline, deterministic)", "LIVE (real Ollama model)"]) == 2
+    live = choose("Run mode", ["DEMO (offline, scripted traces)", "LIVE (real Ollama model)"]) == 2
 
-    print(f"\nRunning {cid}  defences={codes or 'none'}  mode={'LIVE' if live else 'DEMO'} ...")
+    print(f"\nRunning {cid}  defences={codes or 'none'}  mode={LIVE if live else SCRIPTED} ...")
     if live:
         from lab import runner
         sample = int(ask("Sample size per split (LIVE is slow)", "8") or "8")
-        subset = s.test[:sample] + [t for t in s.test if t["kind"] == "benign"][:sample]
-        traces = list(runner.run_split(subset, reps=3, defences=tuple(codes)))
+        attacks = [t for t in s.test if t["kind"] == "attack"][:sample]
+        benign = [t for t in s.test if t["kind"] == "benign"][:sample]
+        traces = _run_live(runner, attacks + benign, codes, cid)
         digest = runner.model_digest()
+        mode = LIVE
+        source = (f"live: {agent.MODEL} {digest or '(digest unknown)'}; "
+                  f"{len(attacks)} attack + {len(benign)} benign tests x 3 reps")
     else:
         traces = demo.demo_traces(s.test)
         if codes:
             traces = defences.replay(traces, s.rules, codes)
-        digest = "sha256:845dbda0..."
+        digest = SCRIPTED_DIGEST
+        mode, source = SCRIPTED, SCRIPTED_SOURCE
 
-    # Persist traces + a human-readable runs.csv, and compute the summary.
+    _save_candidate(s, cid, submitted_by, codes, traces, digest, mode, source)
+    rec = s.candidates[cid]
+    print(f"\n{result_line(cid, rec)}")
+    print(source_line(rec))
+    print(f"  evidence in {_rel(s.work / cid)}/")
+    pause()
+
+
+def _save_candidate(s: GovState, cid: str, submitted_by: str, codes: list[str],
+                    traces: list[dict], digest: str, mode: str, source: str) -> None:
+    """Persist traces + runs.csv, fingerprint and summary; log the submit."""
     runs = metrics.build_runs_frame(traces, s.rules, s.tests_by_id)
-    (WORK / cid).mkdir(parents=True, exist_ok=True)
+    (s.work / cid).mkdir(parents=True, exist_ok=True)
     s.traces_path(cid).write_text(json.dumps(traces, indent=2))
-    runs.to_csv(WORK / cid / "runs.csv", index=False)
+    runs.to_csv(s.work / cid / "runs.csv", index=False)
     summary = gate.summarise(runs)
 
     fp = candidate.fingerprint(
         cid, submitted_by=submitted_by, model=agent.MODEL, model_digest=digest,
-        system_prompt=agent.SYSTEM_PROMPT,
-        tools=["read_doc", "query_assets", "create_ticket"], defences=codes,
+        system_prompt=agent.SYSTEM_PROMPT, tools=TOOLS, defences=codes,
         rules_text=world.RULES_PATH.read_text(), test_set_text=corpus.TEST_PATH.read_text(),
     )
-    candidate.save(fp, WORK / "candidates")
+    candidate.save(fp, s.work / "candidates")
 
     s.candidates[cid] = {
-        "submitted_by": submitted_by, "defences": codes,
+        "submitted_by": submitted_by, "defences": codes, "mode": mode, "source": source,
         "identity_hash": fp.identity_hash(), "summary": summary,
         "decision": None, "created_at": datetime.now(timezone.utc).isoformat(),
     }
     s.save_candidates()
-    s.log({"event": "submit", "candidate_id": cid, "by": submitted_by, "defences": codes})
-
-    print(f"\n{cid}: ASR {summary['asr']:.1%} "
-          f"({summary['attack_violations']}/{summary['attack_runs']}), "
-          f"benign {summary['benign_rate']:.0%} ({summary['benign_n']} runs). "
-          f"Evidence in governance_out/{cid}/")
-    pause()
+    event = {"event": "submit", "candidate_id": cid, "by": submitted_by, "defences": codes,
+             "mode": mode, "source": source, "identity_hash": fp.identity_hash()}
+    if mode == SCRIPTED:
+        event["scripted"] = True
+    s.log(event)
 
 
 def list_candidates(s: GovState) -> None:
     if not s.candidates:
         print("  (no candidates yet -- run a red-team test first)")
         return
-    print(f"\n  {'id':<8}{'by':<8}{'defences':<12}{'ASR':>7}  {'decision'}")
+    print(f"\n  {'id':<8}{'by':<8}{'defences':<12}{'mode':<10}{'ASR':>7}  decision")
     for cid, rec in s.candidates.items():
         asr = f"{rec['summary']['asr']:.1%}" if rec.get("summary") else "-"
         print(f"  {cid:<8}{rec['submitted_by']:<8}"
-              f"{(','.join(rec['defences']) or 'none'):<12}{asr:>7}  {rec.get('decision') or '(none)'}")
+              f"{(','.join(rec['defences']) or 'none'):<12}{mode_of(rec):<10}{asr:>7}  "
+              f"{rec.get('decision') or '(none)'}")
+        print(f"  {'':<8}{source_line(rec).strip()}")
 
 
 def pick_candidate(s: GovState, prompt: str = "Candidate id") -> str | None:
@@ -261,8 +354,10 @@ def gov_verdict(s: GovState) -> None:
     cid = pick_candidate(s)
     if not cid:
         return pause()
+    rec = s.candidates[cid]
     print()
-    print(gate.report_text(cid, _verdict_for(s, cid)))
+    print(tag_numbers(gate.report_text(cid, _verdict_for(s, cid)), rec))
+    print(source_line(rec))
     pause()
 
 
@@ -272,7 +367,8 @@ def gov_decide(s: GovState) -> None:
         return pause()
     rec = s.candidates[cid]
     verdict = _verdict_for(s, cid)
-    print(f"\n{cid} verdict: {verdict.status}  (submitted by {rec['submitted_by']})")
+    print(f"\n{cid} verdict: {verdict.status} {mode_label(rec)}  (submitted by {rec['submitted_by']})")
+    print(source_line(rec))
 
     act = choose("Decision", ["Approve", "Block", "Override"])
     action = {1: decision.APPROVE, 2: decision.BLOCK, 3: decision.OVERRIDE}.get(act)
@@ -292,10 +388,11 @@ def gov_decide(s: GovState) -> None:
                "action": action, "detail": str(e)})
         return pause()
 
+    ev["mode"] = mode_of(rec)
     s.log(ev)
     rec["decision"] = action
     s.save_candidates()
-    print(f"\nLogged: {action} on {cid} by {reviewer}.")
+    print(f"\nLogged: {action} on {cid} {mode_label(rec)} by {reviewer}.")
     pause()
 
 
@@ -324,7 +421,7 @@ def gov_roles(s: GovState) -> None:
 
 
 def gov_view_log(s: GovState) -> None:
-    entries = audit.read_log(AUDIT_FILE)
+    entries = s.events()
     if not entries:
         print("  (audit log empty)")
         return pause()
@@ -332,13 +429,14 @@ def gov_view_log(s: GovState) -> None:
     for e in entries:
         extra = e.get("decision") or e.get("action") or e.get("verdict") or ""
         who = e.get("reviewer") or e.get("by") or e.get("actor") or ""
+        marker = "  [scripted]" if e.get("scripted") else ""
         print(f"  #{e['seq']:<3}{e.get('time','')[:19]:<21}{e['event']:<17}"
-              f"{e.get('candidate_id',''):<8}{extra:<9}{who}")
+              f"{e.get('candidate_id',''):<8}{extra:<9}{who}{marker}")
     pause()
 
 
 def gov_verify_log(s: GovState) -> None:
-    check = audit.verify_log(AUDIT_FILE)
+    check = audit.verify_log(s.audit_file)
     print(f"\n{check.detail}")
     if check.ok:
         print("Chain intact. ✔")
@@ -375,7 +473,9 @@ def menu_assurance(s: GovState) -> None:
             print("  (no stored runs for that candidate)")
             pause()
             continue
+        rec = s.candidates[cid]
         reg = _register_for(s, cid, runs)
+        print(f"\n{cid} {mode_label(rec)} -- {rec.get('source') or 'source unknown'}")
         if c == 1:
             print("\n" + risks.to_markdown(reg))
         elif c == 2:
@@ -392,12 +492,9 @@ def menu_assurance(s: GovState) -> None:
         elif c == 5:
             assurance_thread(s, cid, runs, reg)
         elif c == 6:
-            s_asr = s.candidates[cid]["summary"]["asr"]
-            print("\n" + summary_page.to_markdown(
-                summary_page.build_summary(reg, audit.read_log(AUDIT_FILE), current_asr=s_asr)))
+            print("\n" + manager_summary_text(s, cid, reg))
         elif c == 7:
-            fp = candidate.load(WORK / "candidates" / f"{cid}.json")
-            print("\n" + inventory.to_markdown(inventory.build_card(fp, s.policy)))
+            print("\n" + inventory_text(s, cid))
         elif c == 8:
             write_reports(s, cid, runs, reg)
         pause()
@@ -419,25 +516,41 @@ def assurance_thread(s: GovState, cid: str, runs: pd.DataFrame, reg) -> None:
     default = leaked.iloc[0]["test_id"] if not leaked.empty else "ATK-0021"
     finding = ask("Finding id", default)
     tickets = risks.fix_tickets(reg)
-    tr = thread.build_thread(finding, runs, reg, tickets, audit.read_log(AUDIT_FILE), retest_candidate=cid)
+    tr = thread.build_thread(finding, runs, reg, tickets, s.events(), retest_candidate=cid)
     print("\n" + thread.to_markdown(tr))
 
 
+def manager_summary_text(s: GovState, cid: str, reg) -> str:
+    """The one-page view, every number labelled with the candidate's run mode."""
+    rec = s.candidates[cid]
+    md = summary_page.to_markdown(
+        summary_page.build_summary(reg, s.events(), current_asr=rec["summary"]["asr"]))
+    return tag_numbers(md, rec) + "\n" + source_line(rec)
+
+
+def inventory_text(s: GovState, cid: str) -> str:
+    rec = s.candidates[cid]
+    fp = candidate.load(s.fingerprint_path(cid))
+    card = inventory.build_card(fp, s.policy)
+    card["run_mode"] = mode_of(rec)
+    card["source"] = rec.get("source") or "unknown"
+    return tag_numbers(inventory.to_markdown(card), rec, every=True)
+
+
 def write_reports(s: GovState, cid: str, runs: pd.DataFrame, reg) -> None:
-    out = WORK / cid
+    out = s.work / cid
     out.mkdir(parents=True, exist_ok=True)
-    fp = candidate.load(WORK / "candidates" / f"{cid}.json")
-    s_asr = s.candidates[cid]["summary"]["asr"]
+    rec = s.candidates[cid]
+    banner = f"_Run mode: {mode_of(rec)} -- {rec.get('source') or 'source unknown'}_\n\n"
     files = {
-        "inventory.md": inventory.to_markdown(inventory.build_card(fp, s.policy)),
+        "inventory.md": inventory_text(s, cid),
         "risk_register.md": risks.to_markdown(reg),
         "evidence_register.md": evidence.to_markdown(evidence.build_register(reg, retest_candidate=cid)),
-        "summary.md": summary_page.to_markdown(
-            summary_page.build_summary(reg, audit.read_log(AUDIT_FILE), current_asr=s_asr)),
+        "summary.md": manager_summary_text(s, cid, reg),
     }
     for name, text in files.items():
-        (out / name).write_text(text + "\n", encoding="utf-8")
-    print(f"\nWrote {', '.join(files)} to governance_out/{cid}/")
+        (out / name).write_text(banner + text + "\n", encoding="utf-8")
+    print(f"\nWrote {', '.join(files)} to {_rel(out)}/")
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +561,7 @@ def main() -> None:
     s = GovState()
     print("=" * 64)
     print(" Agent Release Gate  --  sandbox lab, all data synthetic")
-    print(f" workspace: governance_out/   test split: {len(s.test)} records")
+    print(f" workspace: {_rel(s.work)}/   test split: {len(s.test)} records")
     print("=" * 64)
     while True:
         c = choose("\n== MAIN MENU ==", [
