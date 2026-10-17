@@ -25,4 +25,4 @@ def load_policy(path: Path | str = POLICY_PATH) -> dict:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
 
-__all__ = ["candidate", "gate", "decision", "audit", "load_policy", "POLICY_PATH"]
+__all__ = ["candidate", "gate", "decision", "roles", "audit", "load_policy", "POLICY_PATH"]

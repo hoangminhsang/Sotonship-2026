@@ -175,6 +175,21 @@ it — so the before/after drop is real. Run a defended study live with
 Walk the whole thing in **`notebooks/release_gate_demo.ipynb`** (offline and
 deterministic by default; set `LIVE = True` for real `qwen2.5:7b-instruct` runs).
 
+### Run it as one menu-driven program
+
+```bash
+.venv/bin/python -m lab.app
+```
+
+A text menu ties the three parts together — **1. Red team** (test a candidate
+and produce the evidence), **2. Governance** (gate verdict, Approve/Block/
+Override, manage roles, view/verify the audit log), **3. Assurance** (risk
+register, control mapping, evidence, traceability, manager summary, write reports
+to markdown). State persists under `governance_out/` so candidates, decisions,
+role edits and the hash-chained log survive between actions; delete that folder
+to start fresh. Red-team runs default to DEMO (offline, deterministic) with a
+LIVE option that drives the real model.
+
 The notebook is thin: it imports from `lab/`, runs, and narrates. All logic
 lives in the package so it is unit-testable and two people can edit different
 modules without merge pain.
