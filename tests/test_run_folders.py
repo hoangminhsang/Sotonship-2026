@@ -251,21 +251,26 @@ def test_governance_accepts_run_folder(stub, tmp_path, monkeypatch):
     fp = json.loads((out / "RC-001.json").read_text())
     assert fp["model_digest"] == "sha256:stub"
     assert fp["test_set_sha256"] == _sha(before / "records.jsonl")
-    ev = (out / "evidence_register.md").read_text()
-    assert "results/RC-002/runs.csv" not in ev
-    assert (out / "RC-002" / "runs.csv").is_file()
-    assert str(out / "RC-002" / "runs.csv") in ev
+    for cid in ("RC-002", "RC-003"):  # replays of the saved run, written under --out
+        ev = (out / f"evidence_register_{cid}.md").read_text()
+        assert f"results/{cid}/runs.csv" not in ev
+        assert (out / cid / "runs.csv").is_file()
+        assert str(out / cid / "runs.csv") in ev
 
 
-def test_governance_uses_saved_after_run(stub, tmp_path):
+def test_governance_uses_saved_after_runs(stub, tmp_path):
     _run(stub, _records(), reps=1, candidate="RC-001", split="test", run_id="b")
     _run(stub, _records(), reps=1, candidate="RC-002", split="test", run_id="a", defences=("D2",))
+    _run(stub, _records(), reps=1, candidate="RC-003", split="test", run_id="a3", defences=("D2", "D3"))
     gov = _load_governance()
     out = tmp_path / "gov"
     assert gov.main(["--run", str(stub.root / "b"), "--run-after", str(stub.root / "a"),
-                     "--out", str(out), "--no-tamper-demo"]) == 0
-    ev = (out / "evidence_register.md").read_text()
-    assert str(stub.root / "a" / "runs.csv") in ev
+                     "--run-after-d3", str(stub.root / "a3"), "--out", str(out), "--no-tamper-demo"]) == 0
+    assert str(stub.root / "a" / "runs.csv") in (out / "evidence_register_RC-002.md").read_text()
+    assert str(stub.root / "a3" / "runs.csv") in (out / "evidence_register_RC-003.md").read_text()
+    # A D2-only folder is refused as the D2+D3 candidate.
+    assert gov.main(["--run", str(stub.root / "b"), "--run-after-d3", str(stub.root / "a"),
+                     "--out", str(tmp_path / "x"), "--no-tamper-demo"]) == 2
 
 
 def test_governance_run_with_live_is_refused(tmp_path, capsys):

@@ -17,9 +17,12 @@ The whole flow, end to end:
     -> draft fix tickets, build the AI inventory card and evidence register
   RC-002  the same agent with defence D2 enforced
     -> fingerprint it (the fingerprint changes, so the old decision is void)
-    -> gate it again                                   -> PASS
+    -> gate it again: leaks stop, unrequested P1 tickets still land -> FAIL
+    -> the reviewer BLOCKs it again; only the risks D2 covers close
+  RC-003  D2 + D3 enforced
+    -> fingerprint, gate                               -> PASS
     -> record submit + verdict; the reviewer APPROVEs it
-    -> re-test closes the risks the fix covers (an honest "Mitigated")
+    -> re-test closes the remaining risk (an honest "Mitigated")
     -> stitch one finding start-to-finish (traceability)
     -> build the one-page manager summary
     -> prove the audit log is tamper-evident
@@ -208,14 +211,20 @@ def _fmt_summary(s: dict) -> str:
 # --------------------------------------------------------------------------- #
 def run(args: argparse.Namespace) -> int:
     # Saved runs are loaded and hash-verified before anything is written.
-    saved_before = saved_after = None
+    saved_before = None
+    saved_retests: dict[str, tuple] = {"RC-002": (None, None), "RC-003": (None, None)}
     if args.run:
         try:
             saved_before = load_saved_run(args.run, ())
-            if args.run_after:
-                saved_after = load_saved_run(args.run_after, ("D2",))
-                if saved_after[0].get("records_sha256") != saved_before[0].get("records_sha256"):
-                    raise ValueError("--run and --run-after were not run on the same records")
+            for cid, codes, flag, path in (
+                ("RC-002", ("D2",), "--run-after", args.run_after),
+                ("RC-003", ("D2", "D3"), "--run-after-d3", args.run_after_d3),
+            ):
+                if path:
+                    saved = load_saved_run(path, codes)
+                    if saved[0].get("records_sha256") != saved_before[0].get("records_sha256"):
+                        raise ValueError(f"--run and {flag} were not run on the same records")
+                    saved_retests[cid] = (saved, path)
         except (run_folder.RunFolderError, ValueError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -374,102 +383,130 @@ def run(args: argparse.Namespace) -> int:
         rep.say(f"  {line}")
 
     # ----------------------------------------------------------------------- #
-    # RC-002: the same agent with defence D2.
+    # Re-tests: RC-002 (D2) then RC-003 (D2 + D3). Each one is fingerprinted,
+    # gated, decided by the reviewer, and closes only the risks its own
+    # controls cover -- D2 alone never proves D3.
     # ----------------------------------------------------------------------- #
-    rep.section("5. RC-002 — defence D2 enforced (re-test)")
-    fp_002 = candidate.fingerprint(
-        "RC-002",
-        submitted_by=args.engineer,
-        model=fp_001.model,
-        model_digest=fp_001.model_digest,
-        system_prompt=prompt_text,
-        tools=tools,
-        defences=["D2"],
-        rules_text=rules_text,
-        test_set_text=test_set_text,
-    )
-    candidate.save(fp_002, out_dir)
-    rep.written.append(out_dir / "RC-002.json")
-    rep.say(f"Fingerprint changed vs RC-001: {fp_001.identity_hash() != fp_002.identity_hash()}")
-    rep.say("(so RC-001's decision does not carry over — the re-test rule forces a fresh review)")
-
-    runs_after, proof_after = run_candidate(
-        tests,
-        tests_by_id,
-        rules,
-        live=args.live,
-        sample=args.sample,
-        reps=args.reps,
-        temperature=args.temperature,
-        defence_codes=("D2",),
-        candidate_id="RC-002",
-        saved=saved_after,
-        saved_dir=Path(args.run_after) if args.run_after else None,
-        # A saved RC-001 without a saved D2 run: replay D2 over the same traces.
-        replay_traces=saved_before[2] if (saved_before is not None and saved_after is None) else None,
-        out_dir=out_dir,
-    )
-    summary_after = gate.summarise(runs_after)
-    rep.say("\n" + _fmt_summary(summary_after))
-    if saved_before is not None and saved_after is None:
-        rep.say("(RC-002 is a deterministic D2 replay of the saved RC-001 traces, not a measured D2 run; "
-                "pass --run-after <folder> to gate a saved D2 run)")
-    rep.say(f"Runs file: {proof_after}")
-    rep.say(
-        f"\nAttack success: RC-001 {summary_before['asr']:.1%} -> RC-002 {summary_after['asr']:.1%}"
-        f"   |   benign: {summary_before['benign_rate']:.0%} -> {summary_after['benign_rate']:.0%}"
-    )
-
-    rep.section("6. Gate verdict for RC-002, then approve")
-    verdict_002 = gate.evaluate(summary_after, policy, last_approved_asr=None)
-    report_002 = gate.report_text("RC-002", verdict_002)
-    rep.say(report_002)
-    rep.write("gate_RC-002.txt", report_002)
-
-    audit.append(audit_path, {"event": "submit", "candidate_id": "RC-002", "by": args.engineer, "defences": ["D2"]})
-    audit.append(audit_path, {"event": "verdict", "candidate_id": "RC-002", "verdict": verdict_002.status})
-    if verdict_002.passed:
-        ev_app = decision.decide(
-            candidate_id="RC-002", submitted_by=args.engineer, verdict_passed=verdict_002.passed,
-            policy=policy, reviewer=args.reviewer, action="APPROVE",
+    retests = [
+        ("RC-002", ("D2",), "--run-after",
+         "D2 stops the leaks, but unrequested P1 tickets still land. Add D3."),
+        ("RC-003", ("D2", "D3"), "--run-after-d3",
+         "Still above the policy limit with D2 + D3; needs more work."),
+    ]
+    summaries = {"RC-001": summary_before}
+    verdicts = {"RC-001": verdict_001}
+    proofs = {"RC-001": proof_before}
+    prev_cid, prev_fp, prev_summary, prev_register = "RC-001", fp_001, summary_before, register_before
+    register_final, ev_md_final, last_cid = register_before, "", "RC-001"
+    last_approved_asr: float | None = None
+    section = 5
+    for cid, codes, flag, block_reason in retests:
+        label = "+".join(codes)
+        rep.section(f"{section}. {cid} — defences {label} enforced (re-test)")
+        fp = candidate.fingerprint(
+            cid,
+            submitted_by=args.engineer,
+            model=fp_001.model,
+            model_digest=fp_001.model_digest,
+            system_prompt=prompt_text,
+            tools=tools,
+            defences=list(codes),
+            rules_text=rules_text,
+            test_set_text=test_set_text,
         )
-        audit.append(audit_path, ev_app)
-        rep.say(f"\nLogged decision: {ev_app['decision']} RC-002 by {ev_app['reviewer']}")
-    else:
-        rep.say("\nRC-002 did not pass the gate; no approval logged.")
+        candidate.save(fp, out_dir)
+        rep.written.append(out_dir / f"{cid}.json")
+        rep.say(f"Fingerprint changed vs {prev_cid}: {prev_fp.identity_hash() != fp.identity_hash()}")
+        rep.say(f"(so {prev_cid}'s decision does not carry over — the re-test rule forces a fresh review)")
 
-    # ----------------------------------------------------------------------- #
-    # Assurance after the fix: close risks, evidence register.
-    # ----------------------------------------------------------------------- #
-    rep.section("7. Assurance — risks after the fix, evidence register")
-    prior = risks.prior_from(register_before)  # carries whether each risk had landed
-    register_after = risks.build_register(runs_after, policy, control_map, prior=prior)
-    reg_after_md = risks.to_markdown(register_after)
-    rep.write("risk_register_after.md", reg_after_md)
-    rep.say(reg_after_md)
+        saved, saved_path = saved_retests[cid]
+        runs, proof = run_candidate(
+            tests,
+            tests_by_id,
+            rules,
+            live=args.live,
+            sample=args.sample,
+            reps=args.reps,
+            temperature=args.temperature,
+            defence_codes=codes,
+            candidate_id=cid,
+            saved=saved,
+            saved_dir=Path(saved_path) if saved_path else None,
+            # A saved RC-001 without a saved re-test run: replay the defences over its traces.
+            replay_traces=saved_before[2] if (saved_before is not None and saved is None) else None,
+            out_dir=out_dir,
+        )
+        summary = gate.summarise(runs)
+        rep.say("\n" + _fmt_summary(summary))
+        if saved_before is not None and saved is None:
+            rep.say(f"({cid} is a deterministic {label} replay of the saved RC-001 traces, not a measured "
+                    f"run; pass {flag} <folder> to gate a saved {label} run)")
+        rep.say(f"Runs file: {proof}")
+        rep.say(
+            f"\nAttack success: {prev_cid} {prev_summary['asr']:.1%} -> {cid} {summary['asr']:.1%}"
+            f"   |   benign: {prev_summary['benign_rate']:.0%} -> {summary['benign_rate']:.0%}"
+        )
 
-    measured = {
-        "D2": f"{summary_after['attack_violations']}/{summary_after['attack_runs']} landings on the test set"
-    }
-    ev_rows = evidence.build_register(
-        register_after, retest_candidate="RC-002", results=measured, proof_file=str(proof_after),
-    )
-    ev_md = evidence.to_markdown(ev_rows)
-    rep.write("evidence_register.md", ev_md)
-    rep.say("\nEvidence register:\n" + ev_md)
+        section += 1
+        rep.section(f"{section}. Gate verdict for {cid}, then the reviewer decides")
+        verdict = gate.evaluate(summary, policy, last_approved_asr=last_approved_asr)
+        report = gate.report_text(cid, verdict)
+        rep.say(report)
+        rep.write(f"gate_{cid}.txt", report)
+
+        audit.append(audit_path, {"event": "submit", "candidate_id": cid, "by": args.engineer, "defences": list(codes)})
+        audit.append(audit_path, {"event": "verdict", "candidate_id": cid, "verdict": verdict.status})
+        if verdict.passed:
+            ev = decision.decide(
+                candidate_id=cid, submitted_by=args.engineer, verdict_passed=True,
+                policy=policy, reviewer=args.reviewer, action="APPROVE",
+            )
+            last_approved_asr = summary["asr"]
+            rep.say(f"\nLogged decision: {ev['decision']} {cid} by {ev['reviewer']}")
+        else:
+            ev = decision.decide(
+                candidate_id=cid, submitted_by=args.engineer, verdict_passed=False,
+                policy=policy, reviewer=args.reviewer, action="BLOCK", reason=block_reason,
+            )
+            rep.say(f"\nLogged decision: {ev['decision']} {cid} by {ev['reviewer']} — \"{block_reason}\"")
+        audit.append(audit_path, ev)
+
+        section += 1
+        rep.section(f"{section}. Assurance after {cid} — risk register, evidence register")
+        prior = risks.prior_from(prev_register)  # carries whether each risk had landed
+        register = risks.build_register(runs, policy, control_map, prior=prior, defences=codes)
+        reg_md = risks.to_markdown(register)
+        rep.write(f"risk_register_{cid}.md", reg_md)
+        rep.say(reg_md)
+
+        measured = evidence.control_results(runs, [r.control for r in register if r.control], defences=codes)
+        ev_rows = evidence.build_register(register, retest_candidate=cid, results=measured, proof_file=str(proof))
+        ev_md = evidence.to_markdown(ev_rows)
+        rep.write(f"evidence_register_{cid}.md", ev_md)
+        rep.say("\nEvidence register:\n" + ev_md)
+
+        summaries[cid], verdicts[cid], proofs[cid] = summary, verdict, proof
+        prev_cid, prev_fp, prev_summary, prev_register = cid, fp, summary, register
+        register_final, ev_md_final, last_cid = register, ev_md, cid
+        section += 1
+
+    # The final state keeps the file names earlier readers expect.
+    rep.write("risk_register_after.md", risks.to_markdown(register_final))
+    rep.write("evidence_register.md", ev_md_final)
+    summary_final = summaries[last_cid]
 
     # ----------------------------------------------------------------------- #
     # Traceability: one finding, start to finish.
     # ----------------------------------------------------------------------- #
-    rep.section("8. Traceability — one finding, start to finish")
+    rep.section(f"{section}. Traceability — one finding, start to finish")
     leaked = runs_before[
         (runs_before["kind"] == "attack")
         & runs_before["violation_classes"].str.contains("V_exfiltration", na=False)
     ]
     finding_id = leaked.iloc[0]["test_id"] if not leaked.empty else "ATK-0021"
     tr = thread.build_thread(
-        finding_id, runs_before, register_after, tickets, audit.read_log(audit_path),
-        retest_candidate="RC-002",
+        finding_id, runs_before, register_final, tickets, audit.read_log(audit_path),
+        retest_candidate=last_cid,
     )
     tr_md = thread.to_markdown(tr)
     rep.write("traceability.md", tr_md)
@@ -478,9 +515,10 @@ def run(args: argparse.Namespace) -> int:
     # ----------------------------------------------------------------------- #
     # Manager summary.
     # ----------------------------------------------------------------------- #
-    rep.section("9. Manager summary")
+    section += 1
+    rep.section(f"{section}. Manager summary")
     s = summary_page.build_summary(
-        register_after, audit.read_log(audit_path), current_asr=summary_after["asr"]
+        register_final, audit.read_log(audit_path), current_asr=summary_final["asr"]
     )
     s_md = summary_page.to_markdown(s)
     rep.write("manager_summary.md", s_md)
@@ -490,7 +528,8 @@ def run(args: argparse.Namespace) -> int:
     # Tamper-evidence: verify the real log, then prove a forged copy is caught.
     # The real audit_log.jsonl is left intact and verifiable.
     # ----------------------------------------------------------------------- #
-    rep.section("10. The audit log is tamper-evident")
+    section += 1
+    rep.section(f"{section}. The audit log is tamper-evident")
     real = audit.verify_log(audit_path)
     rep.say(f"Real log      : {real}")
 
@@ -518,16 +557,19 @@ def run(args: argparse.Namespace) -> int:
     for p in rep.written:
         rep.say(f"  {p}")
     rep.say(f"  {audit_path}")
-    rep.say(f"  {proof_before}  (RC-001 runs)")
-    rep.say(f"  {proof_after}  (RC-002 runs)")
+    for cid, proof in proofs.items():
+        rep.say(f"  {proof}  ({cid} runs)")
 
     rep.say("")
-    rep.say(f"RC-001 verdict: {verdict_001.status}  ({len(verdict_001.failures())} reason(s))")
-    rep.say(f"RC-002 verdict: {verdict_002.status}")
-    rep.say(
-        f"Headline: attack success {summary_before['asr']:.1%} -> {summary_after['asr']:.1%}, "
-        f"benign {summary_before['benign_rate']:.0%} -> {summary_after['benign_rate']:.0%}"
+    for cid, verdict in verdicts.items():
+        n_fail = len(verdict.failures())
+        rep.say(f"{cid} verdict: {verdict.status}" + (f"  ({n_fail} reason(s))" if n_fail else ""))
+    asr_chain = " -> ".join(
+        [f"{summary_before['asr']:.1%}"]
+        + [f"{summaries[cid]['asr']:.1%} ({'+'.join(codes)})" for cid, codes, _, _ in retests]
     )
+    benign_chain = " -> ".join(f"{summaries[cid]['benign_rate']:.0%}" for cid in summaries)
+    rep.say(f"Headline: attack success {asr_chain}, benign {benign_chain}")
     return 0
 
 
@@ -562,6 +604,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-after", default=None, metavar="RUN_DIR",
                    help="with --run: a saved D2 run folder to use as RC-002; without it RC-002 is a "
                         "D2 replay of --run")
+    p.add_argument("--run-after-d3", default=None, metavar="RUN_DIR",
+                   help="with --run: a saved D2+D3 run folder to use as RC-003; without it RC-003 is a "
+                        "D2+D3 replay of --run")
     return p
 
 
@@ -591,8 +636,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.run and args.live:
         print("error: --run gates a saved run; it cannot be combined with --live", file=sys.stderr)
         return 2
-    if args.run_after and not args.run:
-        print("error: --run-after needs --run", file=sys.stderr)
+    if (args.run_after or args.run_after_d3) and not args.run:
+        print("error: --run-after / --run-after-d3 need --run", file=sys.stderr)
         return 2
     return run(args)
 

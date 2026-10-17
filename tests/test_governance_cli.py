@@ -73,6 +73,59 @@ def test_self_review_refusal_is_logged(gov, tmp_path):
     assert refused[0]["detail"]
 
 
+def _gate_counts(text: str) -> dict:
+    """Pull 'x/y' counts and the verdict out of a gate report."""
+    import re
+
+    asr = re.search(r"attack_success_rate.*?\((\d+)/(\d+)", text)
+    benign = re.search(r"min_benign_task_success.*?\((\d+)/(\d+)", text)
+    verdict = re.search(r"VERDICT: (\w+)", text).group(1)
+    return {"asr": f"{asr.group(1)}/{asr.group(2)}", "benign": f"{benign.group(1)}/{benign.group(2)}",
+            "verdict": verdict}
+
+
+def test_demo_three_step_story_numbers(gov, tmp_path, capsys):
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    got = {cid: _gate_counts((out / f"gate_{cid}.txt").read_text()) for cid in ("RC-001", "RC-002", "RC-003")}
+    assert got["RC-001"] == {"asr": "33/78", "benign": "60/60", "verdict": "FAIL"}
+    assert got["RC-002"] == {"asr": "15/78", "benign": "60/60", "verdict": "FAIL"}   # D2: leaks stop, P1 misuse lands
+    assert got["RC-003"] == {"asr": "0/78", "benign": "60/60", "verdict": "PASS"}    # D2+D3
+    stdout = capsys.readouterr().out
+    assert "attack success 42.3% -> 19.2% (D2) -> 0.0% (D2+D3)" in stdout
+    assert stdout.count("TAMPERING DETECTED") == 0  # --no-tamper-demo honoured; the demo runs once otherwise
+
+
+def test_demo_evidence_registers_name_what_each_control_proves(gov, tmp_path):
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    rc2 = (out / "evidence_register_RC-002.md").read_text()
+    assert "0/78 runs with V_read_restricted or V_exfiltration on the test set" in rc2
+    assert "not enforced in this candidate (defences: D2): 15/78 runs with V_tool_misuse" in rc2
+    rc3 = (out / "evidence_register_RC-003.md").read_text()
+    assert "0/78 runs with V_tool_misuse on the test set" in rc3
+    assert (out / "evidence_register.md").read_text() == rc3   # the final register keeps its old name
+    for cid in ("RC-002", "RC-003"):
+        assert str(out / cid / "runs.csv") in (out / f"evidence_register_{cid}.md").read_text()
+
+
+def test_demo_decisions_and_risk_status_per_candidate(gov, tmp_path):
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    events = audit.read_log(out / "audit_log.jsonl")
+    decisions = [(e["candidate_id"], e["decision"]) for e in events if e.get("decision")]
+    assert decisions == [("RC-001", "BLOCK"), ("RC-002", "BLOCK"), ("RC-003", "APPROVE")]
+    assert audit.verify_log(out / "audit_log.jsonl").ok
+    rc2 = (out / "risk_register_RC-002.md").read_text()
+    assert "R-03" in rc2 and "Open" in rc2.split("R-03")[1].split("\n")[0]   # tool misuse still open under D2
+    rc3 = (out / "risk_register_RC-003.md").read_text()
+    assert "Open" not in rc3 and "Re-opened" not in rc3
+    assert (out / "risk_register_after.md").read_text() == rc3
+    tamper = tmp_path / "gov2"
+    assert gov.main(["--out", str(tamper)]) == 0
+    assert (tamper / "audit_log_tampered_demo.jsonl").is_file()
+
+
 def test_help_text_states_real_defaults(gov):
     import re
 
