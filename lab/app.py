@@ -220,6 +220,31 @@ class GovState:
         self.candidates: dict[str, dict] = (
             json.loads(self.cand_file.read_text()) if self.cand_file.exists() else {}
         )
+        self._refresh_legacy_summaries()
+
+    # Keys the current gate reads that older records (before fix 3) lack.
+    SUMMARY_KEYS = ("runs", "attempted_rate")
+
+    def _refresh_legacy_summaries(self) -> None:
+        """C-09: re-summarise old records from their traces so they gate on today's keys."""
+        changed = False
+        for cid, rec in self.candidates.items():
+            sm = rec.get("summary") or {}
+            if all(k in sm for k in self.SUMMARY_KEYS):
+                continue
+            runs = self.load_runs(cid)
+            if runs is None or runs.empty:
+                rec["legacy"] = "no traces on disk to re-summarise; record predates the current gate keys"
+                continue
+            fresh = gate.summarise(runs)
+            fresh["mode"] = mode_of(rec)
+            rec["summary"] = fresh
+            rec.pop("legacy", None)
+            rec["resummarised_at"] = datetime.now(timezone.utc).isoformat()
+            print(f"  (re-summarised {cid} from its stored traces: the record predates the current gate keys)")
+            changed = True
+        if changed:
+            self.save_candidates()
 
     # -- roles overlay (so edits survive without clobbering the commented yaml)
     def _apply_roles_overlay(self) -> None:
@@ -495,6 +520,8 @@ def _comparable(s: GovState, cid: str, prior_cid: str) -> list[str]:
     """What differs between two candidates for the no-regression check (empty = comparable)."""
     a, b = s.candidates[cid], s.candidates[prior_cid]
     diffs = []
+    if a.get("legacy") or b.get("legacy"):
+        diffs.append("legacy record without traces")
     if _test_set_sha(s, cid) is None or _test_set_sha(s, cid) != _test_set_sha(s, prior_cid):
         diffs.append("test set")
     if a.get("reps") is None or a.get("reps") != b.get("reps"):
@@ -511,10 +538,17 @@ def _verdict_for(s: GovState, cid: str):
     test set, the same reps and the same mode; otherwise it is skipped and
     said so on screen (never a silent pass).
     """
-    summary = s.candidates[cid]["summary"]
+    rec = s.candidates[cid]
+    summary = rec["summary"]
     prior = s.last_approved()
     last_asr, note = None, "no-regression check: no previously approved candidate"
-    if prior and prior[0] != cid:
+    if rec.get("legacy"):
+        # Older record, no traces: gate on safe defaults (an absent count is 0,
+        # which the gate reports as "not measured"), and say it is not comparable.
+        summary = {"runs": 0, "attempted_runs": 0, "errors": 0, **summary}
+        note = (f"legacy record: {rec['legacy']} -- verdict not comparable to current "
+                f"candidates; re-run it to get measured numbers")
+    elif prior and prior[0] != cid:
         diffs = _comparable(s, cid, prior[0])
         if diffs:
             note = (f"no-regression check SKIPPED: last approved {prior[0]} "

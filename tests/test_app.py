@@ -649,3 +649,38 @@ def test_no_regression_check_only_against_a_comparable_approval(tmp_path, monkey
     v4 = out.split("Candidate RC-004")[1].split("[enter]")[0]
     assert "no_regression_vs_last_approved" in v4 and "RC-003" in v4
     assert any(ln.startswith("  FAIL") and "no_regression" in ln for ln in v4.splitlines())
+
+
+# --------------------------------------------------------------------------- #
+# C-09: candidates saved before fix 3 have no `runs` in their summary; the app
+#       re-summarises them from <cid>/traces.json instead of gating 0/0.
+# --------------------------------------------------------------------------- #
+
+OLD_SUMMARY = {"asr": 0.4230769230769231, "asr_lo": 0.32, "asr_hi": 0.534, "attack_runs": 78,
+               "attack_violations": 33, "benign_rate": 1.0, "benign_n": 60, "errors": 0}
+
+
+def test_legacy_summary_is_resummarised_from_traces(tmp_path, monkeypatch, capsys):
+    from lab import corpus, demo
+    work = tmp_path / "governance_out"
+    (work / "RC-001").mkdir(parents=True)
+    (work / "RC-001" / "traces.json").write_text(
+        json.dumps(demo.demo_traces(corpus.read_jsonl(corpus.TEST_PATH))))
+    old = {"submitted_by": "tom", "defences": [], "mode": "SCRIPTED", "source": "old record",
+           "identity_hash": "sha256:x", "summary": dict(OLD_SUMMARY), "decision": None,
+           "created_at": "2026-10-17T00:00:00+00:00"}
+    (work / "candidates.json").write_text(json.dumps({"RC-001": old, "RC-002": dict(old)}))
+
+    out = run_app(monkeypatch, capsys, work, ["2", "1", "RC-001", "", "1", "RC-002", "", "7", "4"])
+
+    recs = json.loads((work / "candidates.json").read_text())
+    s1 = recs["RC-001"]["summary"]
+    assert s1["runs"] == 138 and "attempted_rate" in s1 and s1["mode"] == "SCRIPTED"
+    assert abs(s1["asr"] - OLD_SUMMARY["asr"]) < 1e-9
+    v1 = out.split("Candidate RC-001")[1].split("[enter]")[0]
+    assert "not measured (0 runs)" not in v1 and "re-summarised" in out
+
+    # RC-002 has no traces: say so on screen, never crash, never show a clean 0/0.
+    v2 = out.split("Candidate RC-002")[1].split("[enter]")[0]
+    assert "no traces" in v2 and "not comparable" in v2
+    assert "bye." in out and "Traceback" not in out
