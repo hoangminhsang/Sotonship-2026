@@ -66,6 +66,49 @@ def read_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in fh if line.strip()]
 
 
+class CorpusMismatch(RuntimeError):
+    """The corpus files on disk differ from what the generator produces."""
+
+
+def _jsonl_bytes(records: list[dict]) -> bytes:
+    return "".join(json.dumps(rec) + "\n" for rec in records).encode("utf-8")
+
+
+def check_matches_generator(
+    seed: int = 7,
+    benign_count: int = 40,
+    test_frac: float = 0.5,
+    dev_path: Path | None = None,
+    test_path: Path | None = None,
+) -> dict[str, str]:
+    """Verify ``corpus/*.jsonl`` equal a fresh generation, without writing anything.
+
+    Returns ``{"dev.jsonl": sha256, "test.jsonl": sha256}`` of the files on disk
+    when they match; raises :class:`CorpusMismatch` naming the differing file(s).
+    """
+    import hashlib
+
+    dev_path = dev_path or DEV_PATH
+    test_path = test_path or TEST_PATH
+    dev, test = split(build_corpus(seed, benign_count), seed, test_frac)
+    hashes: dict[str, str] = {}
+    bad: list[str] = []
+    for path, records in ((dev_path, dev), (test_path, test)):
+        on_disk = path.read_bytes() if path.is_file() else None
+        if on_disk != _jsonl_bytes(records):
+            bad.append(path.name + ("" if on_disk is not None else " (missing)"))
+        else:
+            hashes[path.name] = "sha256:" + hashlib.sha256(on_disk).hexdigest()
+    if bad:
+        raise CorpusMismatch(
+            f"corpus file(s) {bad} differ from the seed-{seed} generator output. "
+            "Saved results point at the committed corpus, so it is not rewritten. "
+            "Decide which corpus is canonical, then regenerate with "
+            "`python -m lab.corpus` on purpose."
+        )
+    return hashes
+
+
 def build_and_write(seed: int = 7, benign_count: int = 40, test_frac: float = 0.5) -> dict:
     """Build the corpus, split it, write both JSONL files, and return sizes."""
     records = build_corpus(seed, benign_count)

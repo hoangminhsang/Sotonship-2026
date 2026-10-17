@@ -36,7 +36,7 @@ from pyrit.models.messages.conversations import construct_response_from_request
 from pyrit.prompt_target import PromptTarget
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
-from lab import agent, oracle, runner, world
+from lab import agent, oracle, run_folder, runner, world
 
 # Metadata keys carried on the PyRIT prompt so the target can rebuild the world.
 META_KEYS = ("test_id", "kind", "goal", "technique", "place", "user_task")
@@ -180,22 +180,44 @@ async def run_record(target: NorthwindAgentTarget, test: dict) -> dict:
 
 
 async def run_split(
-    split_records: list[dict], reps: int = 3, *, temperature: float = 0.2
+    split_records: list[dict],
+    reps: int = 3,
+    *,
+    temperature: float = 0.2,
+    candidate: str = "adhoc",
+    split: str | None = None,
+    runs_root: Path | str | None = None,
+    run_id: str | None = None,
+    digest: str | None = None,
 ) -> Iterator[dict]:
     """Run a whole split through PyRIT, writing one trace per run (like the runner).
 
     Returns the list of traces (async generators are awkward to consume in a
     notebook loop, so this collects and returns).
+
+    Like :func:`lab.runner.run_split`, every call writes into its own locked
+    ``results/runs/<run_id>/`` folder (manifest with the model digest first,
+    one trace per run, CSVs and hashes at lock time) and never deletes or
+    overwrites anything. ``digest`` defaults to a best-effort Ollama lookup.
     """
     await ensure_memory()
     target = NorthwindAgentTarget(temperature=temperature)
-    runner.TRACES.mkdir(parents=True, exist_ok=True)
+    digest = runner.model_digest() if digest is None else digest
+    run_dir = run_folder.create(
+        list(split_records), model=agent.MODEL, model_digest=digest, driver="pyrit",
+        reps=reps, temperature=temperature, seed=None, candidate=candidate,
+        split=split, runs_root=runs_root, run_id=run_id,
+    )
     traces: list[dict] = []
-    for test in split_records:
-        for rep in range(1, reps + 1):
-            trace = await run_record(target, test)
-            trace["rep"] = rep
-            out = runner.TRACES / f"{test['id']}__rep{rep}.json"
-            out.write_text(json.dumps(trace, indent=2), encoding="utf-8")
-            traces.append(trace)
+    try:
+        for test in split_records:
+            for rep in range(1, reps + 1):
+                trace = await run_record(target, test)
+                trace["rep"] = rep
+                trace["run_id"] = run_dir.name
+                trace["model_digest"] = digest
+                run_folder.write_trace(run_dir, trace)
+                traces.append(trace)
+    finally:
+        run_folder.lock_run(run_dir)
     return traces
