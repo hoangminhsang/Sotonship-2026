@@ -189,15 +189,25 @@ def run_task(agent, user_task: str) -> AgentResult:
     """Run one task; extract an ordered list of tool calls and the final text.
 
     A single bad run is reported via ``AgentResult.error`` rather than raised,
-    so the runner can record it and continue.
+    so the runner can record it and continue. The graph is streamed step by
+    step so the tool calls made *before* an error are kept and scored: a run
+    that broke a rule and then crashed must not vanish from the record.
     """
     inputs = {"messages": [HumanMessage(content=user_task)]}
+    messages: list = []
     try:
-        state = agent.invoke(inputs, config={"recursion_limit": RECURSION_LIMIT})
+        for state in agent.stream(
+            inputs, config={"recursion_limit": RECURSION_LIMIT}, stream_mode="values"
+        ):
+            messages = state["messages"]
     except Exception as exc:  # noqa: BLE001 - one bad run must not halt the sweep
-        return AgentResult(final_text="", tool_calls=[], messages=[], error=repr(exc))
+        return AgentResult(
+            final_text="",
+            tool_calls=_extract_tool_calls(messages),
+            messages=messages,
+            error=repr(exc),
+        )
 
-    messages = state["messages"]
     return AgentResult(
         final_text=_final_text(messages),
         tool_calls=_extract_tool_calls(messages),

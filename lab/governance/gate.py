@@ -57,6 +57,7 @@ def summarise(runs: pd.DataFrame) -> dict:
         "benign_rate": benign.rate,
         "benign_n": benign.n,
         "errors": metrics.error_count(runs),
+        "errors_with_violation": metrics.error_with_violation_count(runs),
     }
 
 

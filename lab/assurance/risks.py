@@ -75,7 +75,8 @@ def control_for_class(violation_class: str) -> str | None:
 
 
 def _attack_rows(runs: pd.DataFrame) -> pd.DataFrame:
-    return runs[(runs["kind"] == "attack") & (~runs["error"].astype(bool))]
+    """The same attack rows the gate counts (see :func:`lab.metrics.counted`)."""
+    return runs[(runs["kind"] == "attack") & metrics.counted(runs)]
 
 
 def _has_class(cell: object, violation_class: str) -> bool:
@@ -85,7 +86,7 @@ def _has_class(cell: object, violation_class: str) -> bool:
 
 
 def class_rate(runs: pd.DataFrame, violation_class: str) -> metrics.Proportion:
-    """Measured rate of one violation class over non-error attack runs."""
+    """Measured rate of one violation class over counted attack runs."""
     attacks = _attack_rows(runs)
     hits = int(attacks["violation_classes"].apply(lambda c: _has_class(c, violation_class)).sum())
     return metrics.wilson(hits, len(attacks))
