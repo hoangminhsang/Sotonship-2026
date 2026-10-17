@@ -1,11 +1,14 @@
 """Tests for roles, Approve/Block/Override and the re-test rule."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
 from lab.governance import candidate, decision, load_policy
+
+# A fixed "now" so the expiry rules are deterministic whenever the suite runs.
+NOW = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -16,7 +19,7 @@ def policy() -> dict:
 def _decide(policy, **kw):
     base = dict(
         candidate_id="RC-003", submitted_by="tom", verdict_passed=True,
-        policy=policy, reviewer="sarah", action="APPROVE",
+        policy=policy, reviewer="sarah", action="APPROVE", now=NOW,
     )
     base.update(kw)
     return decision.decide(**base)
@@ -90,6 +93,32 @@ def test_submitter_alias_cannot_approve_own_candidate(policy, alias):
 def test_reviewer_membership_ignores_case_and_spaces(policy):
     event = _decide(policy, reviewer=" Sarah ")
     assert event["decision"] == "APPROVE"
+
+
+# --- Decisions extra: B-04 expiry in the future, B-25 exact format, B-26 action=None
+
+def test_override_expiry_must_be_in_the_future(policy):
+    today = datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc)
+    with pytest.raises(decision.DecisionError, match="future"):  # today is not enough
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r",
+                expiry="2026-10-24", now=today)
+    with pytest.raises(decision.DecisionError, match="future"):  # past
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r",
+                expiry="2026-10-01", now=today)
+    ok = _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r",
+                 expiry="2026-10-25", now=today)
+    assert ok["expiry"] == "2026-10-25"
+
+
+@pytest.mark.parametrize("bad", ["20261024", "2026-1-5", "24/10/2026", "2026-10-24T00:00", "2026-13-01"])
+def test_override_expiry_needs_exact_iso_format(policy, bad):
+    with pytest.raises(decision.DecisionError, match="YYYY-MM-DD"):
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r", expiry=bad)
+
+
+def test_missing_action_is_a_decision_error(policy):
+    with pytest.raises(decision.DecisionError, match="unknown action"):
+        _decide(policy, action=None)
 
 
 def _fp(**kw):

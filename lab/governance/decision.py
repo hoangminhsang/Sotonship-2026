@@ -18,7 +18,12 @@ Pure functions over dicts, so every rule is unit-testable with no model.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
+
+# An expiry must be written exactly as YYYY-MM-DD (date.fromisoformat alone
+# also accepts "20261024", which is too easy to mistype).
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 APPROVE = "APPROVE"
 BLOCK = "BLOCK"
@@ -65,11 +70,13 @@ def decide(
     """Validate a decision and return the event to append to the audit log.
 
     Raises :class:`DecisionError` when a rule is broken; the caller logs the
-    refusal separately so attempts are never silently dropped.
+    refusal separately so attempts are never silently dropped. ``now`` is the
+    reference time for the OVERRIDE expiry rule (default: current UTC time).
     """
-    action = action.upper()
+    action = str(action or "").strip().upper()  # None/'' -> a clear refusal, not a traceback
     if action not in ACTIONS:
         raise DecisionError(f"unknown action {action!r}; use APPROVE, BLOCK or OVERRIDE")
+    now = now or datetime.now(timezone.utc)
 
     ok, why = review_allowed(policy, submitted_by, reviewer)
     if not ok:
@@ -88,9 +95,12 @@ def decide(
             raise DecisionError("REFUSED: OVERRIDE needs a reason")
         if not expiry:
             raise DecisionError("REFUSED: OVERRIDE needs an expiry date (YYYY-MM-DD)")
-        _check_date(expiry)
+        if _check_date(expiry) <= now.date():
+            raise DecisionError(
+                f"REFUSED: OVERRIDE expiry {expiry} must be a future date "
+                f"(today is {now.date().isoformat()})"
+            )
 
-    now = now or datetime.now(timezone.utc)
     return {
         "event": "decision",
         "candidate_id": candidate_id,
@@ -104,9 +114,12 @@ def decide(
     }
 
 
-def _check_date(value: str) -> None:
+def _check_date(value: str) -> date:
+    """Parse an expiry written exactly as YYYY-MM-DD, or refuse."""
+    if not _DATE_RE.match(str(value)):
+        raise DecisionError(f"REFUSED: expiry {value!r} is not a YYYY-MM-DD date")
     try:
-        date.fromisoformat(value)
+        return date.fromisoformat(value)
     except ValueError as exc:
         raise DecisionError(f"REFUSED: expiry {value!r} is not a YYYY-MM-DD date") from exc
 
