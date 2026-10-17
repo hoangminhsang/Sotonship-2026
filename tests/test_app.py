@@ -543,3 +543,60 @@ def test_app_start_builds_the_corpus_only_when_missing(tmp_path, monkeypatch, ca
     run_app(monkeypatch, capsys, tmp_path / "governance_out", ["4"])
     assert corpus.DEV_PATH.exists() and corpus.TEST_PATH.exists()
     assert len(corpus.read_jsonl(corpus.TEST_PATH)) == 46
+
+
+# --------------------------------------------------------------------------- #
+# Item 8: D-14 smoke tests -- the whole DEMO flow writes only under its
+#         workspace; a LIVE run whose runner raises saves nothing.
+# --------------------------------------------------------------------------- #
+
+def _snapshot(root):
+    """(size, mtime) of every file under ``root`` except caches and git metadata."""
+    skip = {"__pycache__", ".pytest_cache", ".git", ".venv", "governance_out"}
+    out = {}
+    for p in root.rglob("*"):
+        if p.is_file() and not any(part in skip for part in p.parts):
+            st = p.stat()
+            out[str(p)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def test_full_demo_flow_writes_only_under_its_workspace(tmp_path, monkeypatch, capsys):
+    before = _snapshot(app.ROOT)
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        *NEW_DEMO_CANDIDATE, "3",                        # new candidate RC-001 (DEMO)
+        "2", "1", "", "",                                # verdict
+        "2", "", "2", "sarah", "leaks data", "",         # decide: BLOCK
+        "5", "",                                         # verify the real log
+        "6", "",                                         # tamper demo on a copy
+        "7", "4",                                        # back, quit
+    ])
+    assert _snapshot(app.ROOT) == before                 # nothing in the repo changed
+    assert "VERDICT: FAIL" in out and "[SCRIPTED]" in out
+    assert "Logged: BLOCK on RC-001" in out
+    assert "Chain intact" in out and "TAMPERING DETECTED at entry #2" in out
+    assert "bye." in out and "Traceback" not in out
+    assert sorted(p.name for p in work.iterdir()) == [
+        "RC-001", "audit_log.jsonl", "candidates", "candidates.json", "tamper_demo"]
+    assert audit.verify_log(work / "audit_log.jsonl").ok
+    assert json.loads((work / "candidates.json").read_text())["RC-001"]["decision"] == "BLOCK"
+
+
+def test_live_runner_raising_connection_error_saves_nothing(tmp_path, monkeypatch, capsys):
+    from lab import runner
+
+    def dead(*args, **kwargs):
+        raise ConnectionError("[Errno 61] Connection refused")
+
+    monkeypatch.setattr(runner, "run_split", dead)
+    monkeypatch.setattr(runner, "model_digest", lambda *a, **k: "")
+    before = _snapshot(app.ROOT)
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [*NEW_LIVE_CANDIDATE, "", "3", "4"])
+
+    assert "Ollama unreachable or model missing" in out and "no candidate saved" in out
+    assert "bye." in out and "Traceback" not in out
+    assert not (work / "candidates.json").exists() and not (work / "RC-001").exists()
+    assert not (work / "audit_log.jsonl").exists()
+    assert _snapshot(app.ROOT) == before
