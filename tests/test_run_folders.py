@@ -251,6 +251,9 @@ def test_governance_accepts_run_folder(stub, tmp_path, monkeypatch):
     fp = json.loads((out / "RC-001.json").read_text())
     assert fp["model_digest"] == "sha256:stub"
     assert fp["test_set_sha256"] == _sha(before / "records.jsonl")
+    assert (out / "gate_RC-001.txt").read_text().startswith("[SAVED] Candidate RC-001")
+    assert (out / "manager_summary.md").read_text().startswith("**Mode: [SAVED]**")
+    assert "scripted" not in (out / "manager_summary.md").read_text().lower()
     for cid in ("RC-002", "RC-003"):  # replays of the saved run, written under --out
         ev = (out / f"evidence_register_{cid}.md").read_text()
         assert f"results/{cid}/runs.csv" not in ev

@@ -162,9 +162,11 @@ def run_candidate(
 class Report:
     """Collects the text report and the files written, for a tidy summary."""
 
-    def __init__(self, out_dir: Path) -> None:
+    def __init__(self, out_dir: Path, tag: str = "", note: str = "") -> None:
         self.out_dir = out_dir
         self.written: list[Path] = []
+        self.tag = tag      # SCRIPTED / LIVE / SAVED: stamped on every artifact written
+        self.note = note    # one sentence on what the numbers are (scripted mode)
 
     def section(self, title: str) -> None:
         print(f"\n{'=' * 70}\n{title}\n{'=' * 70}")
@@ -172,11 +174,26 @@ class Report:
     def say(self, text: str = "") -> None:
         print(text)
 
+    def label(self, text: str, plain: bool = False) -> str:
+        """Prefix ``text`` with the mode label so no artifact shows an unlabelled number."""
+        if not self.tag:
+            return text
+        if plain:
+            return f"[{self.tag}] {text}"
+        head = f"**Mode: [{self.tag}]**" + (f" {self.note}" if self.note else "")
+        return f"{head}\n\n{text}"
+
     def write(self, name: str, text: str) -> Path:
         path = self.out_dir / name
-        path.write_text(text.rstrip() + "\n", encoding="utf-8")
+        path.write_text(self.label(text, plain=name.endswith(".txt")).rstrip() + "\n", encoding="utf-8")
         self.written.append(path)
         return path
+
+
+# Mode labels. SCRIPTED numbers come from lab.demo's calibrated traces, not a model.
+SCRIPTED, LIVE, SAVED = "SCRIPTED", "LIVE", "SAVED"
+SCRIPTED_NOTE = ("Scripted traces calibrated to the 24-run rehearsal; "
+                 "benign 60/60 is scripted, not measured.")
 
 
 def rotate_log(audit_path: Path) -> Path:
@@ -191,7 +208,7 @@ def rotate_log(audit_path: Path) -> Path:
     return target
 
 
-def _fmt_summary(s: dict) -> str:
+def _fmt_summary(s: dict, tag: str = "") -> str:
     # ``errors_with_violation`` / ``attempted_*`` arrive with the error-scoring
     # change (fix 3); read with .get so this line works before and after it.
     attempted = (
@@ -199,7 +216,8 @@ def _fmt_summary(s: dict) -> str:
         if "attempted_runs" in s else ""
     )
     return (
-        f"ASR {s['asr']:.1%} ({s['attack_violations']}/{s['attack_runs']}) "
+        (f"[{tag}] " if tag else "")
+        + f"ASR {s['asr']:.1%} ({s['attack_violations']}/{s['attack_runs']}) "
         f"95% CI [{s['asr_lo']:.1%}, {s['asr_hi']:.1%}]  |  "
         f"benign {s['benign_rate']:.0%} (n={s['benign_n']})  |  "
         f"errors {s['errors']} ({s.get('errors_with_violation', 0)} broke a rule, counted){attempted}"
@@ -231,7 +249,8 @@ def run(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    rep = Report(out_dir)
+    tag = SAVED if saved_before is not None else (LIVE if args.live else SCRIPTED)
+    rep = Report(out_dir, tag=tag, note=SCRIPTED_NOTE if tag == SCRIPTED else "")
 
     rules = world.load_rules()
     policy = load_policy()
@@ -254,7 +273,9 @@ def run(args: argparse.Namespace) -> int:
     else:
         mode = "DEMO (offline, deterministic)"
     rep.section("Agent Release Gate — Governance & Assurance")
-    rep.say(f"Mode     : {mode}")
+    rep.say(f"Mode     : [{tag}] {mode}")
+    if rep.note:
+        rep.say(f"           {rep.note}")
     rep.say(f"Policy   : v{policy.get('policy_version')} (owner: {policy.get('policy_owner')})")
     rep.say(f"Test set : {len(tests)} records = {n_attack} attacks + {n_benign} benign")
     rep.say(f"Output   : {out_dir}")
@@ -305,7 +326,7 @@ def run(args: argparse.Namespace) -> int:
         out_dir=out_dir,
     )
     summary_before = gate.summarise(runs_before)
-    rep.say(_fmt_summary(summary_before))
+    rep.say(_fmt_summary(summary_before, tag))
     rep.say(f"Runs file: {proof_before}")
 
     fp_001 = candidate.fingerprint(
@@ -437,7 +458,7 @@ def run(args: argparse.Namespace) -> int:
             out_dir=out_dir,
         )
         summary = gate.summarise(runs)
-        rep.say("\n" + _fmt_summary(summary))
+        rep.say("\n" + _fmt_summary(summary, tag))
         if saved_before is not None and saved is None:
             rep.say(f"({cid} is a deterministic {label} replay of the saved RC-001 traces, not a measured "
                     f"run; pass {flag} <folder> to gate a saved {label} run)")
@@ -518,11 +539,18 @@ def run(args: argparse.Namespace) -> int:
     section += 1
     rep.section(f"{section}. Manager summary")
     s = summary_page.build_summary(
-        register_final, audit.read_log(audit_path), current_asr=summary_final["asr"]
+        register_final,
+        audit.read_log(audit_path),
+        current_asr=summary_final["asr"],
+        summaries={cid: {**summ, "mode": tag} for cid, summ in summaries.items()},
+        current_candidate=last_cid,
+        log_head=audit.head(audit_path),
     )
     s_md = summary_page.to_markdown(s)
+    if rep.note:
+        s_md += f"\n- **Numbers:** {rep.note}"
     rep.write("manager_summary.md", s_md)
-    rep.say(s_md)
+    rep.say(rep.label(s_md))
 
     # ----------------------------------------------------------------------- #
     # Tamper-evidence: verify the real log, then prove a forged copy is caught.
@@ -569,7 +597,9 @@ def run(args: argparse.Namespace) -> int:
         + [f"{summaries[cid]['asr']:.1%} ({'+'.join(codes)})" for cid, codes, _, _ in retests]
     )
     benign_chain = " -> ".join(f"{summaries[cid]['benign_rate']:.0%}" for cid in summaries)
-    rep.say(f"Headline: attack success {asr_chain}, benign {benign_chain}")
+    rep.say(f"[{tag}] Headline: attack success {asr_chain}, benign {benign_chain}")
+    if rep.note:
+        rep.say(f"[{tag}] {rep.note}")
     return 0
 
 

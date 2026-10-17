@@ -126,6 +126,28 @@ def test_demo_decisions_and_risk_status_per_candidate(gov, tmp_path):
     assert (tamper / "audit_log_tampered_demo.jsonl").is_file()
 
 
+SCRIPTED_SENTENCE = "benign 60/60 is scripted, not measured"
+
+
+def test_demo_artifacts_carry_the_scripted_label(gov, tmp_path, capsys):
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    stdout = capsys.readouterr().out
+    # Header and every summary/headline line say the numbers are scripted.
+    assert "Scripted traces calibrated to the 24-run rehearsal; " + SCRIPTED_SENTENCE in stdout
+    assert "[SCRIPTED] ASR 42.3%" in stdout
+    assert "[SCRIPTED] Headline: attack success 42.3%" in stdout
+    for cid in ("RC-001", "RC-002", "RC-003"):
+        assert (out / f"gate_{cid}.txt").read_text().startswith(f"[SCRIPTED] Candidate {cid}")
+    for name in ("evidence_register_RC-002.md", "evidence_register.md", "inventory_card.md",
+                 "risk_register_before.md", "risk_register_RC-003.md", "traceability.md", "fix_tickets.md"):
+        assert (out / name).read_text().startswith("**Mode: [SCRIPTED]**"), name
+    ms = (out / "manager_summary.md").read_text()
+    assert ms.startswith("**Mode: [SCRIPTED]**") and SCRIPTED_SENTENCE in ms
+    assert "mode SCRIPTED" in ms and "for RC-003" in ms and "95% CI" in ms
+    assert "**Audit log:** 10 entries, head sha256:" in ms or "**Audit log:** 10 entries, head " in ms
+
+
 def test_help_text_states_real_defaults(gov):
     import re
 
