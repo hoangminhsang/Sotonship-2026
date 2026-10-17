@@ -258,10 +258,22 @@ def lock_run(run_dir: Path | str) -> dict:
             "locked_at": _now(),
         }
     )
+    manifest["manifest_sha256"] = manifest_digest(manifest)
     _write_manifest(run_dir, manifest)
     for p in [*_file_list(run_dir), run_dir / MANIFEST]:
         os.chmod(p, 0o444)
     return manifest
+
+
+def manifest_digest(manifest: dict) -> str:
+    """sha256 of the manifest body (every field except ``manifest_sha256`` itself).
+
+    Written at lock time and checked by :func:`verify_run`, so an edit to a
+    locked manifest (model, model_digest, defences, ...) is detected (C-12).
+    """
+    body = {k: v for k, v in manifest.items() if k != "manifest_sha256"}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def verify_run(run_dir: Path | str) -> dict:
@@ -270,6 +282,12 @@ def verify_run(run_dir: Path | str) -> dict:
     manifest = _read_manifest(run_dir)
     if not manifest.get("locked"):
         raise RunFolderError(f"run folder {run_dir} is not locked (run did not finish?)")
+    recorded = manifest.get("manifest_sha256")
+    if recorded != manifest_digest(manifest):
+        raise RunFolderError(
+            f"run folder {run_dir}: manifest.json was changed after lock "
+            f"(manifest_sha256 {recorded!r} does not match its body)"
+        )
     expected = manifest.get("files", {})
     actual = {p.relative_to(run_dir).as_posix(): sha256_file(p) for p in _file_list(run_dir)}
     changed = sorted(k for k in expected if k in actual and actual[k] != expected[k])

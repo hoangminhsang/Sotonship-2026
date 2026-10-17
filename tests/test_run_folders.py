@@ -176,6 +176,23 @@ def test_tampered_trace_is_detected(stub):
         run_folder.load_run(run_dir)
 
 
+def test_edited_manifest_is_detected(stub):
+    """The lock covers the manifest body too: a changed model_digest fails verification (C-12)."""
+    _run(stub, _records(), reps=1, run_id="m", digest="sha256:real")
+    run_dir = stub.root / "m"
+    m = json.loads((run_dir / "manifest.json").read_text())
+    assert m["manifest_sha256"].startswith("sha256:")
+    run_folder.verify_run(run_dir)
+
+    os.chmod(run_dir / "manifest.json", 0o644)
+    m["model_digest"] = "sha256:forged"
+    (run_dir / "manifest.json").write_text(json.dumps(m, indent=2, sort_keys=True))
+    with pytest.raises(run_folder.RunFolderError, match="manifest"):
+        run_folder.verify_run(run_dir)
+    with pytest.raises(run_folder.RunFolderError):
+        run_folder.load_run(run_dir)
+
+
 def test_interrupted_run_is_still_locked(stub):
     gen = runner.run_split(_records(), reps=2, digest="", make_agent=stub.make_agent,
                            runs_root=stub.root, run_id="partial")
