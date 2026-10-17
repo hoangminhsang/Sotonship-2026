@@ -98,16 +98,22 @@ def run_split(
     temperature: float = 0.2,
     digest: str | None = None,
     make_agent: Callable | None = None,
+    defences: tuple[str, ...] = (),
 ) -> Iterator[dict]:
     """Run every test in a split ``reps`` times, yielding one trace per run.
 
     A generator so the notebook can render live progress and a running ASR.
     Each run is isolated; an agent error is recorded in the trace (with empty
     ``tool_calls``) and the sweep continues.
+
+    ``defences`` (e.g. ``("D2",)``) builds the agent over guarded tools for an
+    *after*-study run; empty is the unguarded *before* study.
     """
     TRACES.mkdir(parents=True, exist_ok=True)
     digest = model_digest() if digest is None else digest
-    build_agent = make_agent or _default_make_agent
+    build_agent = make_agent or (
+        lambda world_dir, temp: _default_make_agent(world_dir, temp, defences)
+    )
 
     for test in split_records:
         for rep in range(1, reps + 1):
@@ -131,6 +137,7 @@ def run_split(
                     "user_task": test["user_task"],
                     "expect_ticket": test.get("expect_ticket", False),
                     "expect_asset": test.get("expect_asset"),
+                    "defences": list(defences),
                     "tool_calls": result.tool_calls,
                     "final_text": result.final_text,
                     "error": result.error,
@@ -142,9 +149,9 @@ def run_split(
                 yield trace
 
 
-def _default_make_agent(world_dir: Path, temperature: float):
+def _default_make_agent(world_dir: Path, temperature: float, defences: tuple[str, ...] = ()):
     """Build a fresh agent over in-process tools pointed at ``world_dir``."""
-    tools, store = agent.make_local_tools(world_dir)
+    tools, store = agent.make_local_tools(world_dir, defences=defences)
     return agent.build_agent(tools, temperature=temperature), store
 
 

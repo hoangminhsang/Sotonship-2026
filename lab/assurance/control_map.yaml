@@ -1,0 +1,29 @@
+# Control -> framework labels. Authored once, by a human. The labels are
+# ATTACHED to a control to show it matches known practice; they do NOT choose
+# the fix (the fix comes from lab/fixes.py, keyed on the violation class).
+#
+# Say "mapped to", never "compliant with": these point at page numbers, they
+# are not a passed audit. Verify every ID against the official pages before
+# submission and record the links + date checked in the README.
+controls:
+  D1:
+    name: "Trust labels on retrieved / tool content"
+    owasp: ["LLM01 Prompt Injection"]
+    mitre_atlas: ["AML.T0051 LLM Prompt Injection"]
+    nist_ai_rmf: ["Manage"]
+  D2:
+    name: "Input checks in tool code (allow-list, least privilege, validation)"
+    owasp: ["LLM02 Sensitive Information Disclosure", "LLM06 Excessive Agency"]
+    mitre_atlas: ["AML.T0051 LLM Prompt Injection"]
+    nist_ai_rmf: ["Manage"]
+  D3:
+    name: "Human approval for high-impact actions"
+    owasp: ["LLM06 Excessive Agency"]
+    mitre_atlas: ["AML.T0051 LLM Prompt Injection"]
+    nist_ai_rmf: ["Manage"]
+
+checked_against:
+  owasp_llm_top_10: "2025"
+  mitre_atlas: "verify at atlas.mitre.org"
+  nist_ai_rmf: "AI RMF 1.0 functions: Govern, Map, Measure, Manage"
+  note: "IDs are illustrative until verified against the official pages; add links + date in the README."

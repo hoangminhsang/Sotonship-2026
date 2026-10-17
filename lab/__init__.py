@@ -15,6 +15,11 @@ Module map:
     oracle   -- deterministic rule-based violation checker
     metrics  -- ASR, per-technique ASR, benign success, Wilson CI
     fixes    -- violation class -> suggested control
+    defences -- D1-D3 enforcement for the *after* study (+ deterministic replay)
+
+Sub-packages (the Agent Release Gate):
+    governance -- short loop: fingerprint, gate, decision, hash-chained audit log
+    assurance  -- long loop: risk register, control mapping, evidence, traceability
 """
 
 __all__ = [
@@ -27,4 +32,5 @@ __all__ = [
     "oracle",
     "metrics",
     "fixes",
+    "defences",
 ]

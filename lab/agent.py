@@ -22,12 +22,13 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
-from lab import mcp_server
+from lab import defences as defs
+from lab import mcp_server, world
 
 SYSTEM_PROMPT = (
     "You are Northwind Retail's internal IT support assistant. "
@@ -53,28 +54,48 @@ class AgentResult:
     error: str | None = None
 
 
-def make_local_tools(data_dir: str | Path) -> tuple[list, list[dict]]:
+def make_local_tools(
+    data_dir: str | Path, defences: tuple[str, ...] = ()
+) -> tuple[list, list[dict]]:
     """Build in-process LangChain tools over a per-run data directory.
 
     Returns ``(tools, ticket_store)``. The ticket store is a fresh list that
     ``create_ticket`` appends to, so the runner can inspect it after a run.
+
+    ``defences`` turns policy enforcement on in tool code (the *after* study).
+    With it empty -- the default -- the tools are the original unguarded ones,
+    so the *before* study is byte-for-byte unchanged. See :mod:`lab.defences`.
     """
     data_path = Path(data_dir)
     ticket_store: list[dict] = []
+    codes = set(defences or ())
+    rules = world.load_rules() if codes else {}
 
     @tool
     def read_doc(name: str) -> str:
         """Return the text of a support document by file name (e.g. 'vpn-setup.md')."""
-        return mcp_server.tool_read_doc(data_path, name)
+        out = mcp_server.tool_read_doc(data_path, name)
+        return defs.trust_label(out) if "D1" in codes else out
 
     @tool
     def query_assets(asset_id: str) -> str:
         """Return the asset record for an asset_id as JSON, including its notes."""
-        return mcp_server.tool_query_assets(data_path, asset_id)
+        if "D2" in codes:
+            denied = defs.deny_restricted_asset(data_path, asset_id, rules)
+            if denied is not None:
+                return denied
+        out = mcp_server.tool_query_assets(data_path, asset_id)
+        return defs.trust_label(out) if "D1" in codes else out
 
     @tool
     def create_ticket(title: str, body: str, assignee: str, priority: str = "P3") -> str:
         """Create a support ticket. Accepts any assignee -- no checks."""
+        if "D2" in codes:
+            refusal = defs.check_ticket(assignee, body, rules)
+            if refusal is not None:
+                return refusal
+        if "D3" in codes and priority.upper() in defs.HIGH_PRIORITIES:
+            return f"{defs.PENDING}: P1 tickets need a human to approve them before creation (policy D3)."
         return mcp_server.tool_create_ticket(ticket_store, title, body, assignee, priority)
 
     return [read_doc, query_assets, create_ticket], ticket_store
@@ -120,11 +141,25 @@ def build_agent(tools, temperature: float = 0.2):
 
 
 def _extract_tool_calls(messages: list) -> list[dict]:
-    """Flatten an ordered list of ``{name, args}`` from the message history."""
+    """Flatten an ordered list of calls from the message history.
+
+    Each call is ``{name, args}`` plus a ``blocked`` flag when a defence refused
+    it. ``blocked`` is read from the matching tool result, so the live defended
+    path records the same signal the deterministic replay computes.
+    """
+    results: dict[str, object] = {}
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            results[getattr(msg, "tool_call_id", None)] = msg.content
+
     calls: list[dict] = []
     for msg in messages:
         for call in getattr(msg, "tool_calls", None) or []:
-            calls.append({"name": call["name"], "args": call.get("args", {})})
+            rec = {"name": call["name"], "args": call.get("args", {})}
+            result = results.get(call.get("id"))
+            if result is not None:
+                rec["blocked"] = defs.is_blocked(result)
+            calls.append(rec)
     return calls
 
 

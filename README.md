@@ -125,18 +125,55 @@ notebook's cell 4, so CI stays fast and offline.
 
 ```
 lab/        world, mcp_server, agent, attacks, benign, corpus, runner, oracle, metrics, fixes
+            defences — D1-D3 enforcement for the *after* study (+ deterministic replay)
             pyrit_integration — PyRIT target/converters/driver (optional front-end)
+lab/governance/  policy.yaml, candidate (fingerprint), gate (verdict), decision
+                 (roles + Approve/Block/Override), audit (hash-chained log)
+lab/assurance/   risks (register + fix tickets), control_map.yaml (OWASP/ATLAS/NIST),
+                 inventory, evidence, thread (traceability), summary_page
 data/       synthetic docs, assets.json (incl. the one restricted record), rules.yaml
 corpus/     dev.jsonl / test.jsonl (generated, stratified split)
 results/    summary.csv, runs.csv (human-validation sheet), traces/ (git-ignored)
-notebooks/  attack_lab.ipynb          — the study-guide notebook (imports from lab/)
-            attack_lab_explained.ipynb — self-contained teaching notebook: the whole
+notebooks/  attack_lab_explained.ipynb — self-contained teaching notebook: the whole
                                           codebase inlined and explained in plain English,
                                           attacking via PyRIT (run with .venv-pyrit)
+            release_gate_demo.ipynb    — study-guided governance & assurance demo:
+                                          RC-001 fails → block → D2 → RC-002 passes →
+                                          approve → risks close → audit tamper caught
 scripts/    run_pyrit_attack.py — CLI for the PyRIT-driven attack
-tests/      pytest suite for the scientific core
+tests/      pytest suite (oracle, metrics, fixes, defences, gate, decision, audit,
+            candidate, risks) — 72 tests, offline, no model needed
 docker/     Dockerfile, docker-compose.yml, requirements.txt, requirements-pyrit.txt
 ```
+
+## The Agent Release Gate (governance & assurance)
+
+The red team is an *evidence factory*; the release gate decides what to do with
+the evidence and remembers it. Two loops, both reading what the lab already
+writes — no new tests here, all deterministic and unit-tested:
+
+- **Short loop (release gate).** On every change: `candidate` fingerprints
+  exactly what was tested; `gate` compares the metrics to `policy.yaml` and emits
+  PASS/FAIL with reasons; `decision` enforces roles (the engineer can't approve
+  their own work) and Approve/Block/Override; `audit` writes a hash-chained,
+  append-only log so any edit is detectable (`verify_log`).
+- **Long loop (assurance).** Every violation class becomes a risk whose
+  **likelihood is the measured attack rate, not a guess** (`risks`); each risk
+  maps to a control (`fixes.py`) and to OWASP / MITRE ATLAS / NIST labels
+  (`control_map.yaml` — we say *mapped to*, never *compliant with*); `evidence`,
+  `thread` (one finding from first attack to closed risk) and `summary_page`
+  stitch the story. A finding with no fix-table row is flagged "no fix found,
+  rule owner must add one" — the tool never invents a fix or a label.
+
+**Defences for the re-test.** `lab/defences.py` turns `rules.yaml` from something
+the oracle only *scores* into something the tools *enforce*: D1 trust labels, D2
+input checks in tool code, D3 human approval for high-impact actions. Crucially a
+*blocked* tool call no longer counts as a successful attack — the oracle skips
+it — so the before/after drop is real. Run a defended study live with
+`runner.run_split(..., defences=("D2",))`.
+
+Walk the whole thing in **`notebooks/release_gate_demo.ipynb`** (offline and
+deterministic by default; set `LIVE = True` for real `qwen2.5:7b-instruct` runs).
 
 The notebook is thin: it imports from `lab/`, runs, and narrates. All logic
 lives in the package so it is unit-testable and two people can edit different

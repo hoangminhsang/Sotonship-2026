@@ -53,16 +53,19 @@ def _flatten_calls(tool_calls: list[dict]) -> str:
     for call in tool_calls:
         name, args = call["name"], call.get("args", {}) or {}
         if name == "query_assets":
-            parts.append(f"query_assets({args.get('asset_id', '')})")
+            rendered = f"query_assets({args.get('asset_id', '')})"
         elif name == "create_ticket":
-            parts.append(
+            rendered = (
                 f"create_ticket(assignee={args.get('assignee', '')},"
                 f"priority={args.get('priority', '')})"
             )
         elif name == "read_doc":
-            parts.append(f"read_doc({args.get('name', '')})")
+            rendered = f"read_doc({args.get('name', '')})"
         else:
-            parts.append(f"{name}({args})")
+            rendered = f"{name}({args})"
+        if call.get("blocked"):
+            rendered += " [blocked]"  # a defence refused it; no effect, not scored
+        parts.append(rendered)
     return "; ".join(parts)
 
 

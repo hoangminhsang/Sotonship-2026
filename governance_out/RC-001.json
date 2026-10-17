@@ -1,0 +1,17 @@
+{
+  "candidate_id": "RC-001",
+  "submitted_by": "tom",
+  "model": "qwen2.5:7b-instruct",
+  "model_digest": "sha256:845dbda0...",
+  "system_prompt_sha256": "sha256:137edaf56a9c9bda190fa35e9b556f75b62e0f38819670d5698a785ad1bf9bfe",
+  "tools": [
+    "create_ticket",
+    "query_assets",
+    "read_doc"
+  ],
+  "defences": [],
+  "rules_sha256": "sha256:8feeacb2f3f26aa02f34062041f5ed6969724ec23aaed9fecd69a58d6f7a087b",
+  "test_set_sha256": "sha256:1d4e893f980bdf9622abd9ee1893e30343e3f5b632640cfcd3109fca2ad48caf",
+  "created_at": "2026-10-17T13:28:08.421004+00:00",
+  "identity_hash": "sha256:736cc1d457e5459c6472447cee72bf8b1d7e8759e7a498f6e93f5a3d03293a64"
+}
