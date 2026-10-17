@@ -73,7 +73,7 @@ def test_every_numbered_line_carries_the_mode_label(tmp_path, monkeypatch, capsy
         "2", "",                 # list candidates
         "3",                     # back
         "2", "1", "", "",        # governance -> verdict RC-001
-        "6",                     # back
+        "7",                     # back
         "3", "6", "", "", "",    # assurance -> manager summary (no prior)
         "7", "", "", "",         # inventory card
         "9", "4",                # back, quit
@@ -104,7 +104,7 @@ def test_view_log_marks_scripted_events(tmp_path, monkeypatch, capsys):
                                            "scripted": True})
     audit.append(work / "audit_log.jsonl", {"event": "decision", "candidate_id": "RC-008",
                                            "decision": "BLOCK", "reviewer": "sarah"})
-    out = run_app(monkeypatch, capsys, work, ["2", "4", "", "6", "4"])
+    out = run_app(monkeypatch, capsys, work, ["2", "4", "", "7", "4"])
 
     assert all("[scripted]" in ln for ln in _lines_with(out, "RC-009"))
     assert all("[scripted]" not in ln for ln in _lines_with(out, "RC-008"))
@@ -318,7 +318,7 @@ def test_action_error_prints_one_line_and_keeps_the_menu(tmp_path, monkeypatch, 
         raise RuntimeError("boom")
 
     monkeypatch.setattr(app.gate, "report_text", boom)
-    out = run_app(monkeypatch, capsys, work, [*NEW_DEMO_CANDIDATE, "3", "2", "1", "", "6", "4"])
+    out = run_app(monkeypatch, capsys, work, [*NEW_DEMO_CANDIDATE, "3", "2", "1", "", "7", "4"])
     assert "error: RuntimeError: boom" in out
     assert "Traceback" not in out and "bye." in out
 
@@ -378,7 +378,7 @@ def test_submitter_is_chosen_from_engineers_and_normalised(tmp_path, monkeypatch
         *NEW_DEMO_CANDIDATE,                       # engineer #1 = alice
         "3",
         "2", "2", "", "2", " Alice ", "found it", "",   # alice tries to BLOCK her own candidate
-        "6", "4",
+        "7", "4",
     ])
     rec = json.loads((work / "candidates.json").read_text())["RC-001"]
     assert rec["submitted_by"] == "alice"
@@ -415,7 +415,7 @@ def test_role_refusal_logged_and_change_logged_before_saved(tmp_path, monkeypatc
         "2", "3", "1", "tom", "reviewers", "mallory", "",          # not the owner: refused
         "3", "1", "", "reviewers", "bob",                           # log write fails: not saved
         "3", "1", " Security-Lead ", "Reviewers", "Carol", "",      # normalised: saved
-        "6", "4",
+        "7", "4",
     ])
     events = audit.read_log(work / "audit_log.jsonl")
     refused = [e for e in events if e["event"] == "role_refused"]
@@ -426,3 +426,29 @@ def test_role_refusal_logged_and_change_logged_before_saved(tmp_path, monkeypatc
     assert overlay["reviewers"] == ["carol", "sarah"]              # bob never persisted
     changed = [e for e in events if e["event"] == "role_change"]
     assert changed[-1]["person"] == "carol" and changed[-1]["actor"] == "security-lead"
+
+
+# --------------------------------------------------------------------------- #
+# Item 5: D-05 -- tamper demo on a copy; the real log is never edited.
+# --------------------------------------------------------------------------- #
+
+def test_tamper_demo_runs_on_a_copy_and_never_edits_the_real_log(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        *NEW_DEMO_CANDIDATE, "3",
+        "2", "2", "", "2", "sarah", "leaks data", "",     # BLOCK RC-001 by sarah (entry #2)
+        "6", "",                                          # Tamper demo (on a copy)
+        "5", "",                                          # Verify the real log
+        "7", "4",
+    ])
+    real = work / "audit_log.jsonl"
+    copy = work / "tamper_demo" / "audit_log_copy.jsonl"
+    assert copy.exists()
+    assert not audit.verify_log(copy).ok and audit.verify_log(copy).bad_seq == 2
+    assert audit.verify_log(real).ok
+    events = audit.read_log(real)
+    assert [e["event"] for e in events] == ["submit", "decision"]      # nothing extra, nothing changed
+    assert events[1]["decision"] == "BLOCK"
+    assert "TAMPERING DETECTED at entry #2" in out
+    assert "real log" in out and "intact" in out
+    assert "BLOCK" in out and "APPROVE" in out                         # the one field changed is named

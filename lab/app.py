@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -459,8 +460,10 @@ def menu_governance(s: GovState) -> None:
         "Manage roles (who can do what)",
         "View audit log",
         "Verify audit log (tamper check)",
+        "Tamper demo (on a copy)",
         "Back",
-    ], {1: gov_verdict, 2: gov_decide, 3: gov_roles, 4: gov_view_log, 5: gov_verify_log})
+    ], {1: gov_verdict, 2: gov_decide, 3: gov_roles, 4: gov_view_log, 5: gov_verify_log,
+        6: gov_tamper_demo})
 
 
 def _verdict_for(s: GovState, cid: str):
@@ -587,6 +590,44 @@ def gov_verify_log(s: GovState) -> None:
         print("  WARNING: 0 entries -- an empty or deleted log also verifies; nothing is proven")
     else:
         _print_check(check, "real log")
+    pause()
+
+
+def gov_tamper_demo(s: GovState) -> None:
+    """D-05: show tamper detection on a COPY of the log. The real log is never edited."""
+    entries = s.events()
+    if not entries:
+        print("  (audit log empty -- run a candidate first)")
+        return pause()
+    real_before = s.audit_file.read_bytes()
+    copy_path = s.work / "tamper_demo" / "audit_log_copy.jsonl"
+    copy_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(s.audit_file, copy_path)
+
+    # Forge the most recent decision (the most tempting target), else entry 1.
+    idx = next((i for i in range(len(entries) - 1, -1, -1)
+                if entries[i].get("event") == "decision"), 0)
+    lines = [ln for ln in copy_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    rec = json.loads(lines[idx])
+    if "decision" in rec:
+        field, new = "decision", ("APPROVE" if rec["decision"] != "APPROVE" else "BLOCK")
+    elif "by" in rec:
+        field, new = "by", "mallory"
+    else:
+        field, new = "event", "forged"
+    old = rec[field]
+    rec[field] = new
+    lines[idx] = json.dumps(rec, sort_keys=True)
+    copy_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print(f"\nCopied the log to {_rel(copy_path)} and changed entry #{rec.get('seq', idx + 1)} "
+          f"field {field!r}: {old!r} -> {new!r}")
+    _print_check(audit.verify_log(copy_path), "copy")
+    _print_check(audit.verify_log(s.audit_file), "real log")
+    if s.audit_file.read_bytes() == real_before:
+        print("The real log was not touched (bytes identical). ✔")
+    else:  # pragma: no cover - would be a bug in this function
+        print(">>> BUG: the real log changed during the demo <<<")
     pause()
 
 
