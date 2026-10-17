@@ -70,6 +70,28 @@ def test_override_expiry_detected():
     assert not decision.override_expired(event, today=date(2026, 10, 23))
 
 
+# --- Fix 4C: the submitter can never approve or override their own candidate --
+
+def test_submitter_cannot_override_own_candidate(policy):
+    with pytest.raises(decision.DecisionError, match="cannot review"):
+        _decide(policy, reviewer="tom", action="OVERRIDE", verdict_passed=False,
+                reason="low harm", expiry="2026-10-24")
+
+
+@pytest.mark.parametrize("alias", ["Tom", "TOM", " tom "])
+def test_submitter_alias_cannot_approve_own_candidate(policy, alias):
+    # Even if a spelling variant of the submitter was made a reviewer, it is
+    # still the same person: identity comparisons ignore case and spaces.
+    policy["roles"]["reviewers"].append(alias)
+    with pytest.raises(decision.DecisionError, match="cannot review"):
+        _decide(policy, reviewer=alias)
+
+
+def test_reviewer_membership_ignores_case_and_spaces(policy):
+    event = _decide(policy, reviewer=" Sarah ")
+    assert event["decision"] == "APPROVE"
+
+
 def _fp(**kw):
     base = dict(
         candidate_id="RC-001", submitted_by="tom", model="qwen2.5:7b-instruct",

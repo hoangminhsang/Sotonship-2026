@@ -45,3 +45,21 @@ def test_a_newly_added_reviewer_can_review_but_still_not_their_own(policy):
     with pytest.raises(decision.DecisionError, match="cannot review"):
         decision.decide(candidate_id="RC-011", submitted_by="bob", verdict_passed=True,
                         policy=policy, reviewer="bob", action="APPROVE")
+
+
+# --- Fix 4C: every identity and role comparison ignores case and spaces -------
+
+def test_role_edits_ignore_case_and_spaces(policy):
+    roles.change_role(policy, actor=" Security-Lead ", person="Bob", role="reviewers", action="add")
+    assert roles.has_role(policy, "bob", "reviewers")
+    # adding a spelling variant does not create a duplicate member
+    roles.change_role(policy, actor="security-lead", person="BOB", role="reviewers", action="add")
+    assert [m for m in policy["roles"]["reviewers"] if m.casefold() == "bob"] == ["Bob"]
+    # removing by a variant removes the person
+    roles.change_role(policy, actor="security-lead", person="bob", role="reviewers", action="remove")
+    assert not roles.has_role(policy, "Bob", "reviewers")
+
+
+def test_last_reviewer_check_ignores_case(policy):
+    with pytest.raises(roles.RoleError, match="last reviewer"):
+        roles.change_role(policy, actor="security-lead", person="SARAH", role="reviewers", action="remove")

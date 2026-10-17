@@ -4,7 +4,10 @@ The gate only suggests. A person decides here, and the rules below make the
 decision honest:
 
 * **No marking your own homework.** The engineer who submitted a candidate can
-  never review it.
+  never review it: not APPROVE, not OVERRIDE, and today not BLOCK either
+  (whether a submitter may BLOCK their own candidate is an open decision for
+  the owner; until then the rule fails closed). Names are compared with
+  :func:`_norm`, so ``Tom``, ``TOM`` and ``" tom "`` are the same person.
 * **Approve only a PASS.** Block any time (with a reason). Override only a FAIL
   (with a reason, the reviewer's name, and an expiry date).
 * **Silence is not yes.** With no decision, a candidate stays blocked and the
@@ -27,12 +30,22 @@ class DecisionError(ValueError):
     """A decision that the rules refuse. The message is safe to show a user."""
 
 
+def _norm(name: object) -> str:
+    """The one normaliser for every identity and role comparison.
+
+    Case and surrounding spaces never make two names different people, so a
+    reviewer added as ``"Tom"`` cannot approve what ``"tom"`` submitted.
+    ``None`` normalises to ``""``.
+    """
+    return str(name or "").strip().casefold()
+
+
 def review_allowed(policy: dict, submitted_by: str, reviewer: str) -> tuple[bool, str]:
     """Whether ``reviewer`` may decide on a candidate submitted by ``submitted_by``."""
-    reviewers = set(policy["roles"].get("reviewers", []))
-    if reviewer == submitted_by:
+    reviewers = {_norm(r) for r in policy["roles"].get("reviewers", [])}
+    if _norm(reviewer) == _norm(submitted_by):
         return False, f"{reviewer} submitted this candidate and cannot review it"
-    if reviewer not in reviewers:
+    if _norm(reviewer) not in reviewers:
         return False, f"{reviewer} is not a reviewer"
     return True, ""
 
