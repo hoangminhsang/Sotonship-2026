@@ -209,6 +209,58 @@ def test_append_refuses_a_malformed_log_without_traceback(tmp_path):
     assert len(_lines(path)) == 6
 
 
+# ---------------------------------------------------------------------------
+# B-08: head() is the cheap anchor outside the file. The chain alone cannot
+# see tail truncation or a full re-chain; a recorded (count, last_hash) can.
+# ---------------------------------------------------------------------------
+
+def test_head_returns_count_and_last_hash(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed6(path)
+    count, last_hash = audit.head(path)
+    assert count == 6
+    assert last_hash == audit.read_log(path)[-1]["hash"]
+    assert audit.verify_log(path).last_hash == last_hash
+
+
+def test_head_of_missing_or_empty_log(tmp_path):
+    assert audit.head(tmp_path / "nope.jsonl") == (0, None)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert audit.head(empty) == (0, None)
+
+
+def test_tail_truncation_passes_verify_but_moves_the_head(tmp_path):
+    """The documented limit: cutting entries off the end keeps the chain intact.
+    The anchor recorded before (count + last hash) is what catches it."""
+    path = tmp_path / "audit.jsonl"
+    _seed6(path)
+    anchor = audit.head(path)
+    _write(path, _lines(path)[:4])  # the last two entries vanish
+
+    assert audit.verify_log(path).ok  # the chain itself cannot tell
+    assert audit.head(path) != anchor  # the anchor can
+    assert audit.head(path)[0] == 4
+
+
+def test_rechaining_passes_verify_but_moves_the_head(tmp_path):
+    """The other documented limit: edit an entry and recompute every later hash."""
+    path = tmp_path / "audit.jsonl"
+    _seed6(path)
+    anchor = audit.head(path)
+    entries = audit.read_log(path)
+    entries[2]["decision"] = "APPROVE"
+    prev = entries[1]["hash"]
+    for rec in entries[2:]:
+        rec["prev_hash"] = prev
+        rec["hash"] = audit._hash_record(rec)
+        prev = rec["hash"]
+    _write(path, [json.dumps(r, sort_keys=True) for r in entries])
+
+    assert audit.verify_log(path).ok  # re-chained: undetectable from inside
+    assert audit.head(path)[0] == anchor[0] and audit.head(path)[1] != anchor[1]
+
+
 def test_append_on_empty_log_starts_at_genesis(tmp_path):
     path = tmp_path / "fresh.jsonl"
     rec = audit.append(path, {"event": "submit", "candidate_id": "RC-001", "by": "tom"})
