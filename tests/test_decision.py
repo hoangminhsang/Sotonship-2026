@@ -59,9 +59,25 @@ def test_override_requires_fail_reason_and_expiry(policy):
 def test_override_ok_with_everything(policy):
     event = _decide(
         policy, action="OVERRIDE", verdict_passed=False,
-        reason="low harm, ship now", expiry="2026-10-24",
+        reason="low harm, ship now", expiry="2026-10-24", today=date(2026, 10, 17),
     )
     assert event["decision"] == "OVERRIDE" and event["expiry"] == "2026-10-24"
+
+
+def test_override_expiry_in_the_past_refused(policy):
+    kw = dict(action="OVERRIDE", verdict_passed=False, reason="low harm", today=date(2026, 10, 17))
+    with pytest.raises(decision.DecisionError, match="REFUSED: expiry '2020-01-01' is in the past"):
+        _decide(policy, expiry="2020-01-01", **kw)
+    with pytest.raises(decision.DecisionError, match="is in the past"):
+        _decide(policy, expiry="2026-10-16", **kw)
+    # Expiring today is still allowed (override_expired treats it as live until tomorrow).
+    assert _decide(policy, expiry="2026-10-17", **kw)["expiry"] == "2026-10-17"
+
+
+def test_override_expiry_must_be_a_date(policy):
+    with pytest.raises(decision.DecisionError, match="not a YYYY-MM-DD date"):
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="x",
+                expiry="next week", today=date(2026, 10, 17))
 
 
 def test_override_expiry_detected():

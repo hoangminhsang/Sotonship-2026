@@ -40,7 +40,8 @@ def change_role(
     """Add or remove ``person`` from ``role``; mutate ``policy`` and return the event.
 
     Raises :class:`RoleError` if ``actor`` is not the rule owner, the role or
-    action is unknown, or the change would leave no reviewer.
+    action is unknown, the change would do nothing (adding a current member,
+    removing a non-member), or it would leave no reviewer.
     """
     roles = policy.setdefault("roles", {})
     if actor != roles.get("rule_owner"):
@@ -52,9 +53,12 @@ def change_role(
 
     members = list(roles.get(role, []))
     if action == "add":
-        if person not in members:
-            members.append(person)
+        if person in members:
+            raise RoleError(f"REFUSED: {person} is already in {role}")
+        members.append(person)
     else:  # remove
+        if person not in members:
+            raise RoleError(f"REFUSED: {person} is not in {role}")
         if role == "reviewers" and [m for m in members if m != person] == []:
             raise RoleError("REFUSED: cannot remove the last reviewer (someone must be able to decide)")
         members = [m for m in members if m != person]
