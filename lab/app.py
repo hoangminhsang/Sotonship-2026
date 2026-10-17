@@ -392,14 +392,17 @@ def redteam_run(s: GovState) -> None:
         source = (f"live: {agent.MODEL} {digest or '(digest unknown)'}; "
                   f"{len(attacks)} attack + {len(benign)} benign tests x {REPS} reps; "
                   f"{errors} errored runs excluded from every rate")
+        # The fingerprint covers what was actually run: this sample, not the whole file.
+        test_set_text = "".join(json.dumps(t) + "\n" for t in subset)
     else:
-        traces = demo.demo_traces(s.test)
+        traces = demo.demo_traces(s.test, reps=REPS)
         if codes:
             traces = defences.replay(traces, s.rules, codes)
         digest = SCRIPTED_DIGEST
         mode, source = SCRIPTED, SCRIPTED_SOURCE
+        test_set_text = corpus.TEST_PATH.read_text()
 
-    _save_candidate(s, cid, submitted_by, codes, traces, digest, mode, source)
+    _save_candidate(s, cid, submitted_by, codes, traces, digest, mode, source, test_set_text)
     rec = s.candidates[cid]
     print(f"\n{result_line(cid, rec)}")
     print(source_line(rec))
@@ -408,7 +411,8 @@ def redteam_run(s: GovState) -> None:
 
 
 def _save_candidate(s: GovState, cid: str, submitted_by: str, codes: list[str],
-                    traces: list[dict], digest: str, mode: str, source: str) -> None:
+                    traces: list[dict], digest: str, mode: str, source: str,
+                    test_set_text: str) -> None:
     """Persist traces + runs.csv, fingerprint and summary; log the submit."""
     runs = metrics.build_runs_frame(traces, s.rules, s.tests_by_id)
     (s.work / cid).mkdir(parents=True, exist_ok=True)
@@ -420,13 +424,14 @@ def _save_candidate(s: GovState, cid: str, submitted_by: str, codes: list[str],
     fp = candidate.fingerprint(
         cid, submitted_by=submitted_by, model=agent.MODEL, model_digest=digest,
         system_prompt=agent.SYSTEM_PROMPT, tools=TOOLS, defences=codes,
-        rules_text=world.RULES_PATH.read_text(), test_set_text=corpus.TEST_PATH.read_text(),
+        rules_text=world.RULES_PATH.read_text(), test_set_text=test_set_text,
     )
     candidate.save(fp, s.work / "candidates")
 
     s.candidates[cid] = {
         "submitted_by": submitted_by, "defences": codes, "mode": mode, "source": source,
-        "identity_hash": fp.identity_hash(), "summary": summary,
+        "identity_hash": fp.identity_hash(), "test_set_sha256": fp.test_set_sha256,
+        "reps": REPS, "tests_run": len({t["test_id"] for t in traces}), "summary": summary,
         "decision": None, "created_at": datetime.now(timezone.utc).isoformat(),
     }
     s.save_candidates()
@@ -478,11 +483,48 @@ def menu_governance(s: GovState) -> None:
         6: gov_tamper_demo})
 
 
+def _test_set_sha(s: GovState, cid: str) -> str | None:
+    rec = s.candidates[cid]
+    if rec.get("test_set_sha256"):
+        return rec["test_set_sha256"]
+    p = s.fingerprint_path(cid)                 # records written before this field existed
+    return candidate.load(p).test_set_sha256 if p.exists() else None
+
+
+def _comparable(s: GovState, cid: str, prior_cid: str) -> list[str]:
+    """What differs between two candidates for the no-regression check (empty = comparable)."""
+    a, b = s.candidates[cid], s.candidates[prior_cid]
+    diffs = []
+    if _test_set_sha(s, cid) is None or _test_set_sha(s, cid) != _test_set_sha(s, prior_cid):
+        diffs.append("test set")
+    if a.get("reps") is None or a.get("reps") != b.get("reps"):
+        diffs.append("reps")
+    if mode_of(a) != mode_of(b):
+        diffs.append("mode")
+    return diffs
+
+
 def _verdict_for(s: GovState, cid: str):
+    """Gate verdict plus a one-line note on the no-regression comparison.
+
+    The ceiling applies only when the last approved candidate ran the same
+    test set, the same reps and the same mode; otherwise it is skipped and
+    said so on screen (never a silent pass).
+    """
     summary = s.candidates[cid]["summary"]
     prior = s.last_approved()
-    last_asr = prior[1] if prior and prior[0] != cid else None
-    return gate.evaluate(summary, s.policy, last_approved_asr=last_asr)
+    last_asr, note = None, "no-regression check: no previously approved candidate"
+    if prior and prior[0] != cid:
+        diffs = _comparable(s, cid, prior[0])
+        if diffs:
+            note = (f"no-regression check SKIPPED: last approved {prior[0]} "
+                    f"{mode_label(s.candidates[prior[0]])} is not comparable "
+                    f"(different {' / '.join(diffs)})")
+        else:
+            last_asr = prior[1]
+            note = (f"no-regression check against last approved {prior[0]} "
+                    f"{mode_label(s.candidates[prior[0]])} (same test set, reps and mode)")
+    return gate.evaluate(summary, s.policy, last_approved_asr=last_asr), note
 
 
 def gov_verdict(s: GovState) -> None:
@@ -490,8 +532,10 @@ def gov_verdict(s: GovState) -> None:
     if not cid:
         return pause()
     rec = s.candidates[cid]
+    verdict, note = _verdict_for(s, cid)
     print()
-    print(tag_numbers(gate.report_text(cid, _verdict_for(s, cid)), rec))
+    print(tag_numbers(gate.report_text(cid, verdict), rec))
+    print(f"  {note}")
     print(source_line(rec))
     pause()
 
@@ -501,8 +545,9 @@ def gov_decide(s: GovState) -> None:
     if not cid:
         return pause()
     rec = s.candidates[cid]
-    verdict = _verdict_for(s, cid)
+    verdict, note = _verdict_for(s, cid)
     print(f"\n{cid} verdict: {verdict.status} {mode_label(rec)}  (submitted by {rec['submitted_by']})")
+    print(f"  {note}")
     print(source_line(rec))
 
     act = choose("Decision", ["Approve", "Block", "Override"])

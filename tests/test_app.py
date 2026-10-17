@@ -609,3 +609,43 @@ def test_live_runner_raising_connection_error_saves_nothing(tmp_path, monkeypatc
     assert not (work / "candidates.json").exists() and not (work / "RC-001").exists()
     assert not (work / "audit_log.jsonl").exists()
     assert _snapshot(app.ROOT) == before
+
+
+# --------------------------------------------------------------------------- #
+# Item 6 follow-up (lane A): the no-regression ceiling applies only when the
+# last approved candidate is comparable (same test set, reps and mode).
+# --------------------------------------------------------------------------- #
+
+def test_no_regression_check_only_against_a_comparable_approval(tmp_path, monkeypatch, capsys):
+    from lab import defences, demo, world
+    rules = world.load_rules()
+
+    def live(subset, reps, defs):
+        traces = demo.demo_traces(subset, reps)
+        return defences.replay(traces, rules, list(defs)) if defs else traces
+
+    _stub_runner(monkeypatch, live)
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        "1", "1", "", "1", "D2,D3", "2", "17", "", "3",   # RC-001 LIVE D2,D3 sample 17 -> PASS
+        "2", "2", "", "1", "sarah", "", "7",              # approve RC-001
+        "1", "1", "", "1", "", "1", "", "3",              # RC-002 SCRIPTED none
+        "2", "1", "", "", "7",                            # verdict RC-002: LIVE approval not comparable
+        "1", "1", "", "1", "D2,D3", "1", "", "3",         # RC-003 SCRIPTED D2,D3 -> PASS
+        "2", "2", "", "1", "sarah", "", "7",              # approve RC-003
+        "1", "1", "", "1", "", "1", "", "3",              # RC-004 SCRIPTED none
+        "2", "1", "", "", "7", "4",                       # verdict RC-004: comparable -> regression FAIL
+    ])
+    recs = json.loads((work / "candidates.json").read_text())
+    assert recs["RC-001"]["mode"] == "LIVE" and recs["RC-001"]["decision"] == "APPROVE"
+    assert recs["RC-003"]["mode"] == "SCRIPTED" and recs["RC-003"]["decision"] == "APPROVE"
+    assert recs["RC-001"]["test_set_sha256"] != recs["RC-002"]["test_set_sha256"]   # a 17-sample is not the full set
+    assert recs["RC-001"]["reps"] == recs["RC-002"]["reps"] == 3
+
+    v2 = out.split("Candidate RC-002")[1].split("[enter]")[0]
+    assert "not comparable (different" in v2 and "mode)" in v2 and "RC-001" in v2
+    assert "no_regression_vs_last_approved" not in v2
+
+    v4 = out.split("Candidate RC-004")[1].split("[enter]")[0]
+    assert "no_regression_vs_last_approved" in v4 and "RC-003" in v4
+    assert any(ln.startswith("  FAIL") and "no_regression" in ln for ln in v4.splitlines())
