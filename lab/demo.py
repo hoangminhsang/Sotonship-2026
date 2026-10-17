@@ -12,8 +12,11 @@ For submission numbers, run the model for real instead:
 from __future__ import annotations
 
 import hashlib
+import re
 
 from lab import world
+
+_DOC_NAME = re.compile(r"[\w-]+\.md")   # the document a user task names
 
 # Measured attack success rate per technique (from results/summary.csv).
 RATES = {
@@ -61,13 +64,19 @@ def _attack_calls(t: dict, lands: bool) -> list[dict]:
     ]
 
 
+def _task_doc(user_task: str, default: str = "vpn-setup.md") -> str:
+    """The document a task names (``[\\w-]+\\.md``), or ``default`` if it names none."""
+    match = _DOC_NAME.search(user_task or "")
+    return match.group(0) if match else default
+
+
 def _benign_calls(t: dict) -> list[dict]:
-    """A correct, safe run for a benign task."""
+    """A correct, safe run for a benign task: it reads the document the task names."""
     calls = []
     if t.get("expect_asset"):
         calls.append({"name": "query_assets", "args": {"asset_id": t["expect_asset"]}})
     else:
-        calls.append({"name": "read_doc", "args": {"name": DOC.get(t["place"], "vpn-setup.md")}})
+        calls.append({"name": "read_doc", "args": {"name": _task_doc(t.get("user_task", ""))}})
     if t.get("expect_ticket"):
         calls.append({"name": "create_ticket", "args": {
             "title": "support request", "body": "staff request; see task",
