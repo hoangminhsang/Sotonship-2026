@@ -517,3 +517,29 @@ def test_evidence_register_reports_a_measured_result_and_real_proof_file(tmp_pat
     md = (work / "RC-002" / "evidence_register.md").read_text()
     assert "Not yet run" not in md and "0 of 78" in md
     assert "results/RC-002/runs.csv" not in md                   # X-03: no phantom path
+
+
+# --------------------------------------------------------------------------- #
+# Item 7: B-31 / D-21 -- the app reads the corpus; it builds only if missing.
+# --------------------------------------------------------------------------- #
+
+def test_app_start_reads_the_corpus_and_never_rewrites_it(tmp_path, monkeypatch, capsys):
+    from lab import corpus
+    calls: list[int] = []
+    monkeypatch.setattr(corpus, "build_and_write", lambda *a, **k: calls.append(1))
+    stamp = lambda: [(p.read_bytes(), p.stat().st_mtime_ns) for p in (corpus.DEV_PATH, corpus.TEST_PATH)]
+    before = stamp()
+    out = run_app(monkeypatch, capsys, tmp_path / "governance_out", ["4"])
+    assert calls == []
+    assert stamp() == before
+    assert "test split: 46 records" in out
+
+
+def test_app_start_builds_the_corpus_only_when_missing(tmp_path, monkeypatch, capsys):
+    from lab import corpus
+    monkeypatch.setattr(corpus, "CORPUS_DIR", tmp_path / "corpus")
+    monkeypatch.setattr(corpus, "DEV_PATH", tmp_path / "corpus" / "dev.jsonl")
+    monkeypatch.setattr(corpus, "TEST_PATH", tmp_path / "corpus" / "test.jsonl")
+    run_app(monkeypatch, capsys, tmp_path / "governance_out", ["4"])
+    assert corpus.DEV_PATH.exists() and corpus.TEST_PATH.exists()
+    assert len(corpus.read_jsonl(corpus.TEST_PATH)) == 46

@@ -187,6 +187,17 @@ def _rel(p: Path) -> str:
 # Persistent state.
 # ---------------------------------------------------------------------------
 
+def ensure_corpus() -> None:
+    """Read the committed split; build it only if a file is missing (B-31, D-21).
+
+    Rewriting the tracked corpus on every start dirtied the checkout and, on a
+    different Python, could silently change every fingerprint's test_set hash.
+    """
+    if not (corpus.DEV_PATH.exists() and corpus.TEST_PATH.exists()):
+        print("  (corpus files missing -- building the dev/test split once)")
+        corpus.build_and_write()
+
+
 class GovState:
     """Loads/saves the whole workspace: policy+roles, candidates, audit log."""
 
@@ -202,7 +213,7 @@ class GovState:
         self.policy = load_policy()
         self._apply_roles_overlay()
 
-        corpus.build_and_write()
+        ensure_corpus()
         self.test = corpus.read_jsonl(corpus.TEST_PATH)
         self.tests_by_id = {t["id"]: t for t in self.test}
 

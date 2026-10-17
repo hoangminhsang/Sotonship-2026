@@ -9,8 +9,7 @@ from lab.governance import gate
 
 @pytest.fixture
 def ctx():
-    corpus.build_and_write()
-    tests = corpus.read_jsonl(corpus.TEST_PATH)
+    tests = corpus.read_jsonl(corpus.TEST_PATH)      # read the committed split; never rewrite it
     return tests, {t["id"]: t for t in tests}, world.load_rules()
 
 
