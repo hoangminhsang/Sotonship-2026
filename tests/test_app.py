@@ -38,8 +38,8 @@ def run_app(monkeypatch, capsys, work, answers):
     return capsys.readouterr().out
 
 
-# Red team -> new candidate RC-001, submitted by tom, no defences, DEMO.
-NEW_DEMO_CANDIDATE = ["1", "1", "", "", "", "1", ""]
+# Red team -> new candidate RC-001, submitted by engineer #1 (tom), no defences, DEMO.
+NEW_DEMO_CANDIDATE = ["1", "1", "", "1", "", "1", ""]
 
 
 def _lines_with(out: str, needle: str) -> list[str]:
@@ -136,7 +136,7 @@ def _stub_runner(monkeypatch, make_traces):
 
 
 # Red team -> new candidate, by tom, no defences, LIVE, sample size 2.
-NEW_LIVE_CANDIDATE = ["1", "1", "", "", "", "2", "2"]
+NEW_LIVE_CANDIDATE = ["1", "1", "", "1", "", "2", "2"]
 
 
 def test_live_all_errored_saves_nothing(tmp_path, monkeypatch, capsys):
@@ -282,7 +282,7 @@ def test_non_integer_sample_size_reprompts(tmp_path, monkeypatch, capsys):
     _stub_runner(monkeypatch, lambda subset, reps, defences: demo.demo_traces(subset, reps))
     work = tmp_path / "governance_out"
     out = run_app(monkeypatch, capsys, work,
-                  ["1", "1", "", "", "", "2", "eight", "0", "2", "", "3", "4"])
+                  ["1", "1", "", "1", "", "2", "eight", "0", "2", "", "3", "4"])
     assert out.count("Sample size per split") == 3
     assert json.loads((work / "candidates.json").read_text())["RC-001"]["mode"] == "LIVE"
 
@@ -338,8 +338,8 @@ def test_live_sample_takes_first_n_attacks_plus_first_n_benign(tmp_path, monkeyp
     benign = [t["id"] for t in tests if t["kind"] == "benign"]
 
     out = run_app(monkeypatch, capsys, tmp_path / "governance_out",
-                  ["1", "1", "", "", "", "2", "3", "",            # RC-001, sample 3
-                   "1", "", "", "", "2", "40", "",                # RC-002, sample 40 (> 26 attacks)
+                  ["1", "1", "", "1", "", "2", "3", "",           # RC-001, sample 3
+                   "1", "", "1", "", "2", "40", "",               # RC-002, sample 40 (> 26 attacks)
                    "3", "4"])
 
     ids = [t["id"] for t in seen[0]]
@@ -349,3 +349,80 @@ def test_live_sample_takes_first_n_attacks_plus_first_n_benign(tmp_path, monkeyp
     ids = [t["id"] for t in seen[1]]
     assert ids == attacks + benign and len(set(ids)) == len(ids) == 46
     assert "26 attacks + 20 benign = 138 runs" in out
+
+
+# --------------------------------------------------------------------------- #
+# Item 4: ids and identity -- B-20/D-06, B-03, B-19, B-21.
+# --------------------------------------------------------------------------- #
+
+def test_candidate_ids_are_validated_and_never_reused(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        "1", "1", "../../escaped", "rc-1", "", "1", "", "1", "",   # two bad ids, then RC-001
+        "1", "RC-001", "", "1", "", "1", "",                       # RC-001 refused -> RC-002
+        "3", "4",
+    ])
+    recs = json.loads((work / "candidates.json").read_text())
+    assert list(recs) == ["RC-001", "RC-002"]
+    assert "already exists" in out and "RC-002" in out
+    assert not list(tmp_path.glob("**/escaped*")) and not (app.ROOT / "escaped.json").exists()
+    assert recs["RC-001"]["decision"] is None and (work / "RC-001" / "traces.json").exists()
+
+
+def test_submitter_is_chosen_from_engineers_and_normalised(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    work.mkdir()
+    (work / "roles_overlay.json").write_text(json.dumps(
+        {"engineers": [" Alice ", "tom"], "reviewers": ["sarah", "alice"], "rule_owner": "security-lead"}))
+    out = run_app(monkeypatch, capsys, work, [
+        *NEW_DEMO_CANDIDATE,                       # engineer #1 = alice
+        "3",
+        "2", "2", "", "2", " Alice ", "found it", "",   # alice tries to BLOCK her own candidate
+        "6", "4",
+    ])
+    rec = json.loads((work / "candidates.json").read_text())["RC-001"]
+    assert rec["submitted_by"] == "alice"
+    assert "1. alice" in out and "2. tom" in out
+    assert "REFUSED" in out and "submitted this candidate" in out
+    assert rec["decision"] is None
+
+
+def test_defence_codes_validated_deduped_and_d1_warned(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        "1", "1", "", "1", "d2, D9", "d2,d2", "1", "",   # D9 rejected, then D2 (deduped)
+        "1", "", "1", "D1", "1", "",                      # D1 in DEMO: warned
+        "3", "4",
+    ])
+    recs = json.loads((work / "candidates.json").read_text())
+    assert recs["RC-001"]["defences"] == ["D2"]
+    assert "unknown defence code" in out and "D9" in out
+    assert recs["RC-002"]["defences"] == ["D1"]
+    assert "D1" in out and "cannot be replayed" in out
+
+
+def test_role_refusal_logged_and_change_logged_before_saved(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    real_append = audit.append
+
+    def flaky_append(path, event):
+        if event.get("event") == "role_change" and event.get("person") == "bob":
+            raise RuntimeError("disk full")
+        return real_append(path, event)
+
+    monkeypatch.setattr(app.audit, "append", flaky_append)
+    out = run_app(monkeypatch, capsys, work, [
+        "2", "3", "1", "tom", "reviewers", "mallory", "",          # not the owner: refused
+        "3", "1", "", "reviewers", "bob",                           # log write fails: not saved
+        "3", "1", " Security-Lead ", "Reviewers", "Carol", "",      # normalised: saved
+        "6", "4",
+    ])
+    events = audit.read_log(work / "audit_log.jsonl")
+    refused = [e for e in events if e["event"] == "role_refused"]
+    assert refused and refused[0]["actor"] == "tom" and refused[0]["person"] == "mallory"
+    assert "disk full" in out
+    assert not [e for e in events if e["event"] == "role_change" and e["person"] == "bob"]
+    overlay = json.loads((work / "roles_overlay.json").read_text())
+    assert overlay["reviewers"] == ["carol", "sarah"]              # bob never persisted
+    changed = [e for e in events if e["event"] == "role_change"]
+    assert changed[-1]["person"] == "carol" and changed[-1]["actor"] == "security-lead"

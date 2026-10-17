@@ -19,6 +19,7 @@ Run it:  ``.venv/bin/python -m lab.app``
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 from datetime import datetime, timezone
@@ -222,9 +223,14 @@ class GovState:
     # -- candidate helpers
     def next_candidate_id(self) -> str:
         n = len(self.candidates) + 1
-        while f"RC-{n:03d}" in self.candidates:
+        while self.candidate_exists(f"RC-{n:03d}"):
             n += 1
         return f"RC-{n:03d}"
+
+    def candidate_exists(self, cid: str) -> bool:
+        """Known in the record, or evidence already on disk under that id."""
+        return (cid in self.candidates or (self.work / cid).exists()
+                or self.fingerprint_path(cid).exists())
 
     def traces_path(self, cid: str) -> Path:
         return self.work / cid / "traces.json"
@@ -283,12 +289,63 @@ def _run_live(runner, subset: list[dict], codes: list[str], cid: str) -> list[di
         return list(runner.run_split(subset, reps=REPS, defences=tuple(codes)))
 
 
+CANDIDATE_ID_RE = re.compile(r"^RC-\d{3,}$")
+
+
+def _norm(name: str) -> str:
+    """One spelling per person: trimmed, single-spaced, lower-case (B-03)."""
+    return " ".join(str(name).strip().split()).lower()
+
+
+def ask_candidate_id(s: GovState) -> str:
+    """A fresh id of the form RC-NNN; an existing id is refused (B-20, D-06)."""
+    while True:
+        cid = ask("Candidate id", s.next_candidate_id())
+        if not CANDIDATE_ID_RE.match(cid):
+            print(f"  ({cid!r} is not a candidate id; use the form RC-001)")
+            continue
+        if s.candidate_exists(cid):
+            print(f"  ({cid} already exists and its evidence is kept; "
+                  f"next free id is {s.next_candidate_id()})")
+            continue
+        return cid
+
+
+def pick_engineer(s: GovState) -> str | None:
+    """The submitter is one of ``roles.engineers`` (B-03), never free text."""
+    engineers = sorted({_norm(e) for e in s.policy["roles"].get("engineers", []) if _norm(e)})
+    if not engineers:
+        print("  (no engineers in roles -- add one under Governance > Manage roles)")
+        return None
+    while True:
+        c = choose("Submitted by (engineer)", engineers)
+        if c != -1:
+            return engineers[c - 1]
+
+
+def ask_defences() -> list[str]:
+    """Only known defence codes, de-duplicated and sorted (B-19)."""
+    valid = list(defences.ALL_DEFENCES)
+    while True:
+        raw = ask("Defences ON (comma, e.g. D2 or D1,D2,D3; blank = none)", "")
+        codes = sorted({d.strip().upper() for d in raw.split(",") if d.strip()})
+        bad = [c for c in codes if c not in valid]
+        if bad:
+            print(f"  (unknown defence code(s): {', '.join(bad)}; valid: {', '.join(valid)})")
+            continue
+        return codes
+
+
 def redteam_run(s: GovState) -> None:
-    cid = ask("Candidate id", s.next_candidate_id())
-    submitted_by = ask("Submitted by (engineer)", "tom")
-    raw = ask("Defences ON (comma, e.g. D2 or D1,D2,D3; blank = none)", "")
-    codes = [d.strip().upper() for d in raw.split(",") if d.strip()]
+    cid = ask_candidate_id(s)
+    submitted_by = pick_engineer(s)
+    if submitted_by is None:
+        return pause()
+    codes = ask_defences()
     live = choose("Run mode", ["DEMO (offline, scripted traces)", "LIVE (real Ollama model)"]) == 2
+    if not live and "D1" in codes:
+        print("  WARNING: D1 (trust labels) cannot be replayed offline -- the SCRIPTED numbers "
+              "ignore it; run LIVE to measure D1")
 
     print(f"\nRunning {cid}  defences={codes or 'none'}  mode={LIVE if live else SCRIPTED} ...")
     if live:
@@ -437,7 +494,7 @@ def gov_decide(s: GovState) -> None:
     action = {1: decision.APPROVE, 2: decision.BLOCK, 3: decision.OVERRIDE}.get(act)
     if not action:
         return pause()
-    reviewer = ask("Reviewer name", "sarah")
+    reviewer = _norm(ask("Reviewer name", "sarah"))
     reason = ask("Reason", "") if action != decision.APPROVE else ""
     expiry = ask("Override expiry (YYYY-MM-DD)", "") if action == decision.OVERRIDE else None
 
@@ -466,19 +523,27 @@ def gov_roles(s: GovState) -> None:
     act = choose("Change roles", ["Add a person to a role", "Remove a person from a role", "Back"])
     if act not in (1, 2):
         return
-    actor = ask("Who is making this change? (must be the rule owner)", s.policy["roles"].get("rule_owner", ""))
-    role = ask("Role group (engineers / reviewers)", "reviewers")
-    person = ask("Person")
+    action = "add" if act == 1 else "remove"
+    actor = _norm(ask("Who is making this change? (must be the rule owner)",
+                      s.policy["roles"].get("rule_owner", "")))
+    role = _norm(ask("Role group (engineers / reviewers)", "reviewers"))
+    person = _norm(ask("Person"))
     if not person:
         return pause()
+    before = copy.deepcopy(s.policy["roles"])
     try:
-        ev = roles.change_role(s.policy, actor=actor, person=person, role=role,
-                               action="add" if act == 1 else "remove")
+        ev = roles.change_role(s.policy, actor=actor, person=person, role=role, action=action)
     except roles.RoleError as e:
         print(f"\n{e}")
+        s.log({"event": "role_refused", "actor": actor, "person": person, "role": role,
+               "action": action, "detail": str(e)})
         return pause()
-    s.save_roles()
-    s.log(ev)
+    try:
+        s.log(ev)                      # record first (B-21) ...
+    except BaseException:
+        s.policy["roles"] = before     # ... and undo the unlogged change if that failed
+        raise
+    s.save_roles()                     # ... then persist
     print(f"\nDone. {role} is now: {s.policy['roles'][role]}  (logged in the audit trail)")
     pause()
 
