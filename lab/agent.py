@@ -74,6 +74,10 @@ def make_local_tools(
     @tool
     def read_doc(name: str) -> str:
         """Return the text of a support document by file name (e.g. 'vpn-setup.md')."""
+        if "D2" in codes:
+            denied = defs.deny_doc_path(name)
+            if denied is not None:
+                return denied
         out = mcp_server.tool_read_doc(data_path, name)
         return defs.trust_label(out) if "D1" in codes else out
 
@@ -136,7 +140,10 @@ async def load_mcp_tools() -> list:
 
 def build_agent(tools, temperature: float = 0.2):
     """Create the insecure agent over the given LangChain tools."""
-    llm = ChatOllama(model=MODEL, base_url=OLLAMA, temperature=temperature)
+    llm = ChatOllama(
+        model=MODEL, base_url=OLLAMA, temperature=temperature,
+        client_kwargs={"timeout": 60},  # a hung model call fails the run, not the sweep
+    )
     return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
 
