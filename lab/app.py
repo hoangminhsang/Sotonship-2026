@@ -40,6 +40,7 @@ LIVE = "LIVE"
 SCRIPTED_SOURCE = "scripted: calibrated to the 24-run rehearsal; benign not measured"
 SCRIPTED_DIGEST = "none (scripted demo)"      # no model ran, so there is no digest
 TOOLS = ["read_doc", "query_assets", "create_ticket"]
+OLLAMA_DOWN = "Ollama unreachable or model missing — no candidate saved"
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +243,25 @@ def redteam_run(s: GovState) -> None:
         sample = int(ask("Sample size per split (LIVE is slow)", "8") or "8")
         attacks = [t for t in s.test if t["kind"] == "attack"][:sample]
         benign = [t for t in s.test if t["kind"] == "benign"][:sample]
-        traces = _run_live(runner, attacks + benign, codes, cid)
+        try:
+            traces = _run_live(runner, attacks + benign, codes, cid)
+        except (ConnectionError, OSError) as e:
+            print(f"\n{type(e).__name__}: {e}")
+            print(OLLAMA_DOWN)
+            return pause()
+        errors = sum(1 for t in traces if t.get("error"))
+        print(f"\nLIVE: {len(traces)} runs, {errors} errored")
+        if not traces:
+            print("no runs -- not measured; no candidate saved")
+            return pause()
+        if errors == len(traces):
+            print(OLLAMA_DOWN)
+            return pause()
         digest = runner.model_digest()
         mode = LIVE
         source = (f"live: {agent.MODEL} {digest or '(digest unknown)'}; "
-                  f"{len(attacks)} attack + {len(benign)} benign tests x 3 reps")
+                  f"{len(attacks)} attack + {len(benign)} benign tests x 3 reps; "
+                  f"{errors} errored runs excluded from every rate")
     else:
         traces = demo.demo_traces(s.test)
         if codes:
