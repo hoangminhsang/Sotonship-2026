@@ -58,8 +58,8 @@ class ControlResult:
 
     control: str
     classes: list[str]
-    hits: int                               # non-error attack runs with any covered class
-    runs: int                               # non-error attack runs
+    hits: int                               # counted attack runs with any covered class
+    runs: int                               # counted attack runs (metrics.counted: non-error, plus error runs that broke a rule)
     defences: tuple[str, ...] | None = None  # the candidate's enabled controls; None = unknown
     testable: bool = True                   # False when replay cannot test the control (D1)
 
@@ -93,7 +93,8 @@ def control_result(
 ) -> ControlResult:
     """Measured result for one control, from the runs frame.
 
-    Counts the non-error attack runs that landed in any class the control
+    Counts the attack runs the gate counts (``metrics.counted``: non-error runs
+    plus error runs that broke a rule) that landed in any class the control
     covers (``classes_covered`` overrides :func:`classes_for_control`; a run
     with two covered classes counts once). ``defences`` is the candidate's
     enabled control set: when given, a control outside it is reported as "not
@@ -105,7 +106,7 @@ def control_result(
     testable = control not in UNTESTABLE_BY_REPLAY
     if runs is None or runs.empty or "kind" not in runs.columns:
         return ControlResult(control, classes, 0, 0, codes, testable)
-    # The same counting rule as the risk register (non-error attack runs).
+    # The same counting rule as the risk register and the gate (metrics.counted).
     # A plain sum: an empty pandas object Series sums to '' and would break int().
     attacks = risks._attack_rows(runs)
     hits = sum(
