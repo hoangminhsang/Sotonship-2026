@@ -1,0 +1,32 @@
+services:
+  ollama:
+    image: ollama/ollama:0.4.0
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    # GPU (optional): uncomment on an NVIDIA host with nvidia-container-toolkit.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  lab:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - LAB_MODEL=qwen2.5:7b-instruct
+    volumes:
+      - ..:/workspace
+    ports:
+      - "8888:8888"
+
+volumes:
+  ollama_models:

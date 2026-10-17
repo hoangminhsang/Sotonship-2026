@@ -1,0 +1,6 @@
+# Extra dependency for the PyRIT-driven attack path (lab/pyrit_integration.py).
+# Install *on top of* docker/requirements.txt into a combined environment:
+#     python -m venv .venv-pyrit
+#     .venv-pyrit/bin/pip install -r docker/requirements.txt -r docker/requirements-pyrit.txt
+# Verified to co-resolve with the lab deps on Python 3.14 (pip check clean).
+pyrit==1.1.0

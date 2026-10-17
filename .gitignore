@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+results/traces/
+.pytest_cache/
+.venv-pyrit/
+results/notebook_run/

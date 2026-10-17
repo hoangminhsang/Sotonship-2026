@@ -1,0 +1,19 @@
+# Pinned to versions verified together on Python 3.14 (Oct 2026).
+# The lab does not use statsmodels: the Wilson interval is implemented by hand
+# in lab/metrics.py, so there is no SciPy/statsmodels toolchain to resolve.
+langgraph==1.2.16
+langchain-core==1.6.12
+langchain-ollama==1.1.0
+mcp==1.30.0
+langchain-mcp-adapters==0.3.2
+ollama==0.6.3
+pydantic==2.14.1
+pyyaml==6.0.3
+pandas==3.0.6
+numpy==2.5.4
+matplotlib==3.11.2
+jupyterlab==4.6.4
+nbformat==5.11.1
+nbconvert==7.17.2
+ipykernel==7.4.0
+pytest==9.1.1
