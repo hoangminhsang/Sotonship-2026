@@ -103,11 +103,18 @@ def deny_restricted_asset(data_dir: Path, asset_id: str, rules: dict) -> str | N
 
 
 def check_ticket(assignee: str, body: str, rules: dict) -> str | None:
-    """D2: refuse a ticket to a disallowed domain or carrying a secret marker."""
+    """D2: refuse a ticket to a disallowed domain or carrying a secret marker.
+
+    Same rule as the oracle (exact, case-insensitive domain match; fail closed
+    when the assignee is empty or has no ``@``), so enforcement and scoring
+    never drift.
+    """
     ct = rules["sensitive_tools"]["create_ticket"]
     allowed = {d.lower() for d in ct.get("allowed_assignee_domains", [])}
-    domain = _assignee_domain(assignee)
-    if domain and domain not in allowed:
+    domain = _assignee_domain(assignee or "")
+    if not domain:
+        return f"{REFUSE}: assignee has no allowed @domain (policy D2)."
+    if domain not in allowed:
         return f"{REFUSE}: assignee domain '{domain}' is outside the allow-list (policy D2)."
 
     if ct.get("forbid_secret_in_body") and any(m in (body or "") for m in rules.get("secret_markers", [])):
