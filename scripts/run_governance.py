@@ -40,7 +40,7 @@ Modes:
 Usage (from the repo root):
     .venv-pyrit/bin/python scripts/run_governance.py                 # demo
     .venv-pyrit/bin/python scripts/run_governance.py --live --sample 12
-    .venv-pyrit/bin/python scripts/run_governance.py --out /tmp/gov_run
+    .venv-pyrit/bin/python scripts/run_governance.py --out /tmp/gov_run   # default: governance_out/cli_demo
     .venv-pyrit/bin/python scripts/run_governance.py --run results/runs/<id> [--run-after results/runs/<id2>]
 
 The governance and assurance logic itself lives in ``lab/governance`` and
@@ -51,7 +51,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -176,6 +176,18 @@ class Report:
         return path
 
 
+def rotate_log(audit_path: Path) -> Path:
+    """Rename an existing audit log to ``audit_log.<UTC timestamp>.jsonl``; never delete."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target = audit_path.with_name(f"{audit_path.stem}.{stamp}{audit_path.suffix}")
+    n = 1
+    while target.exists():  # two runs in the same second
+        n += 1
+        target = audit_path.with_name(f"{audit_path.stem}.{stamp}-{n}{audit_path.suffix}")
+    audit_path.rename(target)
+    return target
+
+
 def _fmt_summary(s: dict) -> str:
     # ``errors_with_violation`` / ``attempted_*`` arrive with the error-scoring
     # change (fix 3); read with .get so this line works before and after it.
@@ -258,10 +270,12 @@ def run(args: argparse.Namespace) -> int:
         model_name = agent.MODEL
         model_digest = "sha256:845dbda0..."  # best-effort provenance for the demo
 
-    # Fresh audit log unless asked to keep it.
+    # Fresh audit log unless asked to keep it. An existing log is never deleted:
+    # it is rotated to audit_log.<UTC timestamp>.jsonl next to the new one.
     audit_path = out_dir / "audit_log.jsonl"
     if audit_path.exists() and not args.keep_log:
-        audit_path.unlink()
+        rotated = rotate_log(audit_path)
+        rep.say(f"Audit log: existing {audit_path.name} kept as {rotated.name}; starting a fresh log")
 
     # ----------------------------------------------------------------------- #
     # RC-001: the insecure agent.
@@ -318,6 +332,10 @@ def run(args: argparse.Namespace) -> int:
         )
     except decision.DecisionError as e:
         rep.say(f"Self-review refused: {e}")
+        audit.append(audit_path, {  # the refusal is part of the record, as in the menu app
+            "event": "decision_refused", "candidate_id": "RC-001", "reviewer": args.engineer,
+            "action": "APPROVE", "detail": str(e),
+        })
 
     # The reviewer blocks it with a reason (a FAIL cannot be approved).
     ev_block = decision.decide(
@@ -479,10 +497,13 @@ def run(args: argparse.Namespace) -> int:
     if args.tamper_demo:
         tampered = out_dir / "audit_log_tampered_demo.jsonl"
         lines = audit_path.read_text().splitlines()
-        if len(lines) >= 3:
-            rec = json.loads(lines[2])  # entry #3 = the reviewer's BLOCK of RC-001
+        # Forge the reviewer's BLOCK of RC-001 into an approval.
+        idx = next((i for i, line in enumerate(lines)
+                    if json.loads(line).get("decision") == "BLOCK"), None)
+        if idx is not None:
+            rec = json.loads(lines[idx])
             rec["decision"] = "APPROVE"  # forge an approval
-            lines[2] = json.dumps(rec, sort_keys=True)
+            lines[idx] = json.dumps(rec, sort_keys=True)
             tampered.write_text("\n".join(lines) + "\n", encoding="utf-8")
             rep.written.append(tampered)
             check = audit.verify_log(tampered)
@@ -525,25 +546,29 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LIVE only: first N tests per split for a quick run")
     p.add_argument("--reps", type=int, default=3, help="repetitions per test")
     p.add_argument("--temperature", type=float, default=0.2, help="LIVE only: model temperature")
-    p.add_argument("--out", default=str(REPO / "governance_out"),
-                   help="directory for the audit log and artifact files")
+    p.add_argument("--out", default=str(REPO / "governance_out" / "cli_demo"),
+                   help="directory for the audit log and artifact files (an existing audit log "
+                        "there is rotated, never deleted; the menu app's governance_out/ is not touched)")
     p.add_argument("--engineer", default="tom", help="candidate submitter (an 'engineers' role in policy.yaml)")
     p.add_argument("--reviewer", default="sarah", help="decision reviewer (a 'reviewers' role in policy.yaml)")
     p.add_argument("--due", default="2026-10-24", help="due date stamped on fix tickets (YYYY-MM-DD)")
     p.add_argument("--keep-log", action="store_true",
                    help="append to an existing audit log instead of starting fresh")
     p.add_argument("--no-tamper-demo", dest="tamper_demo", action="store_false",
-                   help="skip the tamper-evidence demonstration")
+                   default=argparse.SUPPRESS,  # keeps the formatter from printing "(default: True)"
+                   help="skip the tamper-evidence demonstration (it runs unless this flag is given)")
     p.add_argument("--run", default=None, metavar="RUN_DIR",
                    help="gate a saved, locked run folder (results/runs/<id>) as RC-001 instead of DEMO/LIVE")
     p.add_argument("--run-after", default=None, metavar="RUN_DIR",
-                   help="with --run: a saved D2 run folder to use as RC-002 (default: D2 replay of --run)")
-    p.set_defaults(tamper_demo=True)
+                   help="with --run: a saved D2 run folder to use as RC-002; without it RC-002 is a "
+                        "D2 replay of --run")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not hasattr(args, "tamper_demo"):  # SUPPRESS default: the flag's absence means "run it"
+        args.tamper_demo = True
     try:
         date.fromisoformat(args.due)
     except ValueError:
