@@ -61,32 +61,37 @@ First 12 tests, 2 reps each:
 
 ### Step 1.2 — Full run (the headline numbers)
 
-Whole test split, 3 reps:
+Whole test split, 3 reps, labelled as candidate RC-001:
 
 ```bash
-.venv-pyrit/bin/python scripts/run_pyrit_attack.py
+.venv-pyrit/bin/python scripts/run_pyrit_attack.py --candidate RC-001
 ```
 
-Useful flags: `--split dev|test`, `--reps N`, `--sample N`, `--temperature T`.
+Useful flags: `--split dev|test`, `--reps N`, `--sample N`, `--temperature T`,
+`--candidate LABEL` (default `adhoc`).
 
 ### Step 1.3 — Read the attack results
 
 The script prints the overall ASR with its 95% confidence interval and a
-per-technique table (worst first). It also writes:
+per-technique table (worst first).
 
-- `results/summary.csv` — aggregated metrics.
-- `results/runs.csv` — one row per run (tool calls + verdict side by side).
-- `results/traces/<test_id>__rep<k>.json` — the full per-run trace.
+Each run is saved to its own locked folder `results/runs/<run_id>/` (run_id =
+UTC time + model tag + candidate, e.g.
+`20261017T171253Z_qwen2.5-7b-instruct_RC-001`): `manifest.json` (model +
+digest, driver, corpus/rules/policy hashes, git commit, split, reps, timings,
+sha256 of every file, `locked: true`), `records.jsonl` (the exact records
+run), `traces/<test_id>__rep<k>.json`, `runs.csv` (one row per run),
+`summary.csv`. Files are read-only; nothing writes into or deletes a saved
+run. The script checks `corpus/*.jsonl` against the generator and stops if
+they differ (it never rewrites them). Use `--candidate RC-001` to label the
+folder. Read it with:
 
 ```bash
-cat results/summary.csv
+cat results/runs/<run_id>/summary.csv
 ```
 
-> **TODO (fix 1):** after fix 1 merges, every run writes to its own locked
-> folder `results/runs/<run_id>/{manifest.json, records.jsonl, traces/,
-> runs.csv, summary.csv}` and no longer overwrites `results/*.csv`. The exact
-> text for this step is pending from the fix 1 agent; the file layout is in
-> `docs/DATA_CONTRACT.md` §6.
+The committed `results/summary.csv` and `results/runs.csv` are the 24-run
+rehearsal and are never overwritten.
 
 Reading the CSVs in code: open `runs.csv` with
 `pd.read_csv(path, keep_default_na=False)`, or empty `error` cells become NaN
@@ -95,11 +100,21 @@ and every run counts as an error. Rates in the CSVs are fractions 0–1
 
 ### Headline runs
 
-> **Commands finalised after fix 1 merges — see `docs/DATA_CONTRACT.md`.**
-> The committed `results/summary.csv` is a 24-run rehearsal (12 attack tests
-> × 2 reps, benign not measured). The headline run is the full test split at
-> 3 reps: 26 attack tests × 3 = 78 attack runs and 20 benign × 3 = 60 benign
-> runs. Its results are **pending**.
+The committed `results/summary.csv` is a 24-run rehearsal (12 attack tests ×
+2 reps, benign not measured). The headline run is the full test split at
+3 reps: 26 attack tests × 3 = 78 attack runs and 20 benign × 3 = 60 benign
+runs. Its results are **pending**. The commands:
+
+```bash
+# 1. RC-001, the insecure baseline: full test split, 3 reps, saved and locked
+.venv-pyrit/bin/python scripts/run_pyrit_attack.py --candidate RC-001
+cat results/runs/<run_id>/summary.csv
+
+# 2. gate + assurance from that saved run. RC-002 is a deterministic D2 replay
+#    of the same traces unless you pass a saved D2 run folder with --run-after.
+.venv-pyrit/bin/python scripts/run_governance.py --run results/runs/<run_id> \
+    [--run-after results/runs/<d2_run_id>]
+```
 
 ---
 
@@ -137,13 +152,12 @@ Make sure Ollama is up (see §0), then:
 .venv-pyrit/bin/python scripts/run_governance.py --live --sample 12
 ```
 
-> **Live-gate note (D-08 / X-05).** The policy requires
-> `min_attack_runs: 50`. At 3 reps per test, a gated live run needs at least
-> **17 attack tests (51 attack runs)**; the app's default LIVE sample of 8
-> gives 24 runs and `--sample 12` gives 36, so both FAIL with "not enough
-> proof" and step 5 below ("Gate again → PASS") cannot happen live. Use
-> `--sample 17` or more for a run that can PASS (about 17 attacks + 17 benign,
-> × 3 reps, per candidate; duration not measured).
+> **Live-gate note (D-08 / X-05).** Policy `min_attack_runs: 50`; at 3 reps a
+> live gate needs at least 17 attack tests (`--live --sample 17` or more; the
+> default sample of 12 gives 36 attack runs and FAILs on `min_attack_runs`).
+> With fewer, step 5 below ("Gate again → PASS") cannot happen live. The app's
+> LIVE default sample of 8 gives 24 runs. Duration of a 17-test run is not
+> measured.
 
 ### Step 2.3 — Read the governance artifacts
 
@@ -239,13 +253,14 @@ DEMO number you show.
 ```bash
 cd Sotonship-2026
 
-# 1. attack (measure how often the insecure agent breaks)
-.venv-pyrit/bin/python scripts/run_pyrit_attack.py
+# 1. attack (measure how often the insecure agent breaks); saved + locked
+.venv-pyrit/bin/python scripts/run_pyrit_attack.py --candidate RC-001
+cat results/runs/<run_id>/summary.csv
 
-# 2. governance + assurance (turn the result into a decision + records)
-.venv-pyrit/bin/python scripts/run_governance.py
+# 2. governance + assurance from the saved run (decision + records)
+.venv-pyrit/bin/python scripts/run_governance.py --run results/runs/<run_id> \
+    [--run-after results/runs/<d2_run_id>]
 
 # 3. read the headline outputs
-cat results/summary.csv            # TODO (fix 1): results/runs/<run_id>/summary.csv
 cat governance_out/manager_summary.md
 ```

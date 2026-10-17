@@ -1,9 +1,10 @@
 # Data contract — every file the pipeline writes
 
 Audience: the dashboard team and anyone who reads the pipeline's outputs
-without reading `lab/`. Written against commit `d825341` on 17 Oct 2026 from
-the code in `lab/` and `scripts/`. Sections marked **from fix 1** or
-**from fix 3** describe branches that had not merged when this was written;
+without reading `lab/`. Written on 17 Oct 2026 from the code in `lab/` and
+`scripts/` at commit `d825341` plus the locked run folders from fix 1 (merged
+on `review/hardening` as `b247849`). Sections marked **from fix 3** or
+**from fix 6** describe branches that had not merged when this was written;
 confirm them after the merge.
 
 Read this first:
@@ -52,12 +53,13 @@ Read this first:
 ## 2. Traces — one JSON per run
 
 **Producer:** `lab/runner.py` `run_split` (native driver) or
-`lab/pyrit_integration.py` `run_split` (PyRIT driver).
-**Path today:** `results/traces/<test_id>__rep<k>.json` (git-ignored; every run
-overwrites the last). **From fix 1:** `results/runs/<run_id>/traces/<test_id>__rep<k>.json`
-(see §6).
-**Consumers:** `metrics.build_runs_frame`; the app stores the list of traces
-per candidate in `governance_out/<cid>/traces.json`.
+`lab/pyrit_integration.py` `run_split` (PyRIT driver), both through
+`lab/run_folder.py`.
+**Path:** `results/runs/<run_id>/traces/<test_id>__rep<k>.json` (see §6). A
+trace is written once (`mode "x"`) and never overwritten. The legacy
+`results/traces/` folder is git-ignored and no longer written.
+**Consumers:** `metrics.build_runs_frame`; `run_folder.load_run`; the app
+stores the list of traces per candidate in `governance_out/<cid>/traces.json`.
 
 | Key | Type | Native | PyRIT | Meaning |
 |---|---|---|---|---|
@@ -68,7 +70,7 @@ per candidate in `governance_out/<cid>/traces.json`.
 | `place` | str | yes | yes | where the payload was planted, e.g. `P2_doc_comment`; `none` for benign |
 | `rep` | int | yes | yes | repetition number, 1-based |
 | `model` | str | yes | yes | Ollama tag, e.g. `qwen2.5:7b-instruct` |
-| `model_digest` | str | yes | **no** (fix 1 adds it) | `sha256:…` from Ollama `/api/tags`; `''` if the probe failed |
+| `model_digest` | str | yes | yes | `sha256:…` from Ollama `/api/tags`; `''` if the probe failed |
 | `temperature` | float | yes | yes | 0.2 by default |
 | `seed` | int | yes | **no** | world/corpus seed (7) |
 | `user_task` | str | yes | yes | the benign request the user typed |
@@ -80,18 +82,21 @@ per candidate in `governance_out/<cid>/traces.json`.
 | `error` | str or null | yes | yes | exception text if the run failed; `null` otherwise |
 | `started_at` | str | yes | yes | ISO-8601 |
 | `duration_s` | float | yes | yes | seconds, 2 dp |
-| `driver` | str | **from fix 1:** `native` | `pyrit` | which runner produced it |
-| `run_id` | str | **from fix 1** | **from fix 1** | folder name under `results/runs/` |
+| `driver` | str | `native` | `pyrit` | which runner produced it |
+| `run_id` | str | yes | yes | folder name under `results/runs/` |
 
 ---
 
 ## 3. `runs.csv` — one row per run (the human-validation sheet)
 
-**Producer:** `metrics.build_runs_frame` → `metrics.write_outputs` (CLI
-`scripts/run_pyrit_attack.py`) and `lab/app.py` (`governance_out/<cid>/runs.csv`).
+**Producer:** `metrics.build_runs_frame` → `metrics.write_outputs`, called by
+`run_folder.lock_run` (`results/runs/<run_id>/runs.csv`); `lab/app.py`
+(`governance_out/<cid>/runs.csv`); `scripts/run_governance.py`
+(`<out>/RC-00x/runs.csv` for every candidate it scores, DEMO, replay or saved
+run).
 **Committed copy:** `results/runs.csv` = the 24-run rehearsal (12 attack tests
-× 2 reps, no benign runs). Rows are sorted by `kind`, `technique`, then
-`violated` descending.
+× 2 reps, no benign runs); never overwritten. Rows are sorted by `kind`,
+`technique`, then `violated` descending.
 **Consumers:** `gate.summarise` (via the frame), `risks.build_register`,
 `thread.build_thread`; the dashboard.
 
@@ -110,7 +115,7 @@ per candidate in `governance_out/<cid>/traces.json`.
 | `oracle_detail` | str | ` \| `-joined human reasons, e.g. `query_assets on forbidden id VAULT-01` |
 | `benign_success` | bool | benign run completed its task without breaking a rule; always `False` for attacks |
 | `error` | str | exception text, or **empty string** (the NaN trap) |
-| `trace_path` | str | `results/traces/<id>__rep<k>.json` today; **from fix 1:** `traces/<id>__rep<k>.json` relative to the run folder |
+| `trace_path` | str | inside a run folder: `traces/<id>__rep<k>.json`, relative to that folder. The committed `results/runs.csv` keeps the legacy `results/traces/<id>__rep<k>.json` |
 
 Counting rules (`lab/metrics.py`):
 
@@ -123,11 +128,11 @@ Counting rules (`lab/metrics.py`):
 
 ## 4. `summary.csv` — aggregated metrics
 
-**Producer:** `metrics.summary_frame` → `write_outputs`.
-**Committed copy:** `results/summary.csv` (the rehearsal). **From fix 1:**
-`results/runs/<run_id>/summary.csv`.
-**Consumers:** humans, RUNBOOK `cat`, the dashboard. No `.py` file reads it
-today.
+**Producer:** `metrics.summary_frame` → `write_outputs`, via
+`run_folder.lock_run` → `results/runs/<run_id>/summary.csv`.
+**Committed copy:** `results/summary.csv` (the rehearsal; never overwritten).
+**Consumers:** humans, RUNBOOK `cat`, the dashboard. The gate does not read
+it: `run_governance.py --run` re-scores the folder's traces.
 
 Columns: `metric, successes, n, rate, ci_low, ci_high`. `rate` and the CI are
 fractions; the CI is a 95% Wilson interval (`metrics.wilson`).
@@ -249,30 +254,38 @@ detected by the chain alone (README "Honest limits").
 | `inventory_card.md` (CLI) / `inventory.md` (app) | bullet list: `system`, `owner`, `purpose`, `model`, `model digest`, `tools`, `defences`, `data`, `risk tier`, `policy version`, `candidate id` |
 | `risk_register_before.md`, `risk_register_after.md` (CLI) / `risk_register.md` (app) | columns `ID \| Risk \| Violation class \| Likelihood \| Impact \| Control \| Owner \| Status`. Ids fixed: `R-01` reads restricted, `R-02` leaks data, `R-03` unrequested tickets. Likelihood from the measured class rate: High ≥ 0.20, Medium 0.05–0.20, Low < 0.05. Status `Open` / `Mitigated` / `Re-opened`. A class with no control row shows `NO FIX FOUND IN TABLE. Rule owner must add one.` |
 | `fix_tickets.md` (CLI) | bullet list, one ticket per `Open`/`Re-opened` risk that has a known control; ticket id mirrors the risk id (`R-02` → `FIX-02`); fields `id`, `title`, `control`, `risk_id`, `owner`, `due`. A NO-FIX risk gets no ticket. |
-| `evidence_register.md` | columns `Control \| Proof needed \| Proof file \| Result`; `Proof file` is `results/<RC>/runs.csv` (no code writes that path today; **from fix 1** the CLI `--run-after` points it at a run folder's `runs.csv`) |
+| `evidence_register.md` | columns `Control \| Proof needed \| Proof file \| Result`; `Proof file` is the re-test's real `runs.csv`: `<out>/RC-002/runs.csv` for a DEMO or D2-replay RC-002, or the saved run folder's `runs.csv` with `--run-after` |
 | `traceability.md` (CLI) | `**Traceability for <finding_id>**`, then the chain as one code-formatted line, then numbered steps (attack → risk → control → fix → re-test → approval → status) |
 | `manager_summary.md` (CLI) / `summary.md` (app) | bullets: `Live version` (last APPROVE/OVERRIDE in the log), `Current attack rate` (percentage, no CI), `Open risks (n)`, `Last decision`, optional `Overrides expired`, `No fix in table` |
 
 ---
 
-## 6. Locked run folders — `results/runs/<run_id>/` (**from fix 1, confirm after merge**)
+## 6. Locked run folders — `results/runs/<run_id>/` (`lab/run_folder.py`)
 
 Every native or PyRIT run writes to its own folder and never overwrites
-another. `run_id` = `<UTC stamp>_<model>_<candidate>`, e.g.
-`20261017T161700Z_qwen2.5-7b-instruct_RC-001`.
+another. `run_id` = `<UTC stamp>_<model tag>_<candidate>`, e.g.
+`20261017T171253Z_qwen2.5-7b-instruct_RC-001` (characters outside
+`[A-Za-z0-9._-]` become `-`). `--candidate` on `scripts/run_pyrit_attack.py`
+sets the label (default `adhoc`); the app and `run_governance.py --live` pass
+the candidate id.
 
 | File | Content |
 |---|---|
-| `manifest.json` | written at start with `locked: false`; keys `schema`, `run_id`, `candidate`, `driver`, `model`, `model_digest`, `defences`, `temperature`, `seed`, `reps`, `split`, `n_records`, `expected_runs`, `records_sha256`, `corpus_sha256` (`{dev.jsonl, test.jsonl}`), `rules_sha256`, `policy_sha256`, `git_commit`, `git_dirty`, `started_at`. On lock, adds `ended_at`, `n_runs`, `complete`, `seconds_per_run` (`{n, total, mean, median, min, max}`), `files` (`{relpath: sha256}` for every file except the manifest), `locked: true`, `locked_at`. |
-| `records.jsonl` | the exact corpus records run, corpus JSONL format |
+| `manifest.json` | written at start with `locked: false`, before any model call. Keys: `schema`, `run_id`, `candidate`, `driver`, `model`, `model_digest`, `defences`, `temperature`, `seed`, `reps`, `split`, `n_records`, `expected_runs`, `records_sha256`, `corpus_sha256` (one sha256 per corpus split file, dev and test), `rules_sha256`, `policy_sha256`, `git_commit`, `git_dirty`, `started_at`, `ended_at`, `n_runs`, `complete`, `seconds_per_run` (`{n, total, mean, median, min, max}`), `files` (`{relpath: sha256}` for every file except the manifest), `locked`, `locked_at`. `ended_at`, `n_runs`, `complete`, `seconds_per_run`, `files`, `locked_at` are `null`/`0`/`{}` until `lock_run` fills them; `complete` = `n_runs == expected_runs`. |
+| `records.jsonl` | the exact corpus records run, corpus JSONL format (its hash equals `corpus/test.jsonl` when the full split is run) |
 | `traces/<test_id>__rep<k>.json` | §2 traces with `run_id` and `driver` |
-| `runs.csv` | §3, `trace_path` relative to the folder |
+| `runs.csv` | §3; `trace_path` is relative (`traces/<id>__rep<k>.json`) |
 | `summary.csv` | §4 |
 
-All files are chmod 0444 after lock. `run_folder.verify_run` recomputes the
-hashes; `load_run` verifies first. `scripts/run_governance.py --run <dir>`
-gates a saved run; `--run-after <dir>` supplies the D2 re-test. An interrupted
-run is still locked, with `complete: false`.
+All files are chmod 0444 after lock (directories stay writable so git works).
+`run_folder.verify_run` recomputes the hashes and names any changed, missing
+or extra file; `load_run` verifies first. `scripts/run_governance.py --run
+<dir>` gates a saved run (RC-001 = its traces re-scored; model and digest from
+the manifest); `--run-after <dir>` supplies a saved D2 run as RC-002,
+otherwise RC-002 is a deterministic D2 replay of `--run` and the report says
+so. `--run` with `--live` is refused. An interrupted run is still locked,
+with `complete: false`. The attack script checks `corpus/*.jsonl` against the
+generator and stops on a mismatch; it never rewrites them.
 
 The committed `results/summary.csv` and `results/runs.csv` stay where they
-are.
+are and are never overwritten.

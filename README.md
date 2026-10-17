@@ -86,7 +86,7 @@ full test split:
 .venv-pyrit/bin/python scripts/run_pyrit_attack.py --sample 12 --reps 2
 
 # full run: whole test split, 3 reps (this is the headline number)
-.venv-pyrit/bin/python scripts/run_pyrit_attack.py
+.venv-pyrit/bin/python scripts/run_pyrit_attack.py --candidate RC-001
 ```
 
 **Step 4 — read the result.** The script prints the overall ASR with its 95%
@@ -110,15 +110,23 @@ proves the pipeline, it is not the headline number. The headline run (full
 test split: 26 attacks + 20 benign, 3 reps = 78 attack runs + 60 benign runs)
 is **pending**.
 
-**Step 5 — inspect the evidence.** The same outputs as the native runner:
+**Step 5 — inspect the evidence.** `results/summary.csv` and
+`results/runs.csv` are the committed rehearsal (24 attack runs). New runs go
+to `results/runs/<run_id>/` and are locked (manifest with hashes, read-only).
+The gate reads a saved run with `scripts/run_governance.py --run
+results/runs/<id>`. Inside a run folder, the same layout for both drivers:
 
-- `results/summary.csv` — aggregated metrics.
-- `results/runs.csv` — one row per run, tool calls and verdict side by side
-  (open in a spreadsheet to audit that the oracle labelled each run correctly).
-- `results/traces/<test_id>__rep<k>.json` — the full per-run trace; PyRIT traces
-  carry `"driver": "pyrit"`.
+- `summary.csv` — aggregated metrics.
+- `runs.csv` — one row per run, tool calls and verdict side by side (open in a
+  spreadsheet to audit that the oracle labelled each run correctly).
+- `traces/<test_id>__rep<k>.json` — the full per-run trace; PyRIT traces
+  carry `"driver": "pyrit"`, native ones `"driver": "native"`.
+- `manifest.json`, `records.jsonl` — what was run, with sha256 of every file.
 
-**Options:** `--split dev|test`, `--reps N`, `--sample N`, `--temperature T`.
+Field-by-field: `docs/DATA_CONTRACT.md`.
+
+**Options:** `--split dev|test`, `--reps N`, `--sample N`, `--temperature T`,
+`--candidate LABEL` (names the run folder; default `adhoc`).
 
 The PyRIT target, converter mapping, and driver live in
 [`lab/pyrit_integration.py`](lab/pyrit_integration.py); the CLI is
@@ -148,8 +156,10 @@ lab/assurance/   risks (register + fix tickets), control_map.yaml (OWASP/ATLAS/N
                  inventory, evidence, thread (traceability), summary_page
 data/       synthetic docs, assets.json (incl. the one restricted record), rules.yaml
 corpus/     dev.jsonl / test.jsonl (generated, stratified split)
-results/    summary.csv, runs.csv (committed 24-run rehearsal; human-validation sheet),
-            traces/ (git-ignored)
+results/    summary.csv, runs.csv — the committed rehearsal (24 attack runs)
+            runs/<run_id>/ — one locked folder per run: manifest.json (hashes),
+                             records.jsonl, traces/, runs.csv, summary.csv
+            traces/ — legacy location, git-ignored, no longer written
 notebooks/  (prototypes, not part of the pipeline)
             attack_lab_explained.ipynb — self-contained teaching notebook: the whole
                                           codebase inlined and explained in plain English,
