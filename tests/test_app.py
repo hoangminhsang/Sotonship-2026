@@ -89,8 +89,11 @@ def test_every_numbered_line_carries_the_mode_label(tmp_path, monkeypatch, capsy
         lines = _lines_with(out, key)
         assert lines and all("[SCRIPTED]" in ln for ln in lines), key
 
-    # Manager summary and inventory card.
-    assert all("[SCRIPTED]" in ln for ln in _lines_with(out, "Current attack rate"))
+    # Manager summary (nothing approved yet: the live rate is n/a, the viewed
+    # candidate's own numbers are labelled) and inventory card.
+    rate = _lines_with(out, "Current attack rate")
+    assert rate and all("n/a" in ln and "no approved version" in ln for ln in rate)
+    assert all("42.3%" in ln and "[SCRIPTED]" in ln for ln in _lines_with(out, "Viewed candidate"))
     digest_lines = _lines_with(out, "model digest")
     assert digest_lines and all("none (scripted demo)" in ln and "[SCRIPTED]" in ln for ln in digest_lines)
     assert "run mode:** SCRIPTED" in out
@@ -452,3 +455,65 @@ def test_tamper_demo_runs_on_a_copy_and_never_edits_the_real_log(tmp_path, monke
     assert "TAMPERING DETECTED at entry #2" in out
     assert "real log" in out and "intact" in out
     assert "BLOCK" in out and "APPROVE" in out                         # the one field changed is named
+
+
+# --------------------------------------------------------------------------- #
+# Item 6: X-07 manager summary uses the live version's own numbers;
+#         X-06 traceability uses the prior candidate's runs and tickets.
+# --------------------------------------------------------------------------- #
+
+# RC-002 with D2,D3 scripted: 0/78 PASS (same before and after the faithful demo).
+SECOND_D2D3 = ["1", "", "1", "D2,D3", "1", ""]
+APPROVE_LAST_BY_SARAH = ["2", "2", "", "1", "sarah", ""]
+
+
+def test_manager_summary_uses_the_live_versions_numbers(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        *NEW_DEMO_CANDIDATE, *SECOND_D2D3, "3",       # RC-001 none, RC-002 D2,D3
+        *APPROVE_LAST_BY_SARAH, "7",                   # RC-002 approved -> live
+        "3", "6", "RC-001", "", "",                    # manager summary while VIEWING RC-001
+        "9", "4",
+    ])
+    recs = json.loads((work / "candidates.json").read_text())
+    assert recs["RC-002"]["decision"] == "APPROVE"
+    assert recs["RC-001"]["summary"]["mode"] == "SCRIPTED"
+
+    assert "Live version:** RC-002" in out
+    rate = _lines_with(out, "Current attack rate")
+    assert rate and all("0.0%" in ln and "42.3%" not in ln and "[SCRIPTED]" in ln for ln in rate)
+    live_ev = _lines_with(out, "Live version evidence")
+    assert live_ev and "RC-002" in live_ev[0] and "95% CI" in live_ev[0] and "0/78" in live_ev[0]
+    viewed = _lines_with(out, "Viewed candidate")
+    assert viewed and "RC-001" in viewed[0] and "42.3%" in viewed[0] and "[SCRIPTED]" in viewed[0]
+
+
+def test_traceability_uses_prior_candidates_runs_and_tickets(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        *NEW_DEMO_CANDIDATE, *SECOND_D2D3, "3",
+        *APPROVE_LAST_BY_SARAH, "7",
+        "3", "5", "", "RC-001", "", "",               # traceability for RC-002, prior RC-001, default finding
+        "9", "4",
+    ])
+    assert "Broke `V_exfiltration` -> risk **R-02**" in out
+    assert "Control **D2**" in out
+    assert "Fix ticket **FIX-02**" in out
+    assert "Re-tested as **RC-002**" in out
+    assert "Approved by sarah -> audit entry #" in out
+    assert "Final status: **Mitigated**" in out
+
+
+def test_evidence_register_reports_a_measured_result_and_real_proof_file(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [
+        *NEW_DEMO_CANDIDATE, *SECOND_D2D3, "3",
+        "3", "4", "", "", "",                          # evidence register for RC-002 (no prior)
+        "8", "", "", "",                               # write all reports for RC-002
+        "9", "4",
+    ])
+    d2 = [ln for ln in out.splitlines() if ln.startswith("| D2 |")]
+    assert d2 and "Not yet run" not in d2[0] and "0 of 78" in d2[0]
+    md = (work / "RC-002" / "evidence_register.md").read_text()
+    assert "Not yet run" not in md and "0 of 78" in md
+    assert "results/RC-002/runs.csv" not in md                   # X-03: no phantom path

@@ -157,7 +157,7 @@ def tag_numbers(text: str, rec: dict, every: bool = False) -> str:
     """
     tag = mode_label(rec)
     return "\n".join(
-        f"{ln}  {tag}" if (every and ln.strip()) or re.search(r"\d", ln) else ln
+        f"{ln}  {tag}" if tag not in ln and ((every and ln.strip()) or re.search(r"\d", ln)) else ln
         for ln in text.splitlines()
     )
 
@@ -404,6 +404,7 @@ def _save_candidate(s: GovState, cid: str, submitted_by: str, codes: list[str],
     s.traces_path(cid).write_text(json.dumps(traces, indent=2))
     runs.to_csv(s.work / cid / "runs.csv", index=False)
     summary = gate.summarise(runs)
+    summary["mode"] = mode                 # the manager summary labels each candidate by this
 
     fp = candidate.fingerprint(
         cid, submitted_by=submitted_by, model=agent.MODEL, model_digest=digest,
@@ -662,7 +663,7 @@ def assurance_action(s: GovState, c: int) -> None:
         print("  (no stored runs for that candidate)")
         return pause()
     rec = s.candidates[cid]
-    reg = _register_for(s, cid, runs)
+    reg, prior = _register_for(s, cid, runs)
     print(f"\n{cid} {mode_label(rec)} -- {rec.get('source') or 'source unknown'}")
     if c == 1:
         print("\n" + risks.to_markdown(reg))
@@ -675,10 +676,9 @@ def assurance_action(s: GovState, c: int) -> None:
                 print(f"  {r.id} {r.violation_class:<20} -> {r.control}  "
                       f"OWASP {r.owasp} | ATLAS {r.mitre_atlas} | NIST {r.nist_ai_rmf}")
     elif c == 4:
-        res = {"D2": f"{int((runs['violation_classes'].str.contains('V_exfiltration', na=False)).sum())} exfiltration runs"}
-        print("\n" + evidence.to_markdown(evidence.build_register(reg, retest_candidate=cid, results=res)))
+        print("\n" + evidence.to_markdown(_evidence_rows(s, cid, runs, reg)))
     elif c == 5:
-        assurance_thread(s, cid, runs, reg)
+        assurance_thread(s, cid, runs, reg, prior)
     elif c == 6:
         print("\n" + manager_summary_text(s, cid, reg))
     elif c == 7:
@@ -688,32 +688,152 @@ def assurance_action(s: GovState, c: int) -> None:
     pause()
 
 
+def _kw_unsupported(e: TypeError) -> bool:
+    return "unexpected keyword" in str(e)
+
+
+def _build_register(s: GovState, runs: pd.DataFrame, codes: list[str], prior=None):
+    """Risk register; passes the candidate's defences when the assurance lane accepts them."""
+    try:
+        return risks.build_register(runs, s.policy, s.control_map, prior=prior, defences=codes)
+    except TypeError as e:
+        if not _kw_unsupported(e):
+            raise
+        return risks.build_register(runs, s.policy, s.control_map, prior=prior)
+
+
 def _register_for(s: GovState, cid: str, runs: pd.DataFrame):
-    """Build the register, using a chosen prior candidate to close/reopen risks."""
+    """Build the register, using a chosen prior candidate to close/reopen risks.
+
+    Returns ``(register, prior)``; ``prior`` is ``None`` or a dict with the
+    prior candidate's ``id``, ``runs`` and ``register`` (the "before" story).
+    """
     prior_id = ask("Compare against prior candidate for status? (id or blank)", "")
     prior = None
-    if prior_id and prior_id in s.candidates:
-        prior_runs = s.load_runs(prior_id)
-        if prior_runs is not None:
-            prior = risks.prior_from(risks.build_register(prior_runs, s.policy, s.control_map))
-    return risks.build_register(runs, s.policy, s.control_map, prior=prior)
+    if prior_id:
+        prior_runs = s.load_runs(prior_id) if prior_id in s.candidates else None
+        if prior_runs is None:
+            print(f"  (no stored runs for {prior_id!r}; building without a prior)")
+        else:
+            prior_reg = _build_register(s, prior_runs, s.candidates[prior_id].get("defences", []))
+            prior = {"id": prior_id, "runs": prior_runs, "register": prior_reg}
+    reg = _build_register(s, runs, s.candidates[cid].get("defences", []),
+                          prior=risks.prior_from(prior["register"]) if prior else None)
+    return reg, prior
 
 
-def assurance_thread(s: GovState, cid: str, runs: pd.DataFrame, reg) -> None:
-    leaked = runs[(runs["kind"] == "attack") & runs["violated"]]
-    default = leaked.iloc[0]["test_id"] if not leaked.empty else "ATK-0021"
+def assurance_thread(s: GovState, cid: str, runs: pd.DataFrame, reg, prior=None) -> None:
+    """X-06: the story starts at the PRIOR candidate's runs and tickets, as the CLI does."""
+    before_runs = prior["runs"] if prior else runs
+    tickets = risks.fix_tickets(prior["register"] if prior else reg)
+    attacks = before_runs[(before_runs["kind"] == "attack") & before_runs["violated"]]
+    leaked = attacks[attacks["violation_classes"].str.contains("V_exfiltration", na=False)]
+    pick = leaked if not leaked.empty else attacks          # the CLI's choice: a leak first
+    default = pick.iloc[0]["test_id"] if not pick.empty else "ATK-0021"
     finding = ask("Finding id", default)
-    tickets = risks.fix_tickets(reg)
-    tr = thread.build_thread(finding, runs, reg, tickets, s.events(), retest_candidate=cid)
+    if prior:
+        print(f"  (before: {prior['id']}'s runs and fix tickets; re-test: {cid})")
+    else:
+        print("  (no prior chosen: the story starts and ends at this candidate; "
+              "choose a prior to see the finding, the fix ticket and the re-test)")
+    tr = thread.build_thread(finding, before_runs, reg, tickets, s.events(), retest_candidate=cid)
     print("\n" + thread.to_markdown(tr))
 
 
+def _live_version(events: list[dict]) -> str | None:
+    """The candidate the record says is live (the governance lane's rule when present)."""
+    fn = getattr(summary_page, "live_version", None)
+    if fn is not None:
+        return fn(events)
+    approvals = [e for e in events if e.get("decision") in (decision.APPROVE, decision.OVERRIDE)]
+    return approvals[-1]["candidate_id"] if approvals else None
+
+
+def _log_head(s: GovState) -> tuple[int, str | None]:
+    fn = getattr(audit, "head", None)
+    if fn is not None:
+        return fn(s.audit_file)
+    entries = s.events()
+    return len(entries), (entries[-1].get("hash") if entries else None)
+
+
+def _evidence_line(cid: str, rec: dict) -> str:
+    sm = rec.get("summary") or {}
+    if not sm:
+        return f"{cid}: no numbers recorded"
+    return (f"{cid} ASR {sm['asr']:.1%} ({sm['attack_violations']}/{sm['attack_runs']}), "
+            f"95% CI [{sm['asr_lo']:.1%}, {sm['asr_hi']:.1%}], benign {sm['benign_rate']:.0%} "
+            f"({sm['benign_n']} runs) {mode_label(rec)} -- {rec.get('source') or 'source unknown'}")
+
+
 def manager_summary_text(s: GovState, cid: str, reg) -> str:
-    """The one-page view, every number labelled with the candidate's run mode."""
+    """The one-page view. The attack rate is the LIVE version's own (X-07), the
+    open risks are the viewed candidate's, and every number carries its mode."""
     rec = s.candidates[cid]
-    md = summary_page.to_markdown(
-        summary_page.build_summary(reg, s.events(), current_asr=rec["summary"]["asr"]))
-    return tag_numbers(md, rec) + "\n" + source_line(rec)
+    events = s.events()
+    live = _live_version(events)
+    live_rec = s.candidates.get(live) if live else None
+    live_asr = live_rec["summary"]["asr"] if live_rec and live_rec.get("summary") else None
+    summaries = {c: dict(r["summary"], mode=mode_of(r))
+                 for c, r in s.candidates.items() if r.get("summary")}
+    try:
+        sm = summary_page.build_summary(reg, events, current_asr=live_asr, summaries=summaries,
+                                        current_candidate=cid, log_head=_log_head(s))
+    except TypeError as e:
+        if not _kw_unsupported(e):
+            raise
+        sm = summary_page.build_summary(reg, events, current_asr=live_asr)
+
+    lines = []
+    for ln in summary_page.to_markdown(sm).splitlines():
+        if "attack rate" in ln.lower():
+            lines.append(tag_numbers(ln, live_rec) if live_rec else f"{ln}  (no approved version)")
+        else:
+            lines.append(tag_numbers(ln, rec))
+    if live_rec:
+        lines.append(f"- **Live version evidence:** {_evidence_line(live, live_rec)}")
+    elif live:
+        lines.append(f"- **Live version evidence:** {live} has no record in this workspace -- rate n/a")
+    else:
+        lines.append("- **Live version evidence:** none approved")
+    lines.append(f"- **Viewed candidate:** {_evidence_line(cid, rec)}")
+    return "\n".join(lines)
+
+
+def _control_results(s: GovState, runs: pd.DataFrame, reg, codes: list[str]) -> dict[str, str]:
+    """Measured result per control named in the register (never 'assumed proven')."""
+    controls = sorted({r.control for r in reg if r.control})
+    fn = getattr(evidence, "control_results", None)
+    if fn is not None:
+        try:
+            return fn(runs, controls, defences=codes)
+        except TypeError as e:
+            if not _kw_unsupported(e):
+                raise
+            return fn(runs, controls)
+    attacks = runs[(runs["kind"] == "attack") & (~runs["error"].astype(bool))]
+    out: dict[str, str] = {}
+    for code in controls:
+        classes = [cls for cls in risks.RISK_CATALOG if risks.control_for_class(cls) == code]
+        hits = int(attacks["violation_classes"].apply(
+            lambda cell: bool(set(str(cell).split(";")) & set(classes))).sum())
+        state = "control ON" if code in codes else "control NOT in this candidate's defences"
+        out[code] = f"{hits} of {len(attacks)} attack runs landed {'/'.join(classes)} ({state})"
+    return out
+
+
+def _evidence_rows(s: GovState, cid: str, runs: pd.DataFrame, reg):
+    res = _control_results(s, runs, reg, s.candidates[cid].get("defences", []))
+    proof = _rel(s.work / cid / "runs.csv")
+    try:
+        return evidence.build_register(reg, retest_candidate=cid, results=res, proof_file=proof)
+    except TypeError as e:
+        if not _kw_unsupported(e):
+            raise
+        rows = evidence.build_register(reg, retest_candidate=cid, results=res)
+        for row in rows:
+            row.proof_file = proof          # X-03: point at the file the app really writes
+        return rows
 
 
 def inventory_text(s: GovState, cid: str) -> str:
@@ -733,7 +853,7 @@ def write_reports(s: GovState, cid: str, runs: pd.DataFrame, reg) -> None:
     files = {
         "inventory.md": inventory_text(s, cid),
         "risk_register.md": risks.to_markdown(reg),
-        "evidence_register.md": evidence.to_markdown(evidence.build_register(reg, retest_candidate=cid)),
+        "evidence_register.md": evidence.to_markdown(_evidence_rows(s, cid, runs, reg)),
         "summary.md": manager_summary_text(s, cid, reg),
     }
     for name, text in files.items():
