@@ -254,3 +254,70 @@ def test_preflight_model_missing_and_digest_mismatch(tmp_path, capsys):
                  fetch=lambda host, timeout: TAGS, env=CLEAN_ENV)
     out = capsys.readouterr().out
     assert rc != 0 and any(ln.startswith("FAIL") and "digest" in ln for ln in out.splitlines())
+
+
+# --------------------------------------------------------------------------- #
+# Item 3: robustness -- B-09, B-22/D-09, D-03, X-13.
+# --------------------------------------------------------------------------- #
+
+def test_eof_at_main_menu_exits_cleanly(tmp_path, monkeypatch, capsys):
+    out = run_app(monkeypatch, capsys, tmp_path / "governance_out", [EOFError])
+    assert "bye." in out
+
+
+def test_ctrl_c_at_main_menu_exits_cleanly(tmp_path, monkeypatch, capsys):
+    out = run_app(monkeypatch, capsys, tmp_path / "governance_out", [KeyboardInterrupt])
+    assert "bye." in out
+
+
+def test_ctrl_c_inside_an_action_returns_to_the_menu(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, ["1", "1", KeyboardInterrupt, "3", "4"])
+    assert "(cancelled)" in out and "bye." in out
+    assert not (work / "candidates.json").exists()
+
+
+def test_non_integer_sample_size_reprompts(tmp_path, monkeypatch, capsys):
+    from lab import demo
+    _stub_runner(monkeypatch, lambda subset, reps, defences: demo.demo_traces(subset, reps))
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work,
+                  ["1", "1", "", "", "", "2", "eight", "0", "2", "", "3", "4"])
+    assert out.count("Sample size per split") == 3
+    assert json.loads((work / "candidates.json").read_text())["RC-001"]["mode"] == "LIVE"
+
+
+def test_ctrl_c_during_live_sweep_aborts_and_returns_to_menu(tmp_path, monkeypatch, capsys):
+    from lab import demo
+
+    def interrupted(subset, reps, defences):
+        traces = demo.demo_traces(subset, reps)
+        yield traces[0]
+        raise KeyboardInterrupt
+
+    _stub_runner(monkeypatch, interrupted)
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [*NEW_LIVE_CANDIDATE, "", "3", "4"])
+    assert "aborted" in out and "no candidate saved" in out and "bye." in out
+    assert not (work / "candidates.json").exists()
+    assert not [e for e in audit.read_log(work / "audit_log.jsonl") if e["event"] == "submit"]
+
+
+def test_empty_subset_shows_not_measured(tmp_path, monkeypatch, capsys):
+    _stub_runner(monkeypatch, lambda subset, reps, defences: [])
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [*NEW_LIVE_CANDIDATE, "", "3", "4"])
+    assert "not measured" in out and "no candidate saved" in out and "bye." in out
+    assert not (work / "candidates.json").exists()
+
+
+def test_action_error_prints_one_line_and_keeps_the_menu(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "governance_out"
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app.gate, "report_text", boom)
+    out = run_app(monkeypatch, capsys, work, [*NEW_DEMO_CANDIDATE, "3", "2", "1", "", "6", "4"])
+    assert "error: RuntimeError: boom" in out
+    assert "Traceback" not in out and "bye." in out

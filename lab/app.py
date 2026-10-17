@@ -26,9 +26,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from lab import agent, assurance, corpus, demo, defences, metrics, world
+from lab import agent, assurance, corpus, demo, defences, governance, metrics, world
 from lab.assurance import risks, inventory, evidence, thread, summary_page
 from lab.governance import candidate, gate, decision, roles, load_policy, audit
+
+# Names the governance lane adds (hash-chain and policy validation errors).
+# Resolved by name so this module runs before and after that merge.
+AuditError = getattr(audit, "AuditError", None) or type("AuditError", (RuntimeError,), {})
+PolicyError = getattr(governance, "PolicyError", None) or type("PolicyError", (ValueError,), {})
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "governance_out"      # default workspace; GovState(work=...) overrides it
@@ -44,8 +49,14 @@ OLLAMA_DOWN = "Ollama unreachable or model missing — no candidate saved"
 
 
 # ---------------------------------------------------------------------------
-# Tiny input helpers (robust to Ctrl-C / EOF).
+# Tiny input helpers. Ctrl-C or EOF at a prompt cancels the current action
+# (at the main menu it quits); every menu action runs inside run_action, so
+# one failure prints one line and the menu comes back (B-09, B-22, D-09).
 # ---------------------------------------------------------------------------
+
+class Cancelled(Exception):
+    """Ctrl-C or end of input at a prompt."""
+
 
 def ask(prompt: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
@@ -53,8 +64,52 @@ def ask(prompt: str, default: str = "") -> str:
         got = input(f"{prompt}{suffix}: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n(cancelled)")
-        return default
+        raise Cancelled()
     return got or default
+
+
+def ask_int(prompt: str, default: int, lo: int = 1) -> int:
+    """Ask for a whole number >= ``lo``; re-prompt on anything else."""
+    while True:
+        raw = ask(prompt, str(default))
+        try:
+            n = int(raw)
+        except ValueError:
+            print(f"  (enter a whole number, e.g. {default})")
+            continue
+        if n < lo:
+            print(f"  (enter a number of at least {lo})")
+            continue
+        return n
+
+
+def run_action(fn, *args) -> None:
+    """Run one menu action; any failure prints one line and returns to the menu."""
+    try:
+        fn(*args)
+    except Cancelled:
+        return
+    except KeyboardInterrupt:
+        print("\n(interrupted -- back to the menu)")
+    except AuditError as e:
+        print(f"\naudit log problem: {e}  (nothing was recorded; back to the menu)")
+    except Exception as e:  # noqa: BLE001 - the menu must survive any one action
+        print(f"\nerror: {type(e).__name__}: {e}  (back to the menu)")
+
+
+def run_menu(s: "GovState", title: str, options: list[str], actions: dict) -> None:
+    """Show ``options`` until Back/cancel; ``actions`` maps a choice to a function."""
+    while True:
+        try:
+            c = choose(title, options)
+        except Cancelled:
+            return
+        if c == -1:
+            continue
+        fn = actions.get(c)
+        if fn is None:
+            return
+        run_action(fn, s)
 
 
 def choose(prompt: str, options: list[str]) -> int:
@@ -204,19 +259,16 @@ class GovState:
 # ---------------------------------------------------------------------------
 
 def menu_redteam(s: GovState) -> None:
-    while True:
-        c = choose("\n== Red team ==", [
-            "Test a NEW candidate (produce evidence)",
-            "List candidates and their results",
-            "Back",
-        ])
-        if c == 1:
-            redteam_run(s)
-        elif c == 2:
-            list_candidates(s)
-            pause()
-        else:
-            return
+    run_menu(s, "\n== Red team ==", [
+        "Test a NEW candidate (produce evidence)",
+        "List candidates and their results",
+        "Back",
+    ], {1: redteam_run, 2: _list_and_pause})
+
+
+def _list_and_pause(s: GovState) -> None:
+    list_candidates(s)
+    pause()
 
 
 def _run_live(runner, subset: list[dict], codes: list[str], cid: str) -> list[dict]:
@@ -240,11 +292,15 @@ def redteam_run(s: GovState) -> None:
     print(f"\nRunning {cid}  defences={codes or 'none'}  mode={LIVE if live else SCRIPTED} ...")
     if live:
         from lab import runner
-        sample = int(ask("Sample size per split (LIVE is slow)", "8") or "8")
+        sample = ask_int("Sample size per split (LIVE is slow)", 8, lo=1)
         attacks = [t for t in s.test if t["kind"] == "attack"][:sample]
         benign = [t for t in s.test if t["kind"] == "benign"][:sample]
+        print("  (Ctrl-C aborts the sweep and returns to the menu)")
         try:
             traces = _run_live(runner, attacks + benign, codes, cid)
+        except KeyboardInterrupt:
+            print("\nLIVE sweep aborted -- no candidate saved.")
+            return pause()
         except (ConnectionError, OSError) as e:
             print(f"\n{type(e).__name__}: {e}")
             print(OLLAMA_DOWN)
@@ -335,27 +391,14 @@ def pick_candidate(s: GovState, prompt: str = "Candidate id") -> str | None:
 # ---------------------------------------------------------------------------
 
 def menu_governance(s: GovState) -> None:
-    while True:
-        c = choose("\n== Governance (release gate) ==", [
-            "Show gate verdict (PASS/FAIL) for a candidate",
-            "Make a decision (Approve / Block / Override)",
-            "Manage roles (who can do what)",
-            "View audit log",
-            "Verify audit log (tamper check)",
-            "Back",
-        ])
-        if c == 1:
-            gov_verdict(s)
-        elif c == 2:
-            gov_decide(s)
-        elif c == 3:
-            gov_roles(s)
-        elif c == 4:
-            gov_view_log(s)
-        elif c == 5:
-            gov_verify_log(s)
-        else:
-            return
+    run_menu(s, "\n== Governance (release gate) ==", [
+        "Show gate verdict (PASS/FAIL) for a candidate",
+        "Make a decision (Approve / Block / Override)",
+        "Manage roles (who can do what)",
+        "View audit log",
+        "Verify audit log (tamper check)",
+        "Back",
+    ], {1: gov_verdict, 2: gov_decide, 3: gov_roles, 4: gov_view_log, 5: gov_verify_log})
 
 
 def _verdict_for(s: GovState, cid: str):
@@ -445,18 +488,35 @@ def gov_view_log(s: GovState) -> None:
         extra = e.get("decision") or e.get("action") or e.get("verdict") or ""
         who = e.get("reviewer") or e.get("by") or e.get("actor") or ""
         marker = "  [scripted]" if e.get("scripted") else ""
-        print(f"  #{e['seq']:<3}{e.get('time','')[:19]:<21}{e['event']:<17}"
-              f"{e.get('candidate_id',''):<8}{extra:<9}{who}{marker}")
+        if e.get("malformed"):
+            marker += f"  [MALFORMED LINE: {e.get('error', '')}]"
+        print(f"  #{e.get('seq', '?'):<3}{str(e.get('time', ''))[:19]:<21}{e.get('event', '?'):<17}"
+              f"{e.get('candidate_id', ''):<8}{extra:<9}{who}{marker}")
     pause()
+
+
+def _print_check(check, label: str) -> None:
+    """Print one verify result; names the kind of tampering when the lane provides it."""
+    entries = getattr(check, "entries", None)
+    print(f"{label}: {check.detail}")
+    if check.ok:
+        if entries == 0:
+            print("  WARNING: 0 entries -- an empty or deleted log also verifies; nothing is proven")
+        else:
+            print("  Chain intact. ✔")
+    else:
+        kind = getattr(check, "kind", None)
+        print(f"  >>> TAMPERING DETECTED at entry #{check.bad_seq}{f' ({kind})' if kind else ''} <<<")
 
 
 def gov_verify_log(s: GovState) -> None:
     check = audit.verify_log(s.audit_file)
-    print(f"\n{check.detail}")
-    if check.ok:
-        print("Chain intact. ✔")
+    print()
+    if getattr(check, "entries", None) is None and check.ok and not s.events():
+        print(f"real log: {check.detail}")
+        print("  WARNING: 0 entries -- an empty or deleted log also verifies; nothing is proven")
     else:
-        print(f">>> TAMPERING DETECTED at entry #{check.bad_seq} <<<")
+        _print_check(check, "real log")
     pause()
 
 
@@ -464,55 +524,57 @@ def gov_verify_log(s: GovState) -> None:
 # 3. Assurance.
 # ---------------------------------------------------------------------------
 
+ASSURANCE_OPTIONS = [
+    "Risk register (optionally vs a prior candidate)",
+    "Fix tickets",
+    "Control mapping (OWASP / ATLAS / NIST)",
+    "Evidence register",
+    "Traceability (one finding, start to finish)",
+    "Manager summary",
+    "AI inventory card",
+    "Write ALL reports to markdown files",
+    "Back",
+]
+
+
 def menu_assurance(s: GovState) -> None:
-    while True:
-        c = choose("\n== Assurance (risk & evidence) ==", [
-            "Risk register (optionally vs a prior candidate)",
-            "Fix tickets",
-            "Control mapping (OWASP / ATLAS / NIST)",
-            "Evidence register",
-            "Traceability (one finding, start to finish)",
-            "Manager summary",
-            "AI inventory card",
-            "Write ALL reports to markdown files",
-            "Back",
-        ])
-        if c == 9 or c == -1:
-            return
-        cid = pick_candidate(s)
-        if not cid:
-            pause()
-            continue
-        runs = s.load_runs(cid)
-        if runs is None:
-            print("  (no stored runs for that candidate)")
-            pause()
-            continue
-        rec = s.candidates[cid]
-        reg = _register_for(s, cid, runs)
-        print(f"\n{cid} {mode_label(rec)} -- {rec.get('source') or 'source unknown'}")
-        if c == 1:
-            print("\n" + risks.to_markdown(reg))
-        elif c == 2:
-            for t in risks.fix_tickets(reg, due="2026-10-24"):
-                print(f"  {t.id}: {t.title} (owner {t.owner}, risk {t.risk_id})")
-        elif c == 3:
-            for r in reg:
-                if r.control:
-                    print(f"  {r.id} {r.violation_class:<20} -> {r.control}  "
-                          f"OWASP {r.owasp} | ATLAS {r.mitre_atlas} | NIST {r.nist_ai_rmf}")
-        elif c == 4:
-            res = {"D2": f"{int((runs['violation_classes'].str.contains('V_exfiltration', na=False)).sum())} exfiltration runs"}
-            print("\n" + evidence.to_markdown(evidence.build_register(reg, retest_candidate=cid, results=res)))
-        elif c == 5:
-            assurance_thread(s, cid, runs, reg)
-        elif c == 6:
-            print("\n" + manager_summary_text(s, cid, reg))
-        elif c == 7:
-            print("\n" + inventory_text(s, cid))
-        elif c == 8:
-            write_reports(s, cid, runs, reg)
-        pause()
+    run_menu(s, "\n== Assurance (risk & evidence) ==", ASSURANCE_OPTIONS,
+             {c: (lambda s, c=c: assurance_action(s, c)) for c in range(1, 9)})
+
+
+def assurance_action(s: GovState, c: int) -> None:
+    cid = pick_candidate(s)
+    if not cid:
+        return pause()
+    runs = s.load_runs(cid)
+    if runs is None:
+        print("  (no stored runs for that candidate)")
+        return pause()
+    rec = s.candidates[cid]
+    reg = _register_for(s, cid, runs)
+    print(f"\n{cid} {mode_label(rec)} -- {rec.get('source') or 'source unknown'}")
+    if c == 1:
+        print("\n" + risks.to_markdown(reg))
+    elif c == 2:
+        for t in risks.fix_tickets(reg, due="2026-10-24"):
+            print(f"  {t.id}: {t.title} (owner {t.owner}, risk {t.risk_id})")
+    elif c == 3:
+        for r in reg:
+            if r.control:
+                print(f"  {r.id} {r.violation_class:<20} -> {r.control}  "
+                      f"OWASP {r.owasp} | ATLAS {r.mitre_atlas} | NIST {r.nist_ai_rmf}")
+    elif c == 4:
+        res = {"D2": f"{int((runs['violation_classes'].str.contains('V_exfiltration', na=False)).sum())} exfiltration runs"}
+        print("\n" + evidence.to_markdown(evidence.build_register(reg, retest_candidate=cid, results=res)))
+    elif c == 5:
+        assurance_thread(s, cid, runs, reg)
+    elif c == 6:
+        print("\n" + manager_summary_text(s, cid, reg))
+    elif c == 7:
+        print("\n" + inventory_text(s, cid))
+    elif c == 8:
+        write_reports(s, cid, runs, reg)
+    pause()
 
 
 def _register_for(s: GovState, cid: str, runs: pd.DataFrame):
@@ -572,19 +634,27 @@ def write_reports(s: GovState, cid: str, runs: pd.DataFrame, reg) -> None:
 # Main loop.
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    s = GovState()
+def main(work: Path | None = None) -> None:
+    try:
+        s = GovState(work)
+    except PolicyError as e:
+        print(f"cannot start: policy.yaml is invalid -- {e}")
+        return
     print("=" * 64)
     print(" Agent Release Gate  --  sandbox lab, all data synthetic")
     print(f" workspace: {_rel(s.work)}/   test split: {len(s.test)} records")
     print("=" * 64)
     while True:
-        c = choose("\n== MAIN MENU ==", [
-            "Red team  (test a candidate agent)",
-            "Governance  (gate, decisions, roles, audit log)",
-            "Assurance  (risks, controls, evidence, traceability)",
-            "Quit",
-        ])
+        try:
+            c = choose("\n== MAIN MENU ==", [
+                "Red team  (test a candidate agent)",
+                "Governance  (gate, decisions, roles, audit log)",
+                "Assurance  (risks, controls, evidence, traceability)",
+                "Quit",
+            ])
+        except Cancelled:
+            print("bye.")
+            return
         if c == 1:
             menu_redteam(s)
         elif c == 2:
