@@ -148,6 +148,15 @@ def test_demo_artifacts_carry_the_scripted_label(gov, tmp_path, capsys):
     assert "**Audit log:** 10 entries, head sha256:" in ms or "**Audit log:** 10 entries, head " in ms
 
 
+def test_cli_audit_events_are_marked_scripted(gov, tmp_path):
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    events = audit.read_log(out / "audit_log.jsonl")
+    assert len(events) == 10
+    assert all(e.get("scripted") is True for e in events), [e["event"] for e in events if not e.get("scripted")]
+    assert {e["event"] for e in events} == {"submit", "verdict", "decision_refused", "decision"}
+
+
 def test_help_text_states_real_defaults(gov):
     import re
 

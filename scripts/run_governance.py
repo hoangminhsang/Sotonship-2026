@@ -307,6 +307,17 @@ def run(args: argparse.Namespace) -> int:
         rotated = rotate_log(audit_path)
         rep.say(f"Audit log: existing {audit_path.name} kept as {rotated.name}; starting a fresh log")
 
+    def log(event: dict) -> dict:
+        """Append to the audit log, marking what this script wrote on a person's behalf.
+
+        In SCRIPTED mode every event is scripted. In LIVE / SAVED mode the runs
+        are measured but the reviewer's decisions (and the refused self-review)
+        are still scripted by the CLI, so those carry the marker too (C-14).
+        """
+        if tag == SCRIPTED or event.get("event") in ("decision", "decision_refused"):
+            event = {**event, "scripted": True}
+        return audit.append(audit_path, event)
+
     # ----------------------------------------------------------------------- #
     # RC-001: the insecure agent.
     # ----------------------------------------------------------------------- #
@@ -351,8 +362,8 @@ def run(args: argparse.Namespace) -> int:
     rep.write("gate_RC-001.txt", report_001)
 
     rep.section("3. Audit log + human decision for RC-001")
-    audit.append(audit_path, {"event": "submit", "candidate_id": "RC-001", "by": args.engineer, "defences": []})
-    audit.append(audit_path, {"event": "verdict", "candidate_id": "RC-001", "verdict": verdict_001.status})
+    log({"event": "submit", "candidate_id": "RC-001", "by": args.engineer, "defences": []})
+    log({"event": "verdict", "candidate_id": "RC-001", "verdict": verdict_001.status})
 
     # The engineer who submitted cannot review their own work.
     try:
@@ -362,7 +373,7 @@ def run(args: argparse.Namespace) -> int:
         )
     except decision.DecisionError as e:
         rep.say(f"Self-review refused: {e}")
-        audit.append(audit_path, {  # the refusal is part of the record, as in the menu app
+        log({  # the refusal is part of the record, as in the menu app
             "event": "decision_refused", "candidate_id": "RC-001", "reviewer": args.engineer,
             "action": "APPROVE", "detail": str(e),
         })
@@ -373,7 +384,7 @@ def run(args: argparse.Namespace) -> int:
         policy=policy, reviewer=args.reviewer, action="BLOCK",
         reason="Leaks data in a large share of attacks. Build D2 first.",
     )
-    audit.append(audit_path, ev_block)
+    log(ev_block)
     rep.say(f"Logged decision: {ev_block['decision']} by {ev_block['reviewer']} — \"{ev_block['reason']}\"")
 
     # ----------------------------------------------------------------------- #
@@ -475,8 +486,8 @@ def run(args: argparse.Namespace) -> int:
         rep.say(report)
         rep.write(f"gate_{cid}.txt", report)
 
-        audit.append(audit_path, {"event": "submit", "candidate_id": cid, "by": args.engineer, "defences": list(codes)})
-        audit.append(audit_path, {"event": "verdict", "candidate_id": cid, "verdict": verdict.status})
+        log({"event": "submit", "candidate_id": cid, "by": args.engineer, "defences": list(codes)})
+        log({"event": "verdict", "candidate_id": cid, "verdict": verdict.status})
         if verdict.passed:
             ev = decision.decide(
                 candidate_id=cid, submitted_by=args.engineer, verdict_passed=True,
@@ -490,7 +501,7 @@ def run(args: argparse.Namespace) -> int:
                 policy=policy, reviewer=args.reviewer, action="BLOCK", reason=block_reason,
             )
             rep.say(f"\nLogged decision: {ev['decision']} {cid} by {ev['reviewer']} — \"{block_reason}\"")
-        audit.append(audit_path, ev)
+        log(ev)
 
         section += 1
         rep.section(f"{section}. Assurance after {cid} — risk register, evidence register")

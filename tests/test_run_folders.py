@@ -252,6 +252,12 @@ def test_governance_accepts_run_folder(stub, tmp_path, monkeypatch):
     assert fp["model_digest"] == "sha256:stub"
     assert fp["test_set_sha256"] == _sha(before / "records.jsonl")
     assert (out / "gate_RC-001.txt").read_text().startswith("[SAVED] Candidate RC-001")
+    # The run is measured, but the CLI still scripts the reviewer: decisions say so.
+    from lab.governance import audit
+
+    events = audit.read_log(out / "audit_log.jsonl")
+    assert all(e.get("scripted") is True for e in events if e["event"] in ("decision", "decision_refused"))
+    assert not any(e.get("scripted") for e in events if e["event"] in ("submit", "verdict"))
     assert (out / "manager_summary.md").read_text().startswith("**Mode: [SAVED]**")
     assert "scripted" not in (out / "manager_summary.md").read_text().lower()
     for cid in ("RC-002", "RC-003"):  # replays of the saved run, written under --out
