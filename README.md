@@ -139,8 +139,8 @@ pytest -q
 ```
 
 The oracle, metrics, defences, gate, decisions, roles, audit log, risks and
-the demo path are covered (79 tests, offline, as of commit d825341; the
-review branch adds more). The model-dependent path (the agent actually calling
+the demo path are covered (246 tests, offline, as of commit 9334a79 on
+review/hardening). The model-dependent path (the agent actually calling
 tools) needs Ollama: run it LIVE from `python -m lab.app` or
 `scripts/run_pyrit_attack.py`.
 
@@ -164,14 +164,16 @@ notebooks/  (prototypes, not part of the pipeline)
             attack_lab_explained.ipynb — self-contained teaching notebook: the whole
                                           codebase inlined and explained in plain English,
                                           attacking via PyRIT (run with .venv-pyrit)
-            release_gate_demo.ipynb    — study-guided governance & assurance demo:
-                                          RC-001 fails → block → D2 → RC-002 passes →
-                                          approve → risks close → audit tamper caught
+            release_gate_demo.ipynb    — prototype of the governance story (two
+                                          candidates). The script now runs three:
+                                          RC-001 fails → BLOCK → D2 still fails →
+                                          D2+D3 passes → APPROVE → tamper caught
 scripts/    run_pyrit_attack.py — CLI for the PyRIT-driven attack
             run_governance.py  — CLI for the release-gate + assurance story (DEMO/--live)
 tests/      pytest suite (oracle, metrics, fixes, defences, gate, decision, audit,
-            candidate, risks, roles, demo) — 79 tests as of commit d825341
-            (`pytest --collect-only -q`); offline, no model needed
+            candidate, risks, roles, demo, run folders, CLI) — 246 tests as of
+            commit 9334a79 on review/hardening (`pytest --collect-only -q`);
+            offline, no model needed
 docker/     Dockerfile, docker-compose.yml, requirements.txt, requirements-pyrit.txt
 ```
 
@@ -205,8 +207,11 @@ it — so the before/after drop is real. Run a defended study live with
 
 Walk the whole thing with **`python scripts/run_governance.py`** (offline and
 deterministic by default; `--live` for real `qwen2.5:7b-instruct` runs; a
-gated live run needs at least 17 attack tests). `notebooks/release_gate_demo.ipynb`
-is the prototype of that script.
+gated live run needs at least 17 attack tests). It runs three candidates —
+RC-001 (no defences) FAIL → BLOCK, RC-002 (D2) still FAIL → BLOCK, RC-003
+(D2+D3) PASS → APPROVE — and writes to `governance_out/cli_demo/` (see
+`RUNBOOK.md`). `notebooks/release_gate_demo.ipynb` is the prototype of that
+script.
 
 ### Run it as one menu-driven program
 

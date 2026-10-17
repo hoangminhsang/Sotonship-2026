@@ -110,10 +110,11 @@ runs. Its results are **pending**. The commands:
 .venv-pyrit/bin/python scripts/run_pyrit_attack.py --candidate RC-001
 cat results/runs/<run_id>/summary.csv
 
-# 2. gate + assurance from that saved run. RC-002 is a deterministic D2 replay
-#    of the same traces unless you pass a saved D2 run folder with --run-after.
+# 2. gate + assurance from that saved run. RC-002 (D2) and RC-003 (D2+D3) are
+#    deterministic replays of the same traces unless you pass saved run folders.
+#    Output: governance_out/cli_demo/
 .venv-pyrit/bin/python scripts/run_governance.py --run results/runs/<run_id> \
-    [--run-after results/runs/<d2_run_id>]
+    [--run-after results/runs/<d2_run_id>] [--run-after-d3 results/runs/<d2d3_run_id>]
 ```
 
 ---
@@ -137,12 +138,12 @@ It has two modes:
 .venv-pyrit/bin/python scripts/run_governance.py
 ```
 
-It prints the full report and writes the artifacts into `governance_out/`.
-
-> **Caution:** `governance_out/` is also the menu app's state folder, and the
-> CLI starts a fresh `audit_log.jsonl` there unless you pass `--keep-log`
-> (lane D finding D-04). If you have used the app, pass
-> `--out governance_out/cli_demo` to keep the two apart.
+It prints the full report and writes the artifacts into
+`governance_out/cli_demo/` (the default `--out`). The menu app's own state in
+`governance_out/` (its `audit_log.jsonl`, candidates and roles) is never
+touched. If `--out` already holds an `audit_log.jsonl`, the CLI rotates it to
+`audit_log.<UTC stamp>.jsonl` (never deleted) and starts a new chain, unless
+you pass `--keep-log` to append to it.
 
 ### Step 2.2 — (optional) Run it against the live model
 
@@ -155,26 +156,28 @@ Make sure Ollama is up (see §0), then:
 > **Live-gate note (D-08 / X-05).** Policy `min_attack_runs: 50`; at 3 reps a
 > live gate needs at least 17 attack tests (`--live --sample 17` or more; the
 > default sample of 12 gives 36 attack runs and FAILs on `min_attack_runs`).
-> With fewer, step 5 below ("Gate again → PASS") cannot happen live. The app's
+> With fewer, the RC-003 PASS in the story below cannot happen live. The app's
 > LIVE default sample of 8 gives 24 runs. Duration of a 17-test run is not
 > measured.
 
 ### Step 2.3 — Read the governance artifacts
 
 ```bash
-ls governance_out/
+ls governance_out/cli_demo/
 ```
 
 | File | What it is |
 | --- | --- |
-| `RC-001.json`, `RC-002.json` | candidate fingerprints (exact ID card of what was tested) |
-| `gate_RC-001.txt`, `gate_RC-002.txt` | the PASS/FAIL gate verdicts |
-| `audit_log.jsonl` | the hash-chained, tamper-evident decision log |
+| `RC-001.json`, `RC-002.json`, `RC-003.json` | candidate fingerprints (exact ID card of what was tested) |
+| `gate_RC-001.txt`, `gate_RC-002.txt`, `gate_RC-003.txt` | the PASS/FAIL gate verdicts |
+| `RC-001/runs.csv`, `RC-002/runs.csv`, `RC-003/runs.csv` | one row per scored run for each candidate |
+| `audit_log.jsonl` | the hash-chained, tamper-evident decision log (a previous log is rotated to `audit_log.<UTC stamp>.jsonl`, never deleted) |
 | `inventory_card.md` | the AI inventory card |
 | `risk_register_before.md` | risks for the insecure agent (RC-001) |
-| `risk_register_after.md` | risks after the D2 fix (RC-002), closed as Mitigated |
+| `risk_register_RC-002.md` | risks after D2 alone (RC-002): leaks closed, unrequested tickets still open |
+| `risk_register_RC-003.md`, `risk_register_after.md` | risks after D2+D3 (RC-003), closed as Mitigated (`_after` is the same register) |
 | `fix_tickets.md` | drafted fix tickets |
-| `evidence_register.md` | control → proof → file |
+| `evidence_register_RC-002.md`, `evidence_register_RC-003.md`, `evidence_register.md` | control → proof → file, per re-test (`evidence_register.md` = RC-003) |
 | `traceability.md` | one finding followed start to finish |
 | `manager_summary.md` | the one-page manager view |
 | `audit_log_tampered_demo.jsonl` | a forged copy, used only to prove detection |
@@ -182,36 +185,46 @@ ls governance_out/
 Read any of them, e.g.:
 
 ```bash
-cat governance_out/manager_summary.md
-cat governance_out/risk_register_after.md
+cat governance_out/cli_demo/manager_summary.md
+cat governance_out/cli_demo/risk_register_after.md
 ```
 
 ### What the program does, step by step (printed as it runs)
 
+The DEMO numbers below are scripted from the `RATES` table (see §3), not
+measured; benign success is 60/60 by construction in all three candidates.
+
 1. **RC-001 — the insecure agent.** Build its fingerprint, measure it, gate it
-   against `lab/governance/policy.yaml` → **FAIL** (attack success far above the
-   5% limit).
+   against `lab/governance/policy.yaml` → **FAIL** (DEMO: 33/78 = 42.3%, far
+   above the 5% limit).
 2. **Audit + decision.** Record the submission and verdict. The engineer who
    submitted it is **refused** self-review; the reviewer **BLOCKs** it with a
    reason. (A FAIL can never be APPROVED.)
 3. **Assurance (before).** Build the AI inventory card, the risk register
    (likelihood = the *measured* attack rate), and draft fix tickets.
 4. **RC-002 — defence D2 enforced.** New fingerprint (so RC-001's decision does
-   **not** carry over — the re-test rule). Re-measure → attack success drops.
-5. **Gate again → PASS**, and the reviewer **APPROVEs** it.
+   **not** carry over — the re-test rule). Re-measure → attack success drops
+   (DEMO: 15/78 = 19.2%) but still **FAIL** → the reviewer **BLOCKs** it:
+   "D2 stops the leaks, but unrequested P1 tickets still land. Add D3."
+   `risk_register_RC-002.md` and `evidence_register_RC-002.md` show which
+   risks D2 closed and which stayed open.
+5. **RC-003 — D2 + D3 enforced.** New fingerprint again. Re-measure (DEMO:
+   0/78 = 0.0%) → **PASS**, and the reviewer **APPROVEs** it.
 6. **Assurance (after).** The re-test closes the covered risks as **Mitigated**
-   and fills the evidence register.
+   (`risk_register_RC-003.md` = `risk_register_after.md`) and fills the
+   evidence register.
 7. **Traceability.** Stitch one finding from first attack → risk → control →
    fix → re-test → approval → closed status.
 8. **Manager summary.** The one-page view: live version, current attack rate,
-   open risks, last decision.
+   open risks, last decision. Headline: `attack success 42.3% -> 19.2% (D2)
+   -> 0.0% (D2+D3)` (DEMO).
 9. **Tamper-evidence.** Verify the real audit log (intact), then prove a forged
    copy is caught at the exact entry that was changed. The real log is left
    untouched. To run the check by hand on any log file (always on a **copy**,
    never the real log):
 
    ```bash
-   .venv-pyrit/bin/python scripts/verify_log.py governance_out/audit_log_tampered_demo.jsonl
+   .venv-pyrit/bin/python scripts/verify_log.py governance_out/cli_demo/audit_log_tampered_demo.jsonl
    ```
 
    Exit codes: `0` intact, `1` tampered (the output names the entry), `2`
@@ -226,11 +239,17 @@ cat governance_out/risk_register_after.md
 
 Key flags:
 
-- `--out DIR` — write artifacts somewhere other than `governance_out/`.
+- `--out DIR` — write artifacts somewhere other than `governance_out/cli_demo/`.
 - `--reps N` — repetitions per test.
 - `--engineer NAME` / `--reviewer NAME` — roles (must match `policy.yaml`).
-- `--keep-log` — append to an existing audit log instead of starting fresh.
+- `--keep-log` — append to an existing audit log instead of rotating it.
 - `--no-tamper-demo` — skip the tamper-evidence demonstration.
+- `--run RUN_DIR` — gate a saved, locked run folder (`results/runs/<id>`) as
+  RC-001 instead of DEMO/LIVE (`--run` with `--live` is refused).
+- `--run-after RUN_DIR` — with `--run`: a saved D2 run folder as RC-002;
+  without it RC-002 is a deterministic D2 replay of `--run`.
+- `--run-after-d3 RUN_DIR` — with `--run`: a saved D2+D3 run folder as RC-003
+  (a D2-only folder is refused, exit 2); without it RC-003 is a D2+D3 replay.
 
 ---
 
@@ -243,8 +262,10 @@ rehearsal (`results/summary.csv`: n = 4 per technique); `T7_split` has no
 `RATES` entry and defaults to 0, and DEMO benign success is 100% by
 construction, not measured. If you re-run §1 and the measured per-technique
 rates change, update `RATES` to match — or run the governance program with
-`--live` so it measures the agent directly. Say "DEMO, scripted" next to any
-DEMO number you show.
+`--live` (or `--run` on a saved folder) so it measures the agent directly. The
+DEMO story's numbers are RC-001 33/78 = 42.3%, RC-002 (D2) 15/78 = 19.2%,
+RC-003 (D2+D3) 0/78 = 0.0%, benign 60/60 in all three — scripted. Say "DEMO,
+scripted" next to any DEMO number you show.
 
 ---
 
@@ -259,8 +280,8 @@ cat results/runs/<run_id>/summary.csv
 
 # 2. governance + assurance from the saved run (decision + records)
 .venv-pyrit/bin/python scripts/run_governance.py --run results/runs/<run_id> \
-    [--run-after results/runs/<d2_run_id>]
+    [--run-after results/runs/<d2_run_id>] [--run-after-d3 results/runs/<d2d3_run_id>]
 
 # 3. read the headline outputs
-cat governance_out/manager_summary.md
+cat governance_out/cli_demo/manager_summary.md
 ```
