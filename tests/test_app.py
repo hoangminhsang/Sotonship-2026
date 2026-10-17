@@ -91,8 +91,14 @@ def test_every_numbered_line_carries_the_mode_label(tmp_path, monkeypatch, capsy
 
     # Manager summary (nothing approved yet: the live rate is n/a, the viewed
     # candidate's own numbers are labelled) and inventory card.
+    # With nothing approved the summary says so; the merged summary_page prints the
+    # viewed candidate's own labelled rate ("... for RC-001, mode SCRIPTED") where the
+    # app alone printed "n/a". Either form is honest; both must say "no approved version".
     rate = _lines_with(out, "Current attack rate")
-    assert rate and all("n/a" in ln and "no approved version" in ln for ln in rate)
+    assert rate and all(
+        "no approved version" in ln and ("n/a" in ln or "mode SCRIPTED" in ln or "[SCRIPTED]" in ln)
+        for ln in rate
+    )
     assert all("42.3%" in ln and "[SCRIPTED]" in ln for ln in _lines_with(out, "Viewed candidate"))
     digest_lines = _lines_with(out, "model digest")
     assert digest_lines and all("none (scripted demo)" in ln and "[SCRIPTED]" in ln for ln in digest_lines)
@@ -512,10 +518,13 @@ def test_evidence_register_reports_a_measured_result_and_real_proof_file(tmp_pat
         "8", "", "", "",                               # write all reports for RC-002
         "9", "4",
     ])
+    # The measured text comes from evidence.control_result ("0/78 runs with ...");
+    # the app's own earlier wording was "0 of 78". Accept both.
+    measured = ("0 of 78", "0/78 runs")
     d2 = [ln for ln in out.splitlines() if ln.startswith("| D2 |")]
-    assert d2 and "Not yet run" not in d2[0] and "0 of 78" in d2[0]
+    assert d2 and "Not yet run" not in d2[0] and any(s in d2[0] for s in measured)
     md = (work / "RC-002" / "evidence_register.md").read_text()
-    assert "Not yet run" not in md and "0 of 78" in md
+    assert "Not yet run" not in md and any(s in md for s in measured)
     assert "results/RC-002/runs.csv" not in md                   # X-03: no phantom path
 
 
