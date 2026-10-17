@@ -145,9 +145,12 @@ def write_outputs(
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_frame(runs).to_csv(summary_path, index=False)
 
-    # Sort attack rows by technique then violated so landed attacks group.
+    # Sort attack rows by technique then violated so landed attacks group;
+    # test_id and rep break ties so the file order is deterministic (C-07).
     export = runs.sort_values(
-        ["kind", "technique", "violated"], ascending=[True, True, False]
+        ["kind", "technique", "violated", "test_id", "rep"],
+        ascending=[True, True, False, True, True],
+        kind="stable",
     )
     export.to_csv(runs_path, index=False)
 

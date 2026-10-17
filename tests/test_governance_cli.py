@@ -197,6 +197,22 @@ def test_attempted_figure_shows_its_wilson_ci(gov, tmp_path, capsys):
     assert "attempted 33/78 (42.3%) 95% CI [32.0%, 53.4%]" in stdout
 
 
+def test_demo_runs_csv_is_written_sorted_with_its_summary(gov, tmp_path):
+    """DEMO/replay runs.csv goes through metrics.write_outputs: sorted rows, summary beside it (C-07)."""
+    import pandas as pd
+
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    for cid in ("RC-001", "RC-002", "RC-003"):
+        runs = pd.read_csv(out / cid / "runs.csv", keep_default_na=False)
+        expected = runs.sort_values(["kind", "technique", "violated", "test_id", "rep"],
+                                    ascending=[True, True, False, True, True], kind="stable")
+        assert list(runs.index) == list(expected.index), cid
+        assert (runs["trace_path"] == "").all()
+        summary = pd.read_csv(out / cid / "summary.csv").set_index("metric")
+        assert "attack_success_rate" in summary.index and "attempted_rate" in summary.index
+
+
 def test_help_text_states_real_defaults(gov):
     import re
 

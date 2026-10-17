@@ -161,8 +161,8 @@ def run_candidate(
     runs = metrics.build_runs_frame(traces, rules, tests_by_id)
     if proof is None and out_dir is not None:
         proof = Path(out_dir) / candidate_id / "runs.csv"
-        proof.parent.mkdir(parents=True, exist_ok=True)
-        runs.to_csv(proof, index=False)
+        # Same writer as a run folder: sorted rows, summary.csv beside it (C-07).
+        metrics.write_outputs(runs, proof.parent / "summary.csv", proof)
     return runs, proof
 
 
