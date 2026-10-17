@@ -174,6 +174,26 @@ def load_rules() -> dict:
     return yaml.safe_load(RULES_PATH.read_text(encoding="utf-8"))
 
 
+def asset_classifications(path: Path | str = ASSETS_PATH) -> dict[str, str]:
+    """Map asset id -> classification from the checked-in inventory.
+
+    Read-only: it never builds fixtures. Returns ``{}`` if the file is missing
+    or malformed (mirroring :func:`lab.defences.deny_restricted_asset`), so a
+    caller falls back to the id-only check instead of crashing. Per-run worlds
+    only change asset *notes* (see :mod:`lab.runner`), so the shipped inventory
+    is the canonical source of classifications for scoring.
+    """
+    try:
+        records = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {
+        str(r["asset_id"]): str(r.get("classification") or "")
+        for r in records
+        if isinstance(r, dict) and r.get("asset_id")
+    }
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience entry point
     build()
     w = load()

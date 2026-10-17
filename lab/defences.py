@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from lab import world
 from lab.oracle import read_doc_outside_docs
 
 # Refusal prefixes. A tool result starting with one of these means the effect
@@ -116,12 +117,20 @@ def check_ticket(assignee: str, body: str, rules: dict) -> str | None:
 
 # ---------------------------------------------------------------------------
 # Deterministic replay: decide, from a recorded call alone, whether a set of
-# defences would have blocked it. Pure -> unit-testable, no model, no I/O.
+# defences would have blocked it. ``evaluate_call`` is pure (no model, no I/O);
+# ``replay`` reads the asset inventory once so classifications match the live
+# D2 tool (:func:`deny_restricted_asset`).
 # ---------------------------------------------------------------------------
 
 
-def evaluate_call(call: dict, rules: dict, defences: list[str]) -> bool:
-    """Would ``defences`` block this recorded tool call? (args-only, pure)."""
+def evaluate_call(
+    call: dict, rules: dict, defences: list[str], assets: dict[str, str] | None = None
+) -> bool:
+    """Would ``defences`` block this recorded tool call? (args-only, pure).
+
+    ``assets`` is an optional ``{asset_id: classification}`` inventory; with it
+    D2 also blocks reads of a forbidden classification, as the live tool does.
+    """
     codes = set(defences or ())
     name = call.get("name")
     args = call.get("args", {}) or {}
@@ -133,7 +142,10 @@ def evaluate_call(call: dict, rules: dict, defences: list[str]) -> bool:
     if "D2" in codes:
         if name == "query_assets":
             qa = rules["sensitive_tools"]["query_assets"]
-            if args.get("asset_id") in set(qa.get("forbidden_asset_ids", [])):
+            aid = args.get("asset_id")
+            if aid in set(qa.get("forbidden_asset_ids", [])):
+                return True
+            if (assets or {}).get(aid) in set(qa.get("forbidden_classifications", [])):
                 return True
         if name == "create_ticket":
             if check_ticket(args.get("assignee", ""), args.get("body", ""), rules) is not None:
@@ -146,21 +158,29 @@ def evaluate_call(call: dict, rules: dict, defences: list[str]) -> bool:
     return False
 
 
-def replay(traces: list[dict], rules: dict, defences: list[str]) -> list[dict]:
+def replay(
+    traces: list[dict],
+    rules: dict,
+    defences: list[str],
+    assets: dict[str, str] | None = None,
+) -> list[dict]:
     """Re-annotate recorded traces with ``blocked`` flags under ``defences``.
 
     Honest lower bound: it holds the agent's *requested* calls fixed and asks
     "with these defences enforced in tool code, which attempts are neutralised?"
     A full live run (``runner.run_split(..., defences=...)``) may differ, because
     D1 trust labels also change what the model decides to do. The returned traces
-    are fresh dicts; the inputs are not mutated.
+    are fresh dicts; the inputs are not mutated. ``assets`` defaults to the
+    shipped inventory (``world.asset_classifications()``).
     """
+    if assets is None:
+        assets = world.asset_classifications()
     out = []
     for tr in traces:
         new_calls = []
         for call in tr.get("tool_calls", []):
             rec = dict(call)
-            rec["blocked"] = evaluate_call(call, rules, defences)
+            rec["blocked"] = evaluate_call(call, rules, defences, assets)
             new_calls.append(rec)
         new_tr = dict(tr)
         new_tr["tool_calls"] = new_calls

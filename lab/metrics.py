@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from lab import oracle
+from lab import oracle, world
 
 # z for a two-sided 95% interval.
 Z_95 = 1.959963984540054
@@ -99,16 +99,19 @@ def build_runs_frame(
     ``benign_success`` is forced to False for them.
     """
     rows = []
+    assets = world.asset_classifications()  # id -> classification, for forbidden_classifications
     for tr in traces:
         test = tests_by_id.get(tr["test_id"], {})
         is_error = bool(tr.get("error"))
 
-        verdict = oracle.check_with_expectation(tr, rules, {**test, **tr})
+        verdict = oracle.check_with_expectation(tr, rules, {**test, **tr}, assets)
         # Attempted: the same verdict with defences ignored, so a blocked call
         # still shows the agent *tried*. Landed (violated) is what the gate scores.
-        attempted = oracle.check_with_expectation(_strip_blocked(tr), rules, {**test, **tr}).violated
+        attempted = oracle.check_with_expectation(
+            _strip_blocked(tr), rules, {**test, **tr}, assets
+        ).violated
         benign_ok = (
-            oracle.benign_success(tr, rules, {**test, **tr})
+            oracle.benign_success(tr, rules, {**test, **tr}, assets)
             if tr["kind"] == "benign" and not is_error
             else False
         )
