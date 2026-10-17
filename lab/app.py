@@ -252,10 +252,10 @@ class GovState:
             self.policy["roles"].update(json.loads(self.roles_file.read_text()))
 
     def save_roles(self) -> None:
-        self.roles_file.write_text(json.dumps(self.policy["roles"], indent=2))
+        self.roles_file.write_text(json.dumps(self.policy["roles"], indent=2, sort_keys=True))
 
     def save_candidates(self) -> None:
-        self.cand_file.write_text(json.dumps(self.candidates, indent=2))
+        self.cand_file.write_text(json.dumps(self.candidates, indent=2, sort_keys=True))
 
     # -- candidate helpers
     def next_candidate_id(self) -> str:
@@ -440,9 +440,11 @@ def _save_candidate(s: GovState, cid: str, submitted_by: str, codes: list[str],
                     test_set_text: str) -> None:
     """Persist traces + runs.csv, fingerprint and summary; log the submit."""
     runs = metrics.build_runs_frame(traces, s.rules, s.tests_by_id)
+    # C-07: no phantom results/traces/... path; a trace's own path only if it has one.
+    runs["trace_path"] = [tr.get("trace_path", "") or "" for tr in traces]
     (s.work / cid).mkdir(parents=True, exist_ok=True)
-    s.traces_path(cid).write_text(json.dumps(traces, indent=2))
-    runs.to_csv(s.work / cid / "runs.csv", index=False)
+    s.traces_path(cid).write_text(json.dumps(traces, indent=2, sort_keys=True))
+    metrics.write_outputs(runs, s.work / cid / "summary.csv", s.work / cid / "runs.csv")  # sorted
     summary = gate.summarise(runs)
     summary["mode"] = mode                 # the manager summary labels each candidate by this
 

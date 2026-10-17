@@ -700,3 +700,25 @@ def test_comparability_flags_test_set_reps_run_count_and_mode(tmp_path):
     s.candidates["RC-004"] = dict(base, test_set_sha256="sha256:b")
     assert app._comparable(s, "RC-004", "RC-001") == ["test set"]
     assert app._comparable(s, "RC-001", "RC-001") == []
+
+
+# --------------------------------------------------------------------------- #
+# C-07: workspace files are written sorted, so reruns are byte-identical and
+#       runs.csv carries no phantom legacy trace path.
+# --------------------------------------------------------------------------- #
+
+def test_workspace_files_are_sorted_and_reruns_byte_identical(tmp_path, monkeypatch, capsys):
+    import pandas as pd
+    w1, w2 = tmp_path / "a" / "governance_out", tmp_path / "b" / "governance_out"
+    run_app(monkeypatch, capsys, w1, [*NEW_DEMO_CANDIDATE, "3", "4"])
+    run_app(monkeypatch, capsys, w2, [*NEW_DEMO_CANDIDATE, "3", "4"])
+    for name in ("RC-001/runs.csv", "RC-001/summary.csv", "RC-001/traces.json"):
+        assert (w1 / name).read_bytes() == (w2 / name).read_bytes(), name
+
+    runs = pd.read_csv(w1 / "RC-001" / "runs.csv", keep_default_na=False)
+    assert len(runs) == 138 and (runs["trace_path"] == "").all()        # no results/traces/... phantom
+    assert list(runs["kind"]) == sorted(runs["kind"])                    # sorted export
+    rec = json.loads((w1 / "candidates.json").read_text())["RC-001"]
+    assert list(rec) == sorted(rec)                                      # keys written sorted
+    first = json.loads((w1 / "RC-001" / "traces.json").read_text())[0]
+    assert list(first) == sorted(first)
