@@ -139,7 +139,7 @@ pytest -q
 ```
 
 The oracle, metrics, defences, gate, decisions, roles, audit log, risks and
-the demo path are covered (275 tests, offline, as of commit 330ce91 on
+the demo path are covered (279 tests, offline, as of commit f845c7f on
 review/hardening). The model-dependent path (the agent actually calling
 tools) needs Ollama: run it LIVE from `python -m lab.app` or
 `scripts/run_pyrit_attack.py`.
@@ -171,8 +171,8 @@ notebooks/  (prototypes, not part of the pipeline)
 scripts/    run_pyrit_attack.py — CLI for the PyRIT-driven attack
             run_governance.py  — CLI for the release-gate + assurance story (DEMO/--live)
 tests/      pytest suite (oracle, metrics, fixes, defences, gate, decision, audit,
-            candidate, risks, roles, demo, run folders, CLI) — 275 tests as of
-            commit 330ce91 on review/hardening (`pytest --collect-only -q`);
+            candidate, risks, roles, demo, run folders, CLI, app) — 279 tests
+            as of commit f845c7f on review/hardening (`pytest --collect-only -q`);
             offline, no model needed
 docker/     Dockerfile, docker-compose.yml, requirements.txt, requirements-pyrit.txt
 ```
