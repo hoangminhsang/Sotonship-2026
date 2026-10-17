@@ -235,13 +235,35 @@ def regression_baseline(last_approved: dict | None, current: dict) -> tuple[floa
     return last_approved.get("asr"), None
 
 
+def _attempted_ci(s: dict):
+    """Wilson interval for the attempted figure (attempts incl. calls blocked by defences)."""
+    return metrics.wilson(int(s.get("attempted_count") or 0), int(s.get("attempted_runs") or 0))
+
+
+def _ci_text(p) -> str:
+    return f"[{p.lo:.1%}, {p.hi:.1%}]"
+
+
+def gate_report(cid: str, verdict, summary: dict) -> str:
+    """The gate's report plus the attempted figure with its CI, shown but never a limit (A-08)."""
+    lines = gate.report_text(cid, verdict).splitlines()
+    att = _attempted_ci(summary)
+    lines.insert(
+        len(lines) - 1,
+        f"  info  attempted_incl_blocked         {att.rate:>7.1%}  not a limit  "
+        f"({att.count_str} 95% CI {_ci_text(att)})",
+    )
+    return "\n".join(lines)
+
+
 def _fmt_summary(s: dict, tag: str = "") -> str:
     # ``errors_with_violation`` / ``attempted_*`` arrive with the error-scoring
     # change (fix 3); read with .get so this line works before and after it.
-    attempted = (
-        f" · attempted {s.get('attempted_count')}/{s.get('attempted_runs')}"
-        if "attempted_runs" in s else ""
-    )
+    if "attempted_runs" in s:
+        att = _attempted_ci(s)
+        attempted = f" · attempted {att.count_str} ({att.rate:.1%}) 95% CI {_ci_text(att)}"
+    else:
+        attempted = ""
     return (
         (f"[{tag}] " if tag else "")
         + f"ASR {s['asr']:.1%} ({s['attack_violations']}/{s['attack_runs']}) "
@@ -393,7 +415,7 @@ def run(args: argparse.Namespace) -> int:
 
     rep.section("2. Gate verdict for RC-001")
     verdict_001 = gate.evaluate(summary_before, policy)
-    report_001 = gate.report_text("RC-001", verdict_001)
+    report_001 = gate_report("RC-001", verdict_001, summary_before)
     rep.say(report_001)
     rep.write("gate_RC-001.txt", report_001)
 
@@ -528,7 +550,7 @@ def run(args: argparse.Namespace) -> int:
             rep.say(f"No-regression check against {last_approved['candidate_id']} "
                     f"(ASR {baseline_asr:.1%}, same test set, reps and mode)")
         verdict = gate.evaluate(summary, policy, last_approved_asr=baseline_asr)
-        report = gate.report_text(cid, verdict)
+        report = gate_report(cid, verdict, summary)
         rep.say(report)
         rep.write(f"gate_{cid}.txt", report)
 
@@ -655,6 +677,12 @@ def run(args: argparse.Namespace) -> int:
     )
     benign_chain = " -> ".join(f"{summaries[cid]['benign_rate']:.0%}" for cid in summaries)
     rep.say(f"[{tag}] Headline: attack success {asr_chain}, benign {benign_chain}")
+    attempted_chain = " -> ".join(
+        [f"{_attempted_ci(summary_before).rate:.1%} {_ci_text(_attempted_ci(summary_before))}"]
+        + [f"{_attempted_ci(summaries[cid]).rate:.1%} {_ci_text(_attempted_ci(summaries[cid]))} ({'+'.join(codes)})"
+           for cid, codes, _, _ in retests]
+    )
+    rep.say(f"[{tag}] Attempted (incl. blocked): {attempted_chain}")
     if rep.note:
         rep.say(f"[{tag}] {rep.note}")
     return 0

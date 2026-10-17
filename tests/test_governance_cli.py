@@ -176,6 +176,27 @@ def test_demo_regression_check_uses_last_approved_when_comparable(gov, tmp_path,
     assert "no approved candidate to compare against" in stdout
 
 
+def test_attempted_figure_shows_its_wilson_ci(gov, tmp_path, capsys):
+    """Attempted (incl. blocked) carries n and a 95% CI wherever it is shown (A-08)."""
+    import re
+
+    from lab import metrics
+
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 0
+    ci = metrics.wilson(33, 78)
+    expect = f"33/78 95% CI [{ci.lo:.1%}, {ci.hi:.1%}]"
+    for cid in ("RC-001", "RC-002", "RC-003"):   # scripted attempts are 33/78 in all three
+        text = (out / f"gate_{cid}.txt").read_text()
+        line = next(ln for ln in text.splitlines() if "attempted" in ln.lower() and "not a limit" in ln)
+        assert expect in line, line
+        assert text.rstrip().endswith(("VERDICT: FAIL (1 reason)", "VERDICT: PASS"))
+    stdout = capsys.readouterr().out
+    assert re.search(r"Attempted \(incl\. blocked\): 42\.3% \[32\.0%, 53\.4%\] -> 42\.3% \[32\.0%, 53\.4%\] \(D2\) -> 42\.3% \[32\.0%, 53\.4%\] \(D2\+D3\)", stdout)
+    assert "[SCRIPTED] ASR 42.3% (33/78) 95% CI [32.0%, 53.4%]" in stdout
+    assert "attempted 33/78 (42.3%) 95% CI [32.0%, 53.4%]" in stdout
+
+
 def test_help_text_states_real_defaults(gov):
     import re
 
