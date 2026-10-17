@@ -255,19 +255,104 @@ so a trace is the ground truth for the run that produced it.
 - Attack payloads are planted at run time into isolated per-run copies of the
   world, so the checked-in fixtures in `data/` stay clean.
 
-## Credit and AI assistance
+## Disclosure
 
-- **Design inspiration:** the taimurijlal
-  [`03-secure-ai-agent`](https://github.com/taimurijlal) README's before/after
-  framing. Used as inspiration for structure, **not copied**. Check that
-  repository for its own licence before reusing its text; attribute per that
-  licence.
-- **Tooling:** LangGraph, LangChain, the official MCP Python SDK,
-  `langchain-mcp-adapters`, Ollama, and Qwen2.5 — each under its own licence.
-- **Red-team framework:** Microsoft [PyRIT](https://github.com/Azure/PyRIT)
-  (MIT licence) drives the optional attack path.
-- **AI assistance disclosed:** this lab's spec and code were produced with an AI
-  coding assistant and reviewed by a human before use.
+This section follows the SotonShip 26 Responsible AI track rules: disclose
+AI-generated work, prior components and outside help; credit research, code,
+models and data with dates and licences; label synthetic data (see "Data
+provenance" above). Everything here is stated from the repository history and
+from checks dated 17 Oct 2026; anything we could not check is marked
+**NOT VERIFIED**.
+
+### When it was built
+
+All three commits on `main` are dated Sat 17 Oct 2026, 06:30–15:49 BST, after
+hacking opened on Fri 16 Oct at 20:00 (`git log --format='%h %ad %s' --date=iso-local`):
+
+| Commit | Time (BST) | What |
+|---|---|---|
+| `121b6c7` | 06:30 | Insecure Agent Attack Lab — initial commit |
+| `f729076` | 14:36 | Governance & assurance: release gate, risk register, audit trail, CLI + runbook |
+| `d825341` | 15:49 | Menu app, roles editor, demo module, tests |
+
+### AI assistance
+
+- **The lab, governance and app code** (`lab/`, `scripts/`, `tests/`) were
+  produced with an AI coding assistant and reviewed by humans before use. The
+  commit trailers name the model: `Co-Authored-By: Claude Opus 4.8` on
+  `121b6c7` and `f729076`; on `d825341` the trailer is absent. This README,
+  `RUNBOOK.md` and `docs/` were revised in the review pass below.
+- **The review-and-hardening pass** (branch `review/hardening`, 17 Oct) used
+  Claude Code with **Claude Opus 5.5** (review lanes and fix designs) and
+  **Claude Fable 5.1** (implementation). It also took an outside architecture
+  review from **google/gemini-4-argon** and **z-ai/glm-5.3-prime** via
+  OpenRouter on 17 Oct; **openai/gpt-6-astra** declined the review pack.
+- All data in this repository is synthetic (see "Data provenance"), so no
+  private or customer data could reach an external AI service from it.
+  **TODO (owner):** confirm that the OpenRouter review pack held only this
+  repository's code and docs.
+
+### Prior components and outside help
+
+- **Prior components:** none of our own earlier projects, per the repository
+  history (the owner confirms). Open-source libraries and the pre-trained model
+  listed below are used as allowed by the track rules.
+- **Outside help:** none beyond the tools listed in this section.
+- **Design inspiration:** the before/after framing of the
+  [taimurijlal](https://github.com/taimurijlal) `03-secure-ai-agent` README.
+  Inspiration for structure only, **not copied**. The exact repository and its
+  licence are **NOT VERIFIED** (the link is to the GitHub profile, not a repo).
+
+### Credits: code, models and tools
+
+Licences marked "verified" were read from the installed package metadata
+(`*.dist-info/METADATA`) at the pinned versions on 17 Oct 2026; the URLs were
+not fetched for that check. Pins are in `docker/requirements.txt` and
+`docker/requirements-pyrit.txt`.
+
+| Component | Pinned version | Licence | URL | Checked |
+|---|---|---|---|---|
+| langgraph | 1.2.16 | MIT (verified) | https://pypi.org/project/langgraph/ | 17 Oct 2026 |
+| langgraph-prebuilt | 1.1.1 | MIT (verified) | https://pypi.org/project/langgraph-prebuilt/ | 17 Oct 2026 |
+| langchain-core | 1.6.12 | MIT (verified) | https://pypi.org/project/langchain-core/ | 17 Oct 2026 |
+| langchain-ollama | 1.1.0 | MIT (verified) | https://pypi.org/project/langchain-ollama/ | 17 Oct 2026 |
+| mcp (official MCP Python SDK) | 1.30.0 | MIT (verified) | https://pypi.org/project/mcp/ | 17 Oct 2026 |
+| langchain-mcp-adapters | 0.3.2 | MIT (verified) | https://pypi.org/project/langchain-mcp-adapters/ | 17 Oct 2026 |
+| ollama (Python client) | 0.6.3 | MIT (verified) | https://pypi.org/project/ollama/ | 17 Oct 2026 |
+| PyRIT (Microsoft) | 1.1.0 | **NOT VERIFIED** (an earlier version of this README said MIT) | https://github.com/Azure/PyRIT | — |
+| Ollama server | `ollama/ollama:0.4.0` in `docker/docker-compose.yml`; local install version not recorded | **NOT VERIFIED** | https://ollama.com | — |
+| Qwen2.5-7B-Instruct (`qwen2.5:7b-instruct`, digest `sha256:845dbda0…` in Reproducibility) | as pulled by Ollama | **NOT VERIFIED** | https://ollama.com/library/qwen2.5 | — |
+
+Other pinned packages (pandas 3.0.6, numpy 2.5.4, pydantic 2.14.1, pyyaml 6.0.3,
+matplotlib 3.11.2, pytest 9.1.1 and the Jupyter stack) are listed in
+`docker/requirements.txt`; their licences were not checked.
+
+### Citations (problem evidence and control mapping)
+
+We say **"mapped to"**, never "compliant with". `lab/assurance/control_map.yaml`
+uses these identifiers.
+
+| Reference | URL | Status |
+|---|---|---|
+| OWASP Top 10 for LLM Applications 2025 — LLM01 Prompt Injection, LLM02 Sensitive Information Disclosure, LLM06 Excessive Agency | https://genai.owasp.org/llm-top-10/ | Verified 17 Oct 2026 (IDs and titles as listed on that page) |
+| NIST AI RMF 1.0 — Core "Manage" function | https://airc.nist.gov/airmf-resources/airmf/5-sec-core/ | Verified 17 Oct 2026 (the Core "is composed of four functions: govern, map, measure, and manage") |
+| MITRE ATLAS technique AML.T0051 | https://atlas.mitre.org/techniques/AML.T0051 | ID confirmed in MITRE's SAFE-AI report (17 Oct 2026); the technique's **name is per the technique page** and is not quoted here because we did not verify it |
+
+### Honest limits
+
+- **The audit log is tamper-evident, not tamper-proof.** The hash chain in
+  `lab/governance/audit.py` detects an edited entry, an inserted entry, a
+  deleted entry in the middle, and reordering. It does **not** detect
+  re-chaining (an attacker who rewrites an entry and recomputes every later
+  hash), truncation of the tail, or deletion of the whole file; a missing or
+  empty log verifies as "0 entries, chain intact". A real deployment anchors
+  the head hash somewhere the writer cannot reach (a second system, a signed
+  timestamp, or a write-once store).
+- **Names are typed, not authenticated.** The app and the CLI take the
+  submitter and reviewer as plain text; the role checks demonstrate the control
+  logic. A real deployment binds them to SSO identity.
+- **Pass ≠ safe; small samples, wide intervals; one model, one synthetic
+  world.** See "Scope and honesty" below.
 
 ## Scope and honesty
 
