@@ -329,6 +329,22 @@ def test_governance_live_subset_has_no_duplicates():
     assert sum(t["kind"] == "attack" for t in subset) == min(30, sum(t["kind"] == "attack" for t in tests))
 
 
+def test_live_fingerprint_hashes_the_subset_actually_run(stub):
+    """A --live --sample N fingerprint must hash the N+N records run, not corpus/test.jsonl (A-04)."""
+    from lab.governance import candidate
+
+    gov = _load_governance()
+    tests = corpus.read_jsonl(corpus.TEST_PATH)
+    subset = gov.live_subset(tests, 3)
+    text = gov.live_test_set_text(tests, 3)
+    assert text != corpus.TEST_PATH.read_text()
+    # Same bytes a run folder records for that subset, so SAVED and LIVE fingerprints agree.
+    run_dir = run_folder.create(subset, model="m", model_digest="", driver="native", reps=1,
+                                temperature=0.2, runs_root=stub.root, run_id="sub")
+    assert (run_dir / "records.jsonl").read_text() == text
+    assert candidate.sha256_text(text) == _sha(run_dir / "records.jsonl")
+
+
 def test_evidence_register_takes_a_proof_file():
     risk = Risk(id="R-02", title="x", violation_class="V_exfiltration", successes=1, runs=2,
                 rate=0.5, ci_low=0, ci_high=1, likelihood="High", impact="High",

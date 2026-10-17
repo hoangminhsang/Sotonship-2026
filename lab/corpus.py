@@ -70,8 +70,17 @@ class CorpusMismatch(RuntimeError):
     """The corpus files on disk differ from what the generator produces."""
 
 
+def jsonl_text(records: list[dict]) -> str:
+    """The exact text :func:`write_jsonl` writes for ``records`` (one JSON object per line).
+
+    Hash this to fingerprint the records actually run; a run folder's
+    ``records.jsonl`` holds the same bytes.
+    """
+    return "".join(json.dumps(rec) + "\n" for rec in records)
+
+
 def _jsonl_bytes(records: list[dict]) -> bytes:
-    return "".join(json.dumps(rec) + "\n" for rec in records).encode("utf-8")
+    return jsonl_text(records).encode("utf-8")
 
 
 def check_matches_generator(

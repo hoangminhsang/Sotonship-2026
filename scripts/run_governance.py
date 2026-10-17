@@ -93,6 +93,16 @@ def live_subset(tests: list[dict], sample: int) -> list[dict]:
     return attacks + benign
 
 
+def live_test_set_text(tests: list[dict], sample: int) -> str:
+    """The JSONL text of the records a --live run actually uses (A-04).
+
+    The fingerprint hashes this, not the whole corpus/test.jsonl, so the ID
+    card names the test set that was run; it equals the run folder's
+    records.jsonl byte for byte.
+    """
+    return corpus.jsonl_text(live_subset(tests, sample))
+
+
 def load_saved_run(path: str | Path, expect_defences: tuple[str, ...]) -> tuple[dict, list[dict], list[dict]]:
     """Load and hash-verify a locked run folder; check it is the kind of run expected."""
     manifest, records, traces = run_folder.load_run(path)
@@ -315,7 +325,10 @@ def run(args: argparse.Namespace) -> int:
     elif args.live:
         from lab import runner
 
-        test_set_text = corpus.TEST_PATH.read_text()
+        test_set_text = live_test_set_text(tests, args.sample)  # the subset actually run
+        subset_n = len(live_subset(tests, args.sample))
+        rep.say(f"Live subset: {subset_n} records (first {args.sample} attacks + first {args.sample} benign); "
+                "the fingerprint hashes these records")
         model_name = agent.MODEL
         model_digest = runner.model_digest()
     else:
