@@ -51,7 +51,8 @@
   #board { position:relative; width:1700px; height:424px; transform-origin:0 0; }
   #wires { position:absolute; inset:0; width:1700px; height:424px; overflow:visible; }
   #wires path { fill:none; stroke:#c9c9c2; stroke-width:2.5; stroke-linecap:round; }
-  #wires path.lit { stroke:var(--run); }
+  #wires path.lit { stroke:var(--run); stroke-dasharray:10 10; animation:flow .6s linear infinite; }
+  #wires path.done { stroke:var(--good); }
   #wires text { font:500 18px var(--sans); fill:var(--soft); }
   #dot { fill:var(--run); }
   .glabel { position:absolute; top:6px; font-size:20px; color:var(--soft); font-weight:500; }
@@ -62,7 +63,22 @@
   .node svg { width:86px; height:64px; fill:none; stroke:var(--ink); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
   .node .lbl { font-size:21px; font-weight:500; padding:0 10px; line-height:1.25; }
   .node.idle svg, .node.idle .lbl { opacity:.55; }
-  .node.running { border-color:var(--run); box-shadow:0 0 0 8px rgba(47,95,208,.13), 0 12px 38px rgba(47,95,208,.28); }
+  .node.running { border-color:transparent; box-shadow:0 0 0 8px rgba(47,95,208,.10), 0 12px 38px rgba(47,95,208,.22); }
+  .node.running::before { content:""; position:absolute; inset:-3px; border-radius:25px; padding:3px; pointer-events:none;
+    background:conic-gradient(from var(--ang, 0deg), var(--run) 0deg, rgba(47,95,208,.12) 150deg, rgba(47,95,208,.12) 230deg, var(--run) 360deg);
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor;
+    mask:linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); animation:spin 1.3s linear infinite; }
+  .node.done { border-color:var(--good); box-shadow:0 0 0 4px rgba(6,118,71,.08); }
+  .node.error { border-color:var(--bad); box-shadow:0 0 0 4px rgba(180,35,24,.08); }
+  .node.skipped { border-style:dashed; border-color:var(--faint); }
+  .node.skipped svg, .node.skipped .lbl { opacity:.55; }
+  .node .warn { position:absolute; top:12px; right:12px; width:26px; height:26px; border-radius:50%; background:var(--bad-bg); color:var(--bad);
+                display:none; align-items:center; justify-content:center; }
+  .node.error .warn { display:flex; }
+  .warn svg { width:14px; height:14px; stroke:var(--bad); stroke-width:3.2; opacity:1; }
+  @property --ang { syntax:"<angle>"; inherits:false; initial-value:0deg; }
+  @keyframes spin { to { --ang:360deg; } }
+  @keyframes flow { to { stroke-dashoffset:-20; } }
   .node .tick { position:absolute; top:12px; right:12px; width:26px; height:26px; border-radius:50%; background:var(--good-bg); color:var(--good);
                 display:none; align-items:center; justify-content:center; }
   .node.done .tick { display:flex; }
@@ -99,7 +115,39 @@
   .roles { margin-top:18px; color:var(--soft); }
 
   @media (max-width: 1100px) { .lower, .cards, .grid2 { grid-template-columns:1fr; } main { padding:24px 20px 40px; } }
-  @media (prefers-reduced-motion: reduce) { .node { transition:none; } }
+  @media (prefers-reduced-motion: reduce) { .node { transition:none; } .scan::after { animation:none; } .node.running::before, #wires path.lit { animation:none; } .msg, .dots i { animation:none !important; } .stream-body { scroll-behavior:auto; } }
+
+  /* ---------- live run: the stream under the flowchart ---------- */
+  .stream { background:var(--card); border:1px solid var(--line); border-radius:20px; margin-top:16px; height:400px; display:flex; flex-direction:column; overflow:hidden; }
+  .stream-head { padding:14px 28px; border-bottom:1px solid var(--line); color:var(--soft); font-size:21px; flex:none; }
+  .stream-body { flex:1; overflow-y:auto; padding:18px 28px 22px; display:flex; flex-direction:column; gap:12px; scroll-behavior:smooth; }
+  .msg { display:flex; gap:16px; align-items:flex-start; animation:slidein .45s ease both; }
+  .msg .ico { flex:none; width:52px; height:52px; border-radius:50%; background:var(--bg); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; }
+  .ico svg { width:30px; height:30px; fill:none; stroke:var(--ink); stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+  .ico.bad { background:var(--bad-bg); border-color:var(--bad); } .ico.bad svg { stroke:var(--bad); }
+  .ico.good { background:var(--good-bg); border-color:var(--good); } .ico.good svg { stroke:var(--good); }
+  .bub { background:var(--bg); border-radius:18px; padding:10px 20px 12px; max-width:1200px; font-size:22px; overflow-wrap:anywhere; }
+  .bub .who { display:block; font-size:20px; color:var(--soft); margin-bottom:2px; }
+  .bub .mono, .mono { font:500 20px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  .bub .hid { color:var(--bad); background:var(--bad-bg); border-radius:10px; padding:2px 10px; }
+  .bub .tagline { display:inline-block; font-size:20px; color:var(--bad); font-weight:500; margin-right:10px; }
+  .bub.bad { background:var(--bad-bg); color:var(--bad); } .bub.good { background:var(--good-bg); color:var(--good); }
+  .bub .sub { display:block; font-size:20px; color:var(--soft); }
+  .bub .pill { font-size:20px; padding:2px 14px; }
+  .msg.row { align-items:center; gap:14px; padding-left:68px; font-size:21px; animation-duration:.3s; }
+  .msg.row .id { font-weight:500; }
+  .msg.row .pill { font-size:20px; padding:1px 14px; }
+  .pill.neutral { color:var(--soft); background:var(--bg); border:1px solid var(--line); }
+  .msg.more { padding-left:68px; color:var(--soft); font-size:21px; }
+  .dots { display:inline-flex; gap:7px; align-items:center; height:34px; }
+  .dots i { width:10px; height:10px; border-radius:50%; background:var(--faint); animation:blink 1s infinite ease-in-out; }
+  .dots i:nth-child(2) { animation-delay:.2s; } .dots i:nth-child(3) { animation-delay:.4s; }
+  .scan { position:relative; overflow:hidden; }
+  .scan::after { content:""; position:absolute; left:0; right:0; height:3px; background:var(--run); top:0; animation:scanline 1.1s ease-in-out 2; }
+  .caret::after { content:"\2502"; color:var(--faint); }
+  @keyframes slidein { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+  @keyframes blink { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
+  @keyframes scanline { 0% { top:0; } 50% { top:calc(100% - 3px); } 100% { top:0; } }
 
   /* ---------- run bar and small labels ---------- */
   .runbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:20px; padding:10px 16px; margin-bottom:16px; }
@@ -145,10 +193,11 @@
       <span class="runtext" id="run-text" role="status"></span>
     </div>
     <div class="canvas-wrap"><span class="mini" id="live-badge" hidden></span><div id="fit"><div id="board"><svg id="wires" viewBox="0 0 1700 424"></svg></div></div></div>
-    <div class="lower">
+    <div class="lower" id="lower">
       <div class="card" id="happened"><h3 id="happened-title"></h3><p class="src" id="ex-src"></p><dl class="ex" id="ex"></dl></div>
       <div class="card"><h3 id="chips-title"></h3><div class="chips" id="chips"></div></div>
     </div>
+    <div class="stream" id="stream" hidden><div class="stream-head" id="stream-head"></div><div class="stream-body" id="stream-body" aria-live="polite"></div></div>
   </section>
 
   <section class="view" id="view-results" hidden>
@@ -218,6 +267,25 @@
      progress. A scripted feed never replaces what the real export says. */
   function liveInProgress() { return anyRunning() && /^(LIVE|REPLAY|SAVED)$/.test(liveWord()); }
 
+  /* This page draws the run only after it has seen a run start (LIVE.state 'running') or started one itself.
+     An old finished run in data/live.js never lights the chart on load. */
+  var seen = false, baseline = false, baseUid = '', lastNodes = null, lastEdges = null;
+  function fresh() {
+    var L = liveFeed();
+    if (!L) return null;
+    if (!seen && L.state === 'running') seen = true;
+    if (!seen) return null;
+    if (baseline) {
+      var u = (L.source && L.source.uid) || '';
+      if (L.state === 'running' || u !== baseUid) baseline = false; else return null;
+    }
+    return L;
+  }
+  function startedHere() {
+    var L = liveFeed();
+    seen = true; baseline = true; baseUid = (L && L.source && L.source.uid) || ''; lastNodes = null; lastEdges = null;
+  }
+
   /* ---------- cover ---------- */
   $('cover-name').textContent = P.name || 'Redline';
   $('cover-what').textContent = P.what || '';
@@ -283,6 +351,9 @@
     var tk = el('div', 'tick'), ts = sv('svg', { viewBox: '0 0 16 16' });
     ts.appendChild(sv('path', { d: 'M3 8.5 L6.5 12 L13 4.5', fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
     tk.appendChild(ts); box.appendChild(tk);
+    var wn = el('div', 'warn'), ws = sv('svg', { viewBox: '0 0 16 16' });
+    ws.appendChild(sv('path', { d: 'M8 3 V9 M8 12.5 V13', fill: 'none', 'stroke-linecap': 'round' }));
+    wn.appendChild(ws); box.appendChild(wn);
     board.appendChild(box); nodeEls[s.id] = box;
   });
   var GL = C.groups || {};
@@ -309,23 +380,48 @@
   })();
   var dot = sv('circle', { id: 'dot', r: 7, cx: -50, cy: -50 }); wires.appendChild(dot);
 
+  /* The flowchart shows eight boxes; a box can stand for several bridge nodes. */
+  var GROUP = { 'rt.check': ['rt.check', 'rt.rate'], 'sl.gate': ['sl.fingerprint', 'sl.gate'],
+                'll.risks': ['ll.risks', 'll.controls', 'll.evidence', 'll.trace', 'll.summary'] };
+  function one(n) {
+    var st = n && n.state;
+    return st === 'pass' || st === 'fail' ? 'done' : (st === 'running' || st === 'done' || st === 'error' || st === 'skipped' ? st : 'idle');
+  }
   function stateOf(id, nodes) {
-    if (!nodes) return cands.length ? 'done' : 'idle';
-    var ids = id === 'll.risks' ? ['ll.risks', 'll.controls', 'll.evidence', 'll.trace', 'll.summary'] : [id];
-    var sts = ids.map(function (i) { return nodes[i] ? nodes[i].state : 'idle'; });
+    if (!nodes) return 'idle';
+    var sts = (GROUP[id] || [id]).map(function (i) { return one(nodes[i]); });
     if (sts.indexOf('running') >= 0) return 'running';
-    if (sts.every(function (s) { return s === 'done'; })) return 'done';
+    if (sts.indexOf('error') >= 0) return 'error';
+    if (sts.every(function (x) { return x === 'skipped'; })) return 'skipped';
+    if (sts.every(function (x) { return x === 'done' || x === 'skipped'; })) return 'done';
     return 'idle';
   }
+  /* the wire into a box is green when the bridge says its edge is done */
+  var EDGE_KEY = { 'rt.record': 'rt.attack>rt.record', 'rt.check': 'rt.record>rt.check', 'sl.gate': 'sl.fingerprint>sl.gate',
+                   'sl.review': 'sl.gate>sl.review', 'sl.log': 'sl.review>sl.log', 'fix.ticket': 'll.summary>fix.ticket',
+                   'rt.attack': 'fix.ticket>rt.attack' };
+  var SRC = { 'rt.record': 'rt.attack', 'rt.check': 'rt.record', 'sl.gate': 'rt.check', 'sl.review': 'sl.gate', 'sl.log': 'sl.review',
+              'll.risks': 'sl.log', 'fix.ticket': 'll.risks', 'rt.attack': 'fix.ticket' };
   var runningId = null;
   function paintNodes() {
-    var Lf = liveFeed(), nodes = (Lf && Lf.nodes) || null;
+    var Lf = fresh();
+    if (Lf && Lf.state !== 'waiting' && Lf.nodes) { lastNodes = Lf.nodes; lastEdges = Lf.edges || {}; }
+    var nodes = lastNodes, edges = lastEdges || {}, states = {};
     runningId = null;
+    steps.forEach(function (s) { states[s.id] = stateOf(s.id, nodes); });
     steps.forEach(function (s) {
-      var st = stateOf(s.id, nodes);
+      var st = states[s.id];
       nodeEls[s.id].className = 'node ' + st;
-      if (st === 'running' && !runningId) runningId = s.id;
-      if (wireEls[s.id]) wireEls[s.id].setAttribute('class', st === 'running' ? 'lit' : '');
+      if (st === 'running' && !runningId && s.id !== 'rt.attack') runningId = s.id;
+      var w = wireEls[s.id];
+      if (!w) return;
+      var cls = '';
+      if (st === 'running' && s.id !== 'rt.attack') cls = 'lit';
+      else if (nodes) {
+        var k = EDGE_KEY[s.id];
+        if (k ? edges[k] === 'done' : states[SRC[s.id]] === 'done') cls = 'done';
+      }
+      w.setAttribute('class', cls);
     });
   }
 
@@ -470,6 +566,180 @@
 
   function renderData() { renderBadge(); paintChips(); renderExample(); renderResults(); renderProof(); }
 
+  /* ---------- the stream: what passes through the agent, one bubble at a time ---------- */
+  var S = C.stream || {};
+  var ICONS = {  /* simple line icons, 32 x 32, same stroke style as the node glyphs */
+    user: ['M16 5 A5.5 5.5 0 1 1 16 16 A5.5 5.5 0 1 1 16 5 Z', 'M5 28 C5 20 27 20 27 28'],
+    doc: ['M8 4 H19 L25 10 V28 H8 Z', 'M19 4 V10 H25', 'M12 16 H21', 'M12 21 H21'],
+    agent: ['M6 12 H26 V25 H6 Z', 'M16 12 V6', 'M13 18 V19', 'M19 18 V19', 'M12 22 H20', 'M3 17 V21', 'M29 17 V21'],
+    held: ['M16 4 L26 8 V16 C26 22 21 26 16 28 C11 26 6 22 6 16 V8 Z', 'M11 16 L15 20 L22 12'],
+    caught: ['M16 4 L26 8 V16 C26 22 21 26 16 28 C11 26 6 22 6 16 V8 Z', 'M16 11 V18', 'M16 21.5 V22'],
+    finger: ['M8 13 C8 8 11.5 5 16 5 C20.5 5 24 8 24 13', 'M12 28 C13 24 13 21 13 17 C13 14.5 14.3 13 16 13 C17.7 13 19 14.5 19 17 C19 21 18.5 24 17.5 28', 'M16 17 C16 21 16 23 15 26', 'M24 17 C24 22 23 25 22 27', 'M8 18 C8 22 7.5 24 7 26'],
+    lock: ['M8 14 H24 V27 H8 Z', 'M11 14 V10 C11 7 13 5 16 5 C19 5 21 7 21 10 V14', 'M16 19 V22'],
+    chain: ['M8 12 H18 A4 4 0 0 1 18 20 H8 A4 4 0 0 1 8 12 Z', 'M14 12 H24 A4 4 0 0 1 24 20 H14'],
+    wrench: ['M21 4 C17 4 14.5 7.5 15.5 11.5 L5 22 L9 27 L19.5 16.5 C24 17.5 28 14.5 28 10.5 L24 14 L20 12 L18 8 Z']
+  };
+  function icon(name, tone) {
+    var d = el('div', 'ico' + (tone ? ' ' + tone : '')), svg = sv('svg', { viewBox: '0 0 32 32' });
+    (ICONS[name] || []).forEach(function (p) { svg.appendChild(sv('path', { d: p })); });
+    d.appendChild(svg); return d;
+  }
+  var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sBodyEl = $('stream-body');
+  function lab(group, code) {
+    var m = (window.DEMO && window.DEMO.labels && window.DEMO.labels[group]) || {};
+    return m[code] || code;
+  }
+  function later(g, ms, fn) { setTimeout(function () { if (g === sGen) fn(); }, ms); }
+  function toEnd() { sBodyEl.scrollTop = sBodyEl.scrollHeight; }
+  function put(node) {
+    sBodyEl.appendChild(node);
+    while (sBodyEl.children.length > 90) sBodyEl.removeChild(sBodyEl.firstChild);
+    toEnd();
+  }
+  function msg(cls, ic, bubble) { var m = el('div', 'msg' + (cls ? ' ' + cls : '')); if (ic) m.appendChild(ic); if (bubble) m.appendChild(bubble); return m; }
+  function bub(label, tone) { var b = el('div', 'bub' + (tone ? ' ' + tone : '')); if (label) b.appendChild(el('span', 'who', label)); return b; }
+  function typeInto(g, node, text, ms) {
+    if (reduce) { node.textContent = text; return; }
+    var i = 0;
+    (function step() { if (g !== sGen) return; i++; node.textContent = text.slice(0, i); if (i < text.length) setTimeout(step, ms); })();
+  }
+  function cleanHidden(t) { return String(t).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim(); }
+  function classWords(list) { return (list || []).map(function (c) { return lab('classes', c); }).join(', '); }
+  function agentName() { var L = liveFeed(); return L && liveWord() !== 'SCRIPTED' && L.model ? String(L.model) : S.scripted_agent; }
+
+  /* the pinned example: four bubbles, about eight seconds; returns its length in ms */
+  function playPin(g, r) {
+    var t = 0, STEP = 1800, TYPE = reduce ? 0 : 1500;
+    if (r.user_task) {
+      var b1 = bub(S.asks); b1.appendChild(document.createTextNode(String(r.user_task)));
+      later(g, t, function () { put(msg('', icon('user'), b1)); }); t += STEP;
+    }
+    if (r.doc || r.hidden) {
+      var b2 = bub(r.doc ? String(r.doc) : S.document);
+      if (r.hidden) {
+        b2.appendChild(el('span', 'tagline', S.hidden_tag));
+        b2.appendChild(el('span', 'hid', cleanHidden(r.hidden)));
+      }
+      later(g, t, function () { put(msg('', icon('doc'), b2)); }); t += STEP;
+    }
+    if (r.tool_calls) {
+      var dots = el('div', 'bub'), dd = el('span', 'dots'); dd.appendChild(el('i')); dd.appendChild(el('i')); dd.appendChild(el('i')); dots.appendChild(dd);
+      var typing = msg('', icon('agent'), dots), b3 = bub(agentName());
+      b3.appendChild(el('span', 'mono', String(r.tool_calls)));
+      later(g, t, function () { put(typing); });
+      later(g, t + TYPE, function () { if (typing.parentNode) typing.parentNode.removeChild(typing); put(msg('', icon('agent'), b3)); });
+      t += STEP + TYPE;
+    }
+    if (typeof r.violated === 'boolean') {
+      var words = classWords(r.classes), b4;
+      if (r.violated) { b4 = bub(null, 'bad'); b4.appendChild(document.createTextNode(S.caught + (words ? ': ' + words : ''))); }
+      else { b4 = bub(null, 'good'); b4.appendChild(document.createTextNode(S.held)); }
+      later(g, t, function () { put(msg('', icon(r.violated ? 'caught' : 'held', r.violated ? 'bad' : 'good'), b4)); }); t += STEP;
+    }
+    return t;
+  }
+
+  function runRow(r) {
+    var m = msg('row');
+    if (r.test_id) m.appendChild(el('span', 'id', String(r.test_id)));
+    if (r.technique) m.appendChild(el('span', 'muted', '· ' + lab('techniques', r.technique)));
+    if (r.kind === 'benign') m.appendChild(el('span', 'pill neutral', S.normal));
+    else if (typeof r.violated === 'boolean') m.appendChild(el('span', 'pill ' + (r.violated ? 'bad' : 'good'), r.violated ? S.caught_pill : S.held_pill));
+    return m;
+  }
+
+  /* play() puts one queued item on screen and returns how long to wait before the next one */
+  function play(g, it) {
+    var d = it.d || {};
+    if (it.type === 'pin') return playPin(g, d);
+    if (it.type === 'more') { put(msg('more', null, el('span', null, '+ ' + it.n + ' ' + S.more_runs))); return 400; }
+    if (it.type === 'run') { put(runRow(d)); return 170; }
+    if (it.type === 'fingerprint') {
+      var b = bub(S.fingerprint), id = el('span', 'mono'), box = el('span', 'scan'); box.appendChild(id); b.appendChild(box);
+      if (typeof d.changed_vs_prev === 'boolean') b.appendChild(el('span', 'sub', d.changed_vs_prev ? S.changed : S.same));
+      put(msg('', icon('finger'), b));
+      if (d.identity12) typeInto(g, id, String(d.identity12), 60);
+      return 1300 + (reduce ? 0 : 700);
+    }
+    if (it.type === 'gate') {
+      var bg = bub(null), ok = d.verdict === 'PASS', bad = d.verdict === 'FAIL';
+      if (ok || bad) bg.appendChild(el('span', 'pill ' + (ok ? 'good' : 'bad'), S.gate + ': ' + d.verdict));
+      if (d.reason) bg.appendChild(el('span', 'sub', String(d.reason)));
+      put(msg('', icon(ok ? 'held' : 'caught', ok ? 'good' : bad ? 'bad' : ''), bg));
+      return 1500;
+    }
+    if (it.type === 'audit') {
+      var ba = bub(null), h = el('span', 'mono');
+      ba.appendChild(document.createTextNode(S.audit));
+      if (d.entry != null) ba.appendChild(el('span', 'sub', S.entry + ' ' + d.entry));
+      ba.appendChild(h);
+      if (d.scripted) ba.appendChild(el('span', 'sub', S.reviewer_tag));
+      put(msg('', icon('lock'), ba));
+      if (d.hash12) typeInto(g, h, String(d.hash12), 60);
+      return 1300 + (reduce ? 0 : 700);
+    }
+    if (it.type === 'chain') {
+      var bc = bub(null, d.ok ? 'good' : 'bad');
+      bc.appendChild(document.createTextNode(d.ok ? S.chain_ok : S.chain_bad));
+      if (d.entries != null) bc.appendChild(el('span', 'sub', d.entries + ' ' + S.entries));
+      put(msg('', icon('chain', d.ok ? 'good' : 'bad'), bc));
+      return 1300;
+    }
+    if (it.type === 'tickets') {
+      var bt = bub(null);
+      bt.appendChild(document.createTextNode(S.ticket));
+      if (d.title) bt.appendChild(el('span', 'sub', String(d.title)));
+      put(msg('', icon('wrench'), bt));
+      return 1300;
+    }
+    return 0;
+  }
+  function pump() {
+    if (sBusy) return;
+    var it = sQueue.shift();
+    if (!it) return;
+    sBusy = true;
+    var g = sGen, wait = play(g, it);
+    setTimeout(function () { if (g !== sGen) return; sBusy = false; pump(); }, wait);
+  }
+  function samePin(a, b) {
+    if (!a || !b) return false;
+    if (a.seq != null && b.seq != null && a.seq === b.seq) return true;
+    return a.test_id != null && a.test_id === b.test_id && a.cand === b.cand && a.rep === b.rep;
+  }
+  function resetStream() { sGen++; sQueue = []; sBusy = false; sMax = -1; sPinned = false; clear(sBodyEl); }
+  function paintStream() {
+    var L = fresh(), on = !!L;
+    $('lower').hidden = on; $('stream').hidden = !on;
+    if (!on) return;
+    var uid = (L.source && L.source.uid) || '';
+    if (uid !== sUid) { resetStream(); sUid = uid; }
+    $('stream-head').textContent = liveWord() === 'SCRIPTED' ? S.head_scripted : (L.model ? S.head_model + ': ' + L.model : '');
+    var feed = (Array.isArray(L.feed) ? L.feed : []).filter(function (x) { return x && typeof x.seq === 'number'; });
+    var top = feed.reduce(function (m, x) { return x.seq > m ? x.seq : m; }, -1);
+    if (top > -1 && top < sMax) { resetStream(); sUid = uid; }   /* seq went backwards: a new run */
+    var pin = L.feed_pin;
+    if (pin && !sPinned) { sPinned = true; sQueue.unshift({ type: 'pin', d: pin }); }
+    var items = feed.filter(function (x) { return x.seq > sMax; }).sort(function (a, b) { return a.seq - b.seq; });
+    items.forEach(function (x) {
+      sMax = x.seq;
+      if (x.type === 'run' && samePin(x, pin)) return;
+      if (x.type === 'run') {
+        var pending = sQueue.filter(function (q) { return q.type === 'run'; }).length, last = sQueue[sQueue.length - 1];
+        if (pending >= 8) {
+          if (last && last.type === 'more') last.n++; else sQueue.push({ type: 'more', n: 1 });
+          return;
+        }
+      }
+      sQueue.push({ type: x.type, d: x });
+    });
+    var wt = $('stream-wait');
+    if (!sQueue.length && !sBusy && !sBodyEl.children.length) {
+      var w = el('div', 'empty', S.waiting); w.id = 'stream-wait'; sBodyEl.appendChild(w);
+    } else if (wt && (sQueue.length || sBusy)) wt.remove();
+    pump();
+  }
+
   /* ---------- run bar: only when this page is served by the local runner ---------- */
   var served = /^https?:$/.test(location.protocol), api = { ok: false, token: null, status: null }, wasRunning = false, notice = '';
   function call(method, path, body) {
@@ -552,7 +822,7 @@
     if ((kind === 'live-full' || kind === 'models') && !window.confirm(RUN.confirm_long)) return;
     notice = ''; goBtn.disabled = true; runText.textContent = RUN.starting;
     call('POST', 'run', body).then(function (r) {
-      if (r.code !== 202) notice = RUN.could_not + (r.json.error ? ' ' + r.json.error : '');
+      if (r.code !== 202) notice = RUN.could_not + (r.json.error ? ' ' + r.json.error : ''); else { startedHere(); paint(); }
       pollStatus();
     }, function () { notice = RUN.could_not; paintRun(); });
   });
@@ -592,7 +862,7 @@
 
   var lastRunning = null;
   function paint() {
-    paintNodes(); renderBadge(); paintChips();
+    paintNodes(); renderBadge(); paintChips(); paintStream();
     var r = anyRunning();
     if (r !== lastRunning) { lastRunning = r; renderExample(); }
     paintRun();
