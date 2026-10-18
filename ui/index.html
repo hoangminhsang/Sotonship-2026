@@ -118,17 +118,25 @@
   @media (prefers-reduced-motion: reduce) { .node { transition:none; } .scan::after { animation:none; } .node.running::before, #wires path.lit { animation:none; } .msg, .dots i { animation:none !important; } .stream-body { scroll-behavior:auto; } }
 
   /* ---------- live run: the stream under the flowchart ---------- */
-  .stream { background:var(--card); border:1px solid var(--line); border-radius:20px; margin-top:16px; height:470px; display:flex; flex-direction:column; overflow:hidden; }
-  .stream-head { padding:14px 28px; border-bottom:1px solid var(--line); color:var(--soft); font-size:21px; flex:none; }
-  .stream-cols { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(0, 1fr); }
-  /* in the two columns: compact pinned bubbles, one-line rows */
-  .stream-pin .bub { font-size:20px; padding:8px 16px 10px; } .stream-pin .msg { gap:12px; } .stream-pin .msg .ico { width:44px; height:44px; }
-  .stream-pin .bub .who, .stream-pin .bub .tagline, .stream-pin .bub .mono { font-size:18px; }
-  .stream-body .msg.row { padding-left:0; white-space:nowrap; } .stream-body .msg.row > * { flex:none; }
-  .stream-body .msg.row > :nth-child(2) { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-  .stream-pin { min-height:0; overflow-y:auto; padding:18px 28px 22px; display:flex; flex-direction:column; gap:12px; border-right:1px solid var(--line); }
-  @media (max-width: 760px) { .stream-cols { grid-template-columns:1fr; } .stream-pin { border-right:0; border-bottom:1px solid var(--line); } }
-  .stream-body { flex:1; min-height:0; overflow-y:auto; padding:18px 28px 22px; display:flex; flex-direction:column; gap:12px; scroll-behavior:smooth; }
+  .stream { background:#F1F0EE; border:1px solid #E4E2DE; border-radius:20px; margin-top:16px; height:470px; display:flex; flex-direction:column; overflow:hidden; transition:background-color 500ms ease, border-color 500ms ease; }
+  .stream.dark { background:#1A0F0A; border-color:#2B1D15; }
+  .stream-head { padding:18px 6% 0; color:#8A8580; font:400 15px/1.3 var(--sans); letter-spacing:.18em; text-transform:uppercase; flex:none; transition:color 500ms ease; }
+  .stream.dark .stream-head { color:#6E625A; }
+  .stream-body { flex:1; min-height:0; position:relative; }
+  .sc { --i:#1C1A18; --s:#8A8580; position:absolute; inset:0; display:grid; grid-template-columns:minmax(0, 1.1fr) minmax(0, 1fr); align-items:center; gap:2%; padding:0 4% 14px 6%; opacity:1; transition:opacity 400ms ease; }
+  .sc.dark { --i:#B8ADA4; --s:#6E625A; }
+  .sc.out { opacity:0; }
+  .sc-text { min-width:0; }
+  .sc-eb { font:400 15px/1.2 var(--sans); letter-spacing:.18em; text-transform:uppercase; color:var(--s); margin-bottom:14px; }
+  .sc-hl { font:400 44px/1.12 var(--serif); font-variant-numeric:lining-nums; color:var(--i); overflow-wrap:anywhere; }
+  .sc-hl b { font-weight:600; color:#000; } .sc.dark .sc-hl b { color:#D8CEC5; }
+  .sc-hl.mono { font:500 30px/1.25 ui-monospace, Menlo, Consolas, monospace; letter-spacing:.02em; }
+  .sc-cap { font:400 20px/1.4 var(--sans); color:var(--s); margin-top:14px; }
+  .sc-art { min-width:0; }
+  .sc-art svg { display:block; width:100%; max-width:440px; max-height:330px; height:auto; margin:0 auto; fill:none; stroke:var(--i); stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .sc-art path.soft { stroke:var(--s); } .sc-art path.strong { stroke-width:2.8; }
+  .sc-wait { position:absolute; left:6%; top:50%; transform:translateY(-50%); font:400 36px/1.2 var(--serif); color:#8A8580; }
+  @media (prefers-reduced-motion: reduce) { .sc, .stream { transition:none; } }
   .msg { display:flex; gap:16px; align-items:flex-start; animation:slidein .45s ease both; }
   .msg .ico { flex:none; width:52px; height:52px; border-radius:50%; background:var(--bg); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; }
   .ico svg { width:30px; height:30px; fill:none; stroke:var(--ink); stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
@@ -205,7 +213,7 @@
       <div class="card" id="happened"><h3 id="happened-title"></h3><p class="src" id="ex-src"></p><dl class="ex" id="ex"></dl></div>
       <div class="card"><h3 id="chips-title"></h3><div class="chips" id="chips"></div></div>
     </div>
-    <div class="stream" id="stream" hidden><div class="stream-head" id="stream-head"></div><div class="stream-cols"><div class="stream-pin" id="stream-pin"></div><div class="stream-body" id="stream-body" aria-live="polite"></div></div></div>
+    <div class="stream" id="stream" hidden><div class="stream-head" id="stream-head"></div><div class="stream-body" id="stream-body" aria-live="polite"></div></div>
   </section>
 
   <section class="view" id="view-results" hidden>
@@ -574,134 +582,251 @@
 
   function renderData() { renderBadge(); paintChips(); renderExample(); renderResults(); renderProof(); }
 
-  /* ---------- the stream: what passes through the agent, one bubble at a time ---------- */
+  /* ---------- the stream: what passes through the agent, told as a line-art scene player ---------- */
   var S = C.stream || {};
-  var ICONS = {  /* simple line icons, 32 x 32, same stroke style as the node glyphs */
-    user: ['M16 5 A5.5 5.5 0 1 1 16 16 A5.5 5.5 0 1 1 16 5 Z', 'M5 28 C5 20 27 20 27 28'],
-    doc: ['M8 4 H19 L25 10 V28 H8 Z', 'M19 4 V10 H25', 'M12 16 H21', 'M12 21 H21'],
-    agent: ['M6 12 H26 V25 H6 Z', 'M16 12 V6', 'M13 18 V19', 'M19 18 V19', 'M12 22 H20', 'M3 17 V21', 'M29 17 V21'],
-    held: ['M16 4 L26 8 V16 C26 22 21 26 16 28 C11 26 6 22 6 16 V8 Z', 'M11 16 L15 20 L22 12'],
-    caught: ['M16 4 L26 8 V16 C26 22 21 26 16 28 C11 26 6 22 6 16 V8 Z', 'M16 11 V18', 'M16 21.5 V22'],
-    finger: ['M8 13 C8 8 11.5 5 16 5 C20.5 5 24 8 24 13', 'M12 28 C13 24 13 21 13 17 C13 14.5 14.3 13 16 13 C17.7 13 19 14.5 19 17 C19 21 18.5 24 17.5 28', 'M16 17 C16 21 16 23 15 26', 'M24 17 C24 22 23 25 22 27', 'M8 18 C8 22 7.5 24 7 26'],
-    lock: ['M8 14 H24 V27 H8 Z', 'M11 14 V10 C11 7 13 5 16 5 C19 5 21 7 21 10 V14', 'M16 19 V22'],
-    chain: ['M8 12 H18 A4 4 0 0 1 18 20 H8 A4 4 0 0 1 8 12 Z', 'M14 12 H24 A4 4 0 0 1 24 20 H14'],
-    wrench: ['M21 4 C17 4 14.5 7.5 15.5 11.5 L5 22 L9 27 L19.5 16.5 C24 17.5 28 14.5 28 10.5 L24 14 L20 12 L18 8 Z']
-  };
-  function icon(name, tone) {
-    var d = el('div', 'ico' + (tone ? ' ' + tone : '')), svg = sv('svg', { viewBox: '0 0 32 32' });
-    (ICONS[name] || []).forEach(function (p) { svg.appendChild(sv('path', { d: p })); });
-    d.appendChild(svg); return d;
-  }
-  var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sBodyEl = $('stream-body'), sPinEl = $('stream-pin');
+  var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sStage = $('stream-body'), sPanel = $('stream');
+  var sD, sNext, sCur, sLive, sDark, sLogCap;
+  function sFresh() { sD = { pin: null, runs: [], fp: null, gate: null, audit: null, chain: null }; sNext = 0; sCur = null; sLive = false; sDark = false; sLogCap = null; }
+  sFresh();
   function lab(group, code) {
     var m = (window.DEMO && window.DEMO.labels && window.DEMO.labels[group]) || {};
     return m[code] || code;
   }
   function later(g, ms, fn) { setTimeout(function () { if (g === sGen) fn(); }, ms); }
-  function toEnd() { sBodyEl.scrollTop = sBodyEl.scrollHeight; }
-  function put(node) {
-    sBodyEl.appendChild(node);
-    while (sBodyEl.children.length > 90) sBodyEl.removeChild(sBodyEl.firstChild);
-    toEnd();
-  }
-  /* the pinned example stays in its own column so it is on screen for the whole beat */
-  function putPin(node) { sPinEl.appendChild(node); sPinEl.scrollTop = sPinEl.scrollHeight; }
-  function msg(cls, ic, bubble) { var m = el('div', 'msg' + (cls ? ' ' + cls : '')); if (ic) m.appendChild(ic); if (bubble) m.appendChild(bubble); return m; }
-  function bub(label, tone) { var b = el('div', 'bub' + (tone ? ' ' + tone : '')); if (label) b.appendChild(el('span', 'who', label)); return b; }
-  function typeInto(g, node, text, ms) {
-    if (reduce) { node.textContent = text; return; }
-    var i = 0;
-    (function step() { if (g !== sGen) return; i++; node.textContent = text.slice(0, i); if (i < text.length) setTimeout(step, ms); })();
-  }
   function cleanHidden(t) { return String(t).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim(); }
-  function classWords(list) { return (list || []).map(function (c) { return lab('classes', c); }).join(', '); }
-  function agentName() { var L = liveFeed(); return L && liveWord() !== 'SCRIPTED' && L.model ? String(L.model) : S.scripted_agent; }
+  function trimTo(t, n) { t = String(t).replace(/\s+/g, ' ').trim(); if (t.length <= n) return t; var c = t.slice(0, n); var i = c.lastIndexOf(' '); return (i > n / 2 ? c.slice(0, i) : c) + '…'; }
+  function setDark(on) { sDark = !!on; sPanel.classList.toggle('dark', sDark); }
+  var EASE = 'cubic-bezier(.65,0,.35,1)';
 
-  /* the pinned example: four bubbles, about eight seconds; returns its length in ms */
-  function playPin(g, r) {
-    var t = 0, STEP = 1800, TYPE = reduce ? 0 : 1500;
-    if (r.user_task) {
-      var b1 = bub(S.asks); b1.appendChild(document.createTextNode(String(r.user_task)));
-      later(g, t, function () { putPin(msg('', icon('user'), b1)); }); t += STEP;
-    }
-    if (r.doc || r.hidden) {
-      var b2 = bub(r.doc ? String(r.doc) : S.document);
-      if (r.hidden) {
-        b2.appendChild(el('span', 'tagline', S.hidden_tag));
-        b2.appendChild(el('span', 'hid', cleanHidden(r.hidden)));
+  /* one thing at a time: text fades up (or fades and un-blurs on the dark scene), drawings draw themselves */
+  function fadeUp(g, node, at, dur, blur) {
+    if (reduce) return;
+    node.style.opacity = 0; node.style.transform = blur ? 'none' : 'translateY(8px)'; if (blur) node.style.filter = 'blur(6px)';
+    later(g, Math.max(at, 20), function () {
+      void node.offsetWidth;
+      node.style.transition = 'opacity ' + dur + 'ms ease-out, transform ' + dur + 'ms ease-out, filter ' + dur + 'ms ease-out';
+      node.style.opacity = 1; node.style.transform = 'none'; node.style.filter = 'none';
+    });
+  }
+  /* items: [{ d: path, at: ms, dur: ms, cls: 'soft' | 'strong' }]; returns the svg and a function that starts the drawing */
+  function makeArt(g, items, vb, t0) {
+    var svg = sv('svg', { viewBox: vb, 'aria-hidden': 'true' }), ps = [], end = 0;
+    items.forEach(function (it) { var p = sv('path', { d: it.d }); if (it.cls) p.setAttribute('class', it.cls); svg.appendChild(p); ps.push(p); });
+    return {
+      svg: svg,
+      arm: function () {
+        items.forEach(function (it, i) {
+          var p = ps[i], len = 0, dur = it.dur || 600;
+          try { len = p.getTotalLength(); } catch (e) { len = 0; }
+          end = Math.max(end, it.at + dur);
+          if (reduce || !len) return;
+          p.style.strokeDasharray = len + ' ' + len; p.style.strokeDashoffset = len; p.style.opacity = 0;
+          later(g, t0 + it.at, function () {
+            void p.getBoundingClientRect();
+            p.style.opacity = 1; p.style.transition = 'stroke-dashoffset ' + dur + 'ms ' + EASE; p.style.strokeDashoffset = 0;
+          });
+        });
+        return t0 + end;
       }
-      later(g, t, function () { putPin(msg('', icon('doc'), b2)); }); t += STEP;
+    };
+  }
+
+  /* o: { eb, hl: [[text, emphasised]], chars, mono, cap, dark, art: { vb, items } } */
+  function buildScene(g, o) {
+    var sc = el('div', 'sc' + (o.dark ? ' dark' : '')), tx = el('div', 'sc-text'), ar = el('div', 'sc-art');
+    var eb = el('div', 'sc-eb', o.eb), hl = el('div', 'sc-hl' + (o.mono ? ' mono' : '')), cap = o.cap ? el('div', 'sc-cap', '— ' + o.cap) : null;
+    var end = 0, hlDur = o.dark ? 700 : 500, charEls = [];
+    if (o.chars) {
+      String(o.chars).split('').forEach(function (ch) { var s = el('span', null, ch); charEls.push(s); hl.appendChild(s); });
+    } else {
+      o.hl.forEach(function (p) { if (p[1]) hl.appendChild(el('b', null, p[0])); else hl.appendChild(document.createTextNode(p[0])); });
     }
-    if (r.tool_calls) {
-      var dots = el('div', 'bub'), dd = el('span', 'dots'); dd.appendChild(el('i')); dd.appendChild(el('i')); dd.appendChild(el('i')); dots.appendChild(dd);
-      var typing = msg('', icon('agent'), dots), b3 = bub(agentName());
-      b3.appendChild(el('span', 'mono', String(r.tool_calls)));
-      later(g, t, function () { putPin(typing); });
-      later(g, t + TYPE, function () { if (typing.parentNode) typing.parentNode.removeChild(typing); putPin(msg('', icon('agent'), b3)); });
-      t += STEP + TYPE;
+    tx.appendChild(eb); tx.appendChild(hl); if (cap) tx.appendChild(cap);
+    sc.appendChild(tx); sc.appendChild(ar);
+    var art = o.art ? makeArt(g, o.art.items, o.art.vb, 450) : null;
+    if (art) ar.appendChild(art.svg);
+    sStage.appendChild(sc);
+    fadeUp(g, eb, 0, 500, false); end = 500;
+    if (charEls.length) {
+      charEls.forEach(function (s, i) { fadeUp(g, s, 200 + i * 70, 400, false); });
+      end = Math.max(end, 200 + charEls.length * 70 + 400);
+    } else { fadeUp(g, hl, 200, hlDur, !!o.dark); end = Math.max(end, 200 + hlDur); }
+    if (art) end = Math.max(end, art.arm());
+    if (cap) { var at = Math.max(1000, 200 + hlDur + 150); fadeUp(g, cap, at, 500, false); end = Math.max(end, at + 500); }
+    return { el: sc, ms: end, cap: cap };
+  }
+
+  /* ---- the drawings: hairline paths on a 400 x 280 sheet, drawn one stroke after another ---- */
+  var VB = '0 0 400 280';
+  function sheetArt(mark) {
+    var it = [{ d: 'M110 24 H246 L288 66 V256 H110 Z', at: 0, dur: 700 }, { d: 'M246 24 V66 H288', at: 300, dur: 300 }];
+    var lines = [['M134 96 H264', 96], ['M134 124 H250', 124], ['M134 152 H264', 152], ['M134 180 H264', 180], ['M134 208 H236', 208], ['M134 234 H210', 234]];
+    lines.forEach(function (l, i) {
+      if (mark && i === 3) return;
+      it.push({ d: l[0], at: mark ? 600 + i * 90 : 600 + i * 160, dur: 450, cls: 'soft' });
+    });
+    if (mark) {
+      it.push({ d: 'M134 180 H264', at: 1300, dur: 500, cls: 'strong' });
+      it.push({ d: 'M300 164 H310 V196 H300', at: 1950, dur: 450 });
+      it.push({ d: 'M310 180 H330', at: 2300, dur: 250 });
     }
-    if (typeof r.violated === 'boolean') {
-      var words = classWords(r.classes), b4;
-      if (r.violated) { b4 = bub(null, 'bad'); b4.appendChild(document.createTextNode(S.caught + (words ? ': ' + words : ''))); }
-      else { b4 = bub(null, 'good'); b4.appendChild(document.createTextNode(S.held)); }
-      later(g, t, function () { putPin(msg('', icon(r.violated ? 'caught' : 'held', r.violated ? 'bad' : 'good'), b4)); }); t += STEP;
+    return { vb: VB, items: it };
+  }
+  function agentArt() {
+    return { vb: VB, items: [
+      { d: 'M24 104 H116 V190 H24 Z', at: 0, dur: 600 }, { d: 'M70 104 V80', at: 300, dur: 250 }, { d: 'M10 130 V164', at: 450, dur: 250 }, { d: 'M130 130 V164', at: 600, dur: 250 },
+      { d: 'M48 136 V148', at: 750, dur: 200 }, { d: 'M92 136 V148', at: 900, dur: 200 }, { d: 'M46 170 H94', at: 1050, dur: 300 },
+      { d: 'M146 147 H258', at: 1250, dur: 700 }, { d: 'M242 131 L260 147 L242 163', at: 1850, dur: 300 },
+      { d: 'M286 120 H378 V222 H286 Z', at: 2200, dur: 600 }, { d: 'M304 120 V98 C304 60 360 60 360 98 V120', at: 2850, dur: 450 },
+      { d: 'M338 164 A9 9 0 1 1 320 164 A9 9 0 1 1 338 164', at: 3350, dur: 350 }, { d: 'M329 173 V196', at: 3750, dur: 250 }
+    ] };
+  }
+  function shieldArt(bad) {
+    var it = [{ d: 'M200 28 L292 62 V142 C292 200 250 238 200 260 C150 238 108 200 108 142 V62 Z', at: 0, dur: 800 }];
+    if (bad) { it.push({ d: 'M164 112 L236 184', at: 1000, dur: 450 }); it.push({ d: 'M236 112 L164 184', at: 1600, dur: 450 }); }
+    else it.push({ d: 'M158 148 L188 178 L246 112', at: 1000, dur: 600 });
+    return { vb: VB, items: it };
+  }
+  function gridArt(runs) {
+    var n = Math.min(runs.length, 48), rows = Math.max(1, Math.ceil(n / 12)), it = [];
+    for (var i = 0; i < n; i++) {
+      var x = (i % 12) * 31 + 1, y = Math.floor(i / 12) * 31 + 1;
+      it.push({ d: 'M' + x + ' ' + y + ' h22 v22 h-22 Z', at: i * 60, dur: 400 });
+      if (runs[i]) it.push({ d: 'M' + x + ' ' + y + ' l22 22 M' + (x + 22) + ' ' + y + ' l-22 22', at: i * 60 + 300, dur: 350, cls: 'strong' });
     }
+    return { vb: '0 0 374 ' + (rows * 31), items: it };
+  }
+  function fingerArt() {
+    var it = [], rs = [24, 44, 64, 84, 104], legs = [64, 74, 58, 70, 52];
+    rs.forEach(function (r, i) { it.push({ d: 'M' + (200 - r) + ' ' + (140 + legs[i]) + ' V140 A' + r + ' ' + r + ' 0 0 1 ' + (200 + r) + ' 140 V' + (140 + legs[i] - 10), at: i * 220, dur: 700 }); });
+    it.push({ d: 'M200 140 V222', at: 1200, dur: 500, cls: 'soft' });
+    return { vb: VB, items: it };
+  }
+  function gateArt(closed) {
+    var it = [{ d: 'M80 244 H320', at: 0, dur: 450 }, { d: 'M110 244 V66', at: 300, dur: 450 }, { d: 'M290 244 V66', at: 550, dur: 450 }];
+    if (closed) {
+      it.push({ d: 'M110 104 H290', at: 900, dur: 550 }); it.push({ d: 'M110 154 H290', at: 1250, dur: 550 });
+      it.push({ d: 'M150 104 L190 154', at: 1650, dur: 300, cls: 'soft' }); it.push({ d: 'M230 104 L270 154', at: 1850, dur: 300, cls: 'soft' });
+    } else {
+      it.push({ d: 'M110 104 L262 40', at: 900, dur: 650 }); it.push({ d: 'M110 104 L84 118', at: 1500, dur: 250 });
+    }
+    return { vb: VB, items: it };
+  }
+  function chainArt() {
+    var it = [];
+    [14, 112, 210, 308].forEach(function (x, i) {
+      it.push({ d: 'M' + x + ' 106 H' + (x + 76) + ' V174 H' + x + ' Z', at: i * 500, dur: 450 });
+      it.push({ d: 'M' + (x + 14) + ' 128 H' + (x + 60) + ' M' + (x + 14) + ' 148 H' + (x + 42), at: i * 500 + 250, dur: 300, cls: 'soft' });
+      if (i < 3) it.push({ d: 'M' + (x + 76) + ' 140 H' + (x + 98), at: i * 500 + 380, dur: 200 });
+    });
+    return { vb: VB, items: it };
+  }
+
+  /* ---- the scenes: each get() returns what it needs to draw, or null when a field is missing ---- */
+  function hiddenId(p) { var m = p && p.hidden ? /[A-Z]{2,}-\d+/.exec(String(p.hidden)) : null; return m ? m[0] : null; }
+  function logCap() {
+    var a = sD.audit || {}, parts = [];
+    if (a.entry != null) parts.push(S.entry_n + ' ' + a.entry);
+    if (a.hash12) parts.push(S.hash + ' ' + a.hash12);
+    if (a.scripted) parts.push(S.reviewer_tag);
+    var t = parts.join(' · ');
+    if (sD.chain && sD.chain.ok === true) t += (t ? ' — ' : '') + S.chain_intact;
     return t;
   }
+  var SCENES = [
+    { get: function () {
+      var p = sD.pin; if (!p) return null;
+      var h = p.doc ? [[S.read + ' ', 0], [String(p.doc), 1]] : (p.user_task ? [[trimTo(p.user_task, 40), 0]] : null);
+      return h ? { eb: S.eb_task, hl: h, art: sheetArt(false) } : null;
+    } },
+    { get: function () {
+      var p = sD.pin, t = p && p.hidden ? cleanHidden(p.hidden) : ''; if (!t) return null;
+      var m = /[A-Z]{2,}-\d+/.exec(t), h;
+      if (m) {
+        var before = t.slice(0, m.index).trim().replace(/(\s+(asset|record|entry|item|file|the|a|an))+$/i, '');
+        var simple = /^[A-Za-z ]+$/.test(before) && before.split(/\s+/).length <= 3;
+        h = simple && before ? [[before + ' ', 0], [m[0], 1]] : [[m[0], 1]];
+      } else h = [[trimTo(t, 40), 0]];
+      return { eb: S.eb_hidden, hl: h, cap: S.hidden_cap, art: sheetArt(true) };
+    } },
+    { get: function () {
+      var p = sD.pin; if (!p || !p.tool_calls) return null;
+      var calls = String(p.tool_calls).match(/[A-Za-z_][\w.]*\([^()]*\)/g) || [], id = hiddenId(p);
+      var pick = calls.filter(function (c) { return id && c.indexOf(id) > -1; })[0] || calls[0] || trimTo(p.tool_calls, 40);
+      return { eb: S.eb_agent, mono: true, hl: [[pick, 0]], art: agentArt() };
+    } },
+    { get: function () {
+      var p = sD.pin; if (!p || typeof p.violated !== 'boolean') return null;
+      if (p.violated) {
+        var c = (p.classes || [])[0], l = c ? String(lab('classes', c)) : '';
+        return { eb: S.eb_verdict, dark: true, hl: [[S.caught_word, 1]], cap: l ? l.charAt(0).toLowerCase() + l.slice(1) : null, art: shieldArt(true) };
+      }
+      return { eb: S.eb_verdict, hl: [[S.held_pre + ' ', 0], [S.held_word, 1]], cap: S.held_cap, art: shieldArt(false) };
+    } },
+    { get: function () {
+      var N = (window.LIVE && window.LIVE.nodes) || {}, rate = N['rt.rate'] || {}, att = N['rt.attack'] || {};
+      var after = !!(sD.fp || sD.gate || sD.audit), rs = rate.state;
+      var fact = rate.fact || ((after || rs === 'skipped' || rs === 'error') ? att.fact : '');
+      if (!fact) return null;
+      fact = String(fact);
+      var m = /^(\S+\s+of\s+\S+)\s*(?:·|-|–)\s*(.+)$/.exec(fact);
+      return { eb: S.eb_batch, hl: m ? [[m[1], 1]] : [[trimTo(fact, 40), 1]], cap: m ? m[2] : null, art: gridArt(sD.runs) };
+    } },
+    { get: function () {
+      var f = sD.fp; if (!f || !f.identity12) return null;
+      return { eb: S.eb_finger, chars: String(f.identity12), mono: true, art: fingerArt() };
+    } },
+    { get: function () {
+      var gt = sD.gate; if (!gt || !gt.verdict) return null;
+      var cl = ((window.DEMO || {}).labels || {}).checks || {};
+      return { eb: S.eb_gate, hl: [[S.gate_pre + ' ', 0], [gt.verdict + '.', 1]], cap: gt.reason ? String(cl[gt.reason] || gt.reason) : null, art: gateArt(gt.verdict !== 'PASS') };
+    } },
+    { get: function () {
+      if (!sD.audit) return null;
+      return { eb: S.eb_log, hl: [[S.log_pre + ' ', 0], [S.log_word, 1]], cap: logCap() || null, art: chainArt(), log: true };
+    } }
+  ];
 
-  function runRow(r) {
-    var m = msg('row');
-    if (r.test_id) m.appendChild(el('span', 'id', String(r.test_id)));
-    if (r.technique) m.appendChild(el('span', 'muted', '· ' + lab('techniques', r.technique)));
-    if (r.kind === 'benign') m.appendChild(el('span', 'pill neutral', S.normal));
-    else if (typeof r.violated === 'boolean') m.appendChild(el('span', 'pill ' + (r.violated ? 'bad' : 'good'), r.violated ? S.caught_pill : S.held_pill));
-    return m;
+  /* the player: one scene at a time, in order, once per run. The last one stays on screen. */
+  function kick() {
+    if (sLive) return;
+    var k = sNext, spec = null;
+    while (k < SCENES.length) {
+      spec = SCENES[k].get();
+      if (spec) break;
+      var ahead = false;
+      for (var j = k + 1; j < SCENES.length; j++) if (SCENES[j].get()) { ahead = true; break; }
+      if (!ahead) return;      /* the data is not here yet: keep what is on screen */
+      k++;
+    }
+    if (!spec) return;
+    sNext = k + 1; sLive = true;
+    var g = sGen, old = sCur, FO = reduce ? 0 : 400, GAP = reduce ? 0 : 250;
+    function go() {
+      var w = $('stream-wait'); if (w) w.remove();
+      var b = buildScene(g, spec); sCur = b.el; sLogCap = spec.log ? b.cap : null;
+      later(g, b.ms + 1250, function () { sLive = false; kick(); });
+    }
+    if (old) {
+      if (!!spec.dark !== sDark) setDark(spec.dark);     /* the background crossfades while the old scene fades out */
+      old.classList.add('out');
+      later(g, FO, function () { if (old.parentNode) old.parentNode.removeChild(old); sCur = null; });
+      later(g, FO + GAP, go);
+    } else {
+      if (!!spec.dark !== sDark) setDark(spec.dark);
+      go();
+    }
   }
 
-  /* play() puts one queued item on screen and returns how long to wait before the next one */
+  /* play() takes one queued feed item into the run data and wakes the player */
   function play(g, it) {
     var d = it.d || {};
-    if (it.type === 'pin') return playPin(g, d);
-    if (it.type === 'more') { putPin(msg('more', null, el('span', null, '+ ' + it.n + ' ' + S.more_runs))); return 400; }
-    if (it.type === 'run') { put(runRow(d)); return 170; }
-    if (it.type === 'fingerprint') {
-      var b = bub(S.fingerprint), id = el('span', 'mono'), box = el('span', 'scan'); box.appendChild(id); b.appendChild(box);
-      if (typeof d.changed_vs_prev === 'boolean') b.appendChild(el('span', 'sub', d.changed_vs_prev ? S.changed : S.same));
-      putPin(msg('', icon('finger'), b));
-      if (d.identity12) typeInto(g, id, String(d.identity12), 60);
-      return 1300 + (reduce ? 0 : 700);
-    }
-    if (it.type === 'gate') {
-      var bg = bub(null), ok = d.verdict === 'PASS', bad = d.verdict === 'FAIL';
-      if (ok || bad) bg.appendChild(el('span', 'pill ' + (ok ? 'good' : 'bad'), S.gate + ': ' + d.verdict));
-      if (d.reason) { var cl = ((window.DEMO || {}).labels || {}).checks || {}; bg.appendChild(el('span', 'sub', String(cl[d.reason] || d.reason))); }
-      putPin(msg('', icon(ok ? 'held' : 'caught', ok ? 'good' : bad ? 'bad' : ''), bg));
-      return 1500;
-    }
-    if (it.type === 'audit') {
-      var ba = bub(null), h = el('span', 'mono');
-      ba.appendChild(document.createTextNode(S.audit));
-      if (d.entry != null) ba.appendChild(el('span', 'sub', S.entry + ' ' + d.entry));
-      ba.appendChild(h);
-      if (d.scripted) ba.appendChild(el('span', 'sub', S.reviewer_tag));
-      putPin(msg('', icon('lock'), ba));
-      if (d.hash12) typeInto(g, h, String(d.hash12), 60);
-      return 1300 + (reduce ? 0 : 700);
-    }
-    if (it.type === 'chain') {
-      var bc = bub(null, d.ok ? 'good' : 'bad');
-      bc.appendChild(document.createTextNode(d.ok ? S.chain_ok : S.chain_bad));
-      if (d.entries != null) bc.appendChild(el('span', 'sub', d.entries + ' ' + S.entries));
-      putPin(msg('', icon('chain', d.ok ? 'good' : 'bad'), bc));
-      return 1300;
-    }
-    if (it.type === 'tickets') {
-      var bt = bub(null);
-      bt.appendChild(document.createTextNode(S.ticket));
-      var tt = d.title || d.first; if (tt) bt.appendChild(el('span', 'sub', String(tt)));
-      putPin(msg('', icon('wrench'), bt));
-      return 1300;
-    }
+    if (it.type === 'pin') sD.pin = d;
+    else if (it.type === 'fingerprint') sD.fp = d;
+    else if (it.type === 'gate') sD.gate = d;
+    else if (it.type === 'audit') sD.audit = d;
+    else if (it.type === 'chain') { sD.chain = d; if (sLogCap) sLogCap.textContent = '— ' + logCap(); }
+    kick();
     return 0;
   }
   function pump() {
@@ -717,7 +842,7 @@
     if (a.seq != null && b.seq != null && a.seq === b.seq) return true;
     return a.test_id != null && a.test_id === b.test_id && a.cand === b.cand && a.rep === b.rep;
   }
-  function resetStream() { sGen++; sQueue = []; sBusy = false; sMax = -1; sPinned = false; clear(sBodyEl); clear(sPinEl); }
+  function resetStream() { sGen++; sQueue = []; sBusy = false; sMax = -1; sPinned = false; clear(sStage); sFresh(); sPanel.classList.remove('dark'); }
   function paintStream() {
     var L = fresh(), on = !!L;
     $('lower').hidden = on; $('stream').hidden = !on;
@@ -733,21 +858,18 @@
     var items = feed.filter(function (x) { return x.seq > sMax; }).sort(function (a, b) { return a.seq - b.seq; });
     items.forEach(function (x) {
       sMax = x.seq;
-      if (x.type === 'run' && samePin(x, pin)) return;
-      if (x.type === 'run') {
-        var pending = sQueue.filter(function (q) { return q.type === 'run'; }).length, last = sQueue[sQueue.length - 1];
-        if (pending >= 8) {
-          if (last && last.type === 'more') last.n++; else sQueue.push({ type: 'more', n: 1 });
-          return;
-        }
+      if (x.type === 'run' && x.kind === 'attack') {   /* the cells of the batch scene: this pass only, so they match its rate */
+        if (x.cand !== sD.cand && sD.runs.length) sD.runs = [];
+        sD.cand = x.cand; sD.runs.push(x.violated === true);
       }
+      if (x.type === 'run' && samePin(x, pin)) return;
+      if (x.type === 'run') return;
       sQueue.push({ type: x.type, d: x });
     });
-    var wt = $('stream-wait');
-    if (!sQueue.length && !sBusy && !sBodyEl.children.length) {
-      var w = el('div', 'empty', S.waiting); w.id = 'stream-wait'; sBodyEl.appendChild(w);
-    } else if (wt && (sQueue.length || sBusy)) wt.remove();
-    pump();
+    if (!sCur && !sLive && !$('stream-wait')) {
+      var w = el('div', 'sc-wait', S.waiting); w.id = 'stream-wait'; sStage.appendChild(w);
+    }
+    pump(); kick();
   }
 
   /* ---------- run bar: only when this page is served by the local runner ---------- */

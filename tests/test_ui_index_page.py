@@ -83,7 +83,7 @@ def test_the_stream_panel_reads_the_feed_and_the_pinned_example():
     assert 'id="stream"' in HTML and 'id="stream-body"' in HTML
     assert "feed_pin" in HTML and ".feed" in HTML and ".seq" in HTML
     assert "source.uid" in HTML        # a new run clears the stream
-    assert "labels" in HTML and "techniques" in HTML and "classes" in HTML
+    assert "labels" in HTML and "classes" in HTML
     paint = _function("paintStream")
     assert "fresh()" in paint and "$('lower').hidden" in paint
 
@@ -91,10 +91,24 @@ def test_the_stream_panel_reads_the_feed_and_the_pinned_example():
 def test_the_stream_words_are_in_copy_and_have_no_digit():
     stream = COPY["page"]["stream"]
     for key in ("head_scripted", "head_model", "scripted_agent", "hidden_tag", "caught", "held", "more_runs",
-                "fingerprint", "gate", "audit", "reviewer_tag", "chain_ok", "chain_bad", "ticket"):
+                "fingerprint", "gate", "audit", "reviewer_tag", "chain_ok", "chain_bad", "ticket",
+                "eb_task", "eb_hidden", "eb_agent", "eb_verdict", "eb_batch", "eb_finger", "eb_gate", "eb_log",
+                "read", "hidden_cap", "caught_word", "held_pre", "held_word", "held_cap", "gate_pre", "log_pre",
+                "log_word", "entry_n", "hash", "chain_intact"):
         assert stream[key].strip(), key
     assert "scripted" in stream["head_scripted"].lower() and "no model" in stream["head_scripted"].lower()
     assert not re.search(r"\d", json.dumps(stream))
     block = HTML[HTML.index("the stream: what passes"):HTML.index("run bar: only when")]
     used = set(re.findall(r"\bS\.([a-z_]+)", block))
     assert used <= set(stream), sorted(used - set(stream))
+
+
+def test_the_stream_is_a_scene_player_in_the_editorial_style():
+    block = HTML[HTML.index("the stream: what passes"):HTML.index("run bar: only when")]
+    assert "getTotalLength" in block and "strokeDashoffset" in block      # the drawings draw themselves
+    assert "cubic-bezier(.65,0,.35,1)" in block and "blur(6px)" in block
+    assert "feed_pin" not in block or "sD.pin" in block
+    for colour in ("#F1F0EE", "#1A0F0A", "#B8ADA4", "#6E625A", "#8A8580", "#1C1A18"):
+        assert colour in HTML, colour
+    assert "letter-spacing:.18em" in HTML
+    assert HTML.count("{ get: function ()") == 8                          # eight scenes, in order
