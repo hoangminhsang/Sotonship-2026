@@ -1,0 +1,5 @@
+# Ollama model tags for scripts/run_models.py. One tag per line.
+# Blank lines and lines that start with # are ignored. A tag may appear only once.
+# Check a tag with "ollama pull <tag>" before you add it. Never guess a tag.
+qwen2.5:7b-instruct
+# IBM Granite: tag not verified; check it with "ollama pull <tag>" before adding it
