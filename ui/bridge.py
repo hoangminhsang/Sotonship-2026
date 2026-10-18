@@ -75,6 +75,8 @@ import json
 import math
 import os
 import re
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -225,8 +227,11 @@ def _reject_constant(name: str):
     raise ValueError("non-finite number: " + name)
 
 
-def parse_line(text: str) -> Tuple[Optional[dict], Optional[str]]:
-    """(event, None) for a good line, (None, None) for a blank one, (None, reason) for a bad one."""
+def parse_line(text: str, key: str = "type") -> Tuple[Optional[dict], Optional[str]]:
+    """(event, None) for a good line, (None, None) for a blank one, (None, reason) for a bad one.
+
+    `key` names the field that tells the kind of line: "type" in progress.jsonl, "event" in a batch's status.jsonl.
+    """
     text = text.strip()
     if not text:
         return None, None
@@ -236,9 +241,9 @@ def parse_line(text: str) -> Tuple[Optional[dict], Optional[str]]:
         return None, "not valid JSON"
     if not isinstance(obj, dict):
         return None, "not a JSON object"
-    kind = obj.get("type")
+    kind = obj.get(key)
     if not isinstance(kind, str) or not kind:
-        return None, "no event type"
+        return None, f"no event {key}"
     version = obj.get("v", 1)
     if isinstance(version, bool) or not isinstance(version, (int, float)) or version != 1:
         return None, "unsupported version"
@@ -1103,7 +1108,8 @@ class View:
     def __init__(self, kind: str = "follow", log: Optional[str] = None, speed: Optional[float] = None,
                  child_alive: Optional[bool] = None, last_event_age: Optional[float] = None, malformed: int = 0,
                  export: Optional[dict] = None, gov: Optional[str] = None, batch: Optional[dict] = None,
-                 notes=(), state: Optional[str] = None, stalled: bool = False) -> None:
+                 notes=(), state: Optional[str] = None, stalled: bool = False,
+                 refusal: Optional[str] = None) -> None:
         self.kind = kind                    # follow | replay | run | batch
         self.log = log                      # the log's display path (never absolute)
         self.speed = speed                  # replay speed
@@ -1116,6 +1122,7 @@ class View:
         self.notes = list(notes)
         self.state = state                  # force a state (a refused or crashed run)
         self.stalled = stalled              # the log stopped growing and nothing is running it
+        self.refusal = refusal              # why a run was not started (preflight failed, ...)
 
 
 def is_paced(model: LiveModel, view: View) -> bool:
@@ -1151,6 +1158,9 @@ def make_label(model: LiveModel, view: View) -> dict:
 def make_done(model: LiveModel, view: View) -> Optional[dict]:
     d = model.done
     if d is None:
+        if view.refusal:
+            return {"exit_code": 2, "dur": "", "text": f"Not started: {view.refusal}",
+                    "export": {"status": "skipped", "text": ""}}
         return None
     cmd = "python ui/export.py --quiet" + (f" --gov {view.gov}" if view.gov else "")
     dur = d["dur"]
@@ -1490,6 +1500,7 @@ class Session:
         self.batch: Optional[dict] = None
         self.notes: List[str] = []
         self.forced_state: Optional[str] = None
+        self.refusal: Optional[str] = None
         self.malformed = 0
         self._new_run()
 
@@ -1514,7 +1525,7 @@ class Session:
         return View(kind=self.kind, log=self.log, speed=self.speed if self.kind == "replay" else None,
                     child_alive=self.child_alive, last_event_age=age, malformed=self.malformed,
                     export=self.export, gov=self.gov, batch=self.batch, notes=notes,
-                    state=self.forced_state, stalled=stalled)
+                    state=self.forced_state, stalled=stalled, refusal=self.refusal)
 
     def snapshot(self, now: float) -> dict:
         return build_live(self.model, self.view(now))
@@ -1576,8 +1587,9 @@ def load_events(path) -> Tuple[List[dict], int]:
 class Follower:
     """Follows one progress.jsonl as it grows (or, with latest_root, the newest one)."""
 
-    def __init__(self, session: Session, log=None, latest_root=None) -> None:
+    def __init__(self, session: Session, log=None, latest_root=None, root=REPO_ROOT) -> None:
         self.session = session
+        self.root = Path(root)
         self.latest_root = Path(latest_root) if latest_root is not None else None
         self.reader: Optional[LogReader] = None
         self.path: Optional[Path] = None
@@ -1588,7 +1600,7 @@ class Follower:
     def _open(self, path: Path) -> None:
         self.path = Path(path)
         self.reader = LogReader(self.path)
-        self.session.log = display_path(self.path)
+        self.session.log = display_path(self.path, self.root)
 
     def _rescan(self, now: float) -> None:
         if self.latest_root is None:
@@ -1864,20 +1876,401 @@ def serve_in_thread(server: UiServer) -> threading.Thread:
 
 
 # --------------------------------------------------------------------------- #
+# --run: start a pipeline run from a fixed list (the page never starts anything).
+#   * fixed argument lists, shell=False, PYTHONUNBUFFERED=1 and PYTHONUTF8=1
+#   * the LIVE keys run scripts/preflight.py first and refuse to start if it fails
+#   * --model must be listed in config/models.txt; it reaches the run as LAB_MODEL
+#   * interpreter: .venv/bin/python, then .venv\Scripts\python.exe, then --python
+#   * after the child exits: ui/export.py --quiet --gov <out>, unless --no-export
+#   * Windows: the child gets its own process group and is stopped with CTRL_BREAK_EVENT
+#     (NOT VERIFIED ON WINDOWS)
+# --------------------------------------------------------------------------- #
+RUN_KEYS = ("demo", "live-short", "live-smoke", "models")
+LIVE_KEYS = ("live-short", "live-smoke")
+RE_SLUG = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+PREFLIGHT_TIMEOUT_S = 90
+EXPORT_TIMEOUT_S = 180
+STOP_GRACE_S = 15.0
+STOP_TERM_S = 5.0
+EXPORT_OK_TEXT = "Evidence screens updated: press R."
+BATCH_SCAN_S = 0.3
+
+
+def utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def run_argv(key: str, py: str, stamp: str, parallel: int = 2) -> Tuple[List[str], Optional[str]]:
+    """The fixed argument list for a run key, and the run folder it writes (None for `models`)."""
+    if key == "demo":
+        out = f"governance_out/bridge/demo_{stamp}"
+        return [py, "scripts/run_governance.py", "--out", out], out
+    if key == "live-short":
+        out = f"governance_out/bridge/live_{stamp}"
+        return [py, "scripts/run_governance.py", "--live", "--sample", "2", "--reps", "1", "--out", out], out
+    if key == "live-smoke":
+        out = f"governance_out/bridge/smoke_{stamp}"
+        return [py, "scripts/run_governance.py", "--live", "--sample", "1", "--reps", "3", "--out", out], out
+    if key == "models":
+        if not isinstance(parallel, int) or not 1 <= parallel <= 4:
+            raise BridgeError("--parallel must be from 1 to 4")
+        return [py, "scripts/run_models.py", "--models", "config/models.txt", "--parallel", str(parallel)], None
+    raise BridgeError(f"unknown run key {key!r}; the choices are {', '.join(RUN_KEYS)}")
+
+
+def read_models(root) -> List[str]:
+    """The Ollama tags in config/models.txt: one per line, blank lines and # comments ignored."""
+    path = Path(root) / "config" / "models.txt"
+    if not path.is_file():
+        raise BridgeError("config/models.txt not found")
+    tags = []
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = raw.strip()
+        if s and not s.startswith("#"):
+            tags.append(s)
+    return tags
+
+
+def check_model(root, tag: str) -> None:
+    if tag not in read_models(root):
+        raise BridgeError(f"model {tag!r} is not listed in config/models.txt")
+
+
+def resolve_python(root, override: Optional[str] = None) -> str:
+    """.venv/bin/python, then .venv/Scripts/python.exe, then --python. (A venv's python is not resolved.)"""
+    base = Path(root)
+    for cand in (base / ".venv" / "bin" / "python", base / ".venv" / "Scripts" / "python.exe"):
+        if cand.is_file():
+            return str(cand)
+    if override:
+        p = Path(override)
+        if p.is_file():
+            return str(p)
+        raise BridgeError(f"--python {display_path(p)}: file not found")
+    raise BridgeError("no Python found: create .venv in the repo folder or pass --python PATH")
+
+
+def child_env(model: Optional[str] = None) -> Dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONUTF8"] = "1"
+    if model:
+        env["LAB_MODEL"] = model
+    return env
+
+
+def _last_line(text: Optional[str]) -> str:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def run_preflight(py: str, root, env: Dict[str, str], model: Optional[str] = None) -> Tuple[bool, str]:
+    """scripts/preflight.py; (True, "") if it passes, else (False, the first FAIL line)."""
+    argv = [py, "scripts/preflight.py"] + (["--model", model] if model else [])
+    try:
+        done = subprocess.run(argv, cwd=str(root), env=env, shell=False, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=PREFLIGHT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False, "preflight did not answer in time"
+    except OSError as exc:
+        return False, f"preflight could not start ({exc.strerror or exc})"
+    if done.returncode == 0:
+        return True, ""
+    fails = [ln.strip() for ln in (done.stdout or "").splitlines() if ln.strip().startswith("FAIL")]
+    text = fails[0] if fails else (_last_line(done.stdout) or _last_line(done.stderr) or f"exit code {done.returncode}")
+    if len(fails) > 1:
+        text += f" (+{len(fails) - 1} more)"
+    return False, clip(text, 220)
+
+
+def run_export(py: str, root, env: Dict[str, str], gov: Optional[str]) -> dict:
+    """ui/export.py --quiet [--gov <run folder>]; never raises. If export.py lacks a flag, its exact error is the text."""
+    if not (Path(root) / "ui" / "export.py").is_file():
+        return {"status": "failed", "text": "Export failed: ui/export.py not found."}
+    argv = [py, "ui/export.py", "--quiet"] + (["--gov", gov] if gov else [])
+    try:
+        done = subprocess.run(argv, cwd=str(root), env=env, shell=False, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=EXPORT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "text": "Export failed: it did not finish in time."}
+    except OSError as exc:
+        return {"status": "failed", "text": f"Export failed: could not start ({exc.strerror or exc})."}
+    if done.returncode == 0:
+        return {"status": "ok", "text": EXPORT_OK_TEXT}
+    message = _last_line(done.stderr) or _last_line(done.stdout) or f"exit code {done.returncode}"
+    return {"status": "failed", "text": "Export failed: " + clip(Scrubber([root])(message), 240)}
+
+
+class Child:
+    """One child process: its own process group, never a shell, stopped in steps."""
+
+    def __init__(self, argv: List[str], cwd, env: Dict[str, str]) -> None:
+        self.argv = list(argv)
+        self.cwd = str(cwd)
+        self.env = env
+        self.proc: Optional[subprocess.Popen] = None
+
+    def start(self) -> None:
+        kwargs: Dict[str, Any] = dict(cwd=self.cwd, env=self.env, shell=False, stdin=subprocess.DEVNULL)
+        if IS_WINDOWS:
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        else:
+            kwargs["start_new_session"] = True
+        try:
+            self.proc = subprocess.Popen(self.argv, **kwargs)
+        except OSError as exc:
+            raise BridgeError(f"could not start the run ({exc.strerror or exc})") from exc
+
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def returncode(self) -> Optional[int]:
+        return None if self.proc is None else self.proc.poll()
+
+    def _signal(self, kind: str) -> None:
+        p = self.proc
+        if p is None or p.poll() is not None:
+            return
+        try:
+            if IS_WINDOWS:
+                if kind == "interrupt":
+                    p.send_signal(signal.CTRL_BREAK_EVENT)      # NOT VERIFIED ON WINDOWS
+                elif kind == "terminate":
+                    p.terminate()
+                else:
+                    p.kill()
+            else:
+                sig = {"interrupt": signal.SIGINT, "terminate": signal.SIGTERM, "kill": signal.SIGKILL}[kind]
+                os.killpg(p.pid, sig)       # the child leads its own group, like a Ctrl-C typed at it
+        except (OSError, ValueError):
+            pass
+
+    def _wait(self, seconds: float) -> bool:
+        try:
+            self.proc.wait(timeout=seconds)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        except KeyboardInterrupt:
+            return False
+
+    def stop(self, grace: float = STOP_GRACE_S, term_wait: float = STOP_TERM_S) -> None:
+        """One interrupt first (so the run can lock its folder), then terminate, then kill."""
+        if self.proc is None or self.proc.poll() is not None:
+            return
+        self._signal("interrupt")
+        if self._wait(grace):
+            return
+        self._signal("terminate")
+        if self._wait(term_wait):
+            return
+        self._signal("kill")
+        self._wait(2.0)
+
+
+# ---- batches (scripts/run_models.py): results/models/<STAMP>/plan.json and status.jsonl ----
+def parse_status_line(text: str) -> Optional[dict]:
+    event, _why = parse_line(text, key="event")
+    return event
+
+
+class BatchWatcher:
+    """Reads a model batch's plan.json and status.jsonl into one row per model."""
+
+    PHASE = {"queued": "queued", "pull_start": "checking", "pull_done": "checking", "preflight_start": "checking",
+             "preflight_ok": "checking", "preflight_skipped": "checking", "preflight_fail": "failed",
+             "smoke_start": "smoke", "smoke_done": "smoke", "full_start": "running", "skipped": "skipped"}
+
+    def __init__(self, batch_dir, root=REPO_ROOT) -> None:
+        self.dir = Path(batch_dir)
+        self.root = Path(root)
+        self.tail = Tailer(self.dir / "status.jsonl")
+        self.rec: Dict[str, dict] = {}
+        self._plan_read = False
+
+    def _row(self, slug: str, tag: Optional[str] = None) -> dict:
+        row = self.rec.get(slug)
+        if row is None:
+            row = {"slug": slug, "tag": tag or slug, "state": "queued", "tools": "not checked", "tools_text": "",
+                   "reason": "", "smoke_out": None, "full_out": None}
+            self.rec[slug] = row
+        elif tag:
+            row["tag"] = tag
+        return row
+
+    def _read_plan(self) -> None:
+        if self._plan_read:
+            return
+        try:
+            plan = json.loads((self.dir / "plan.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        self._plan_read = True
+        for m in _dicts(plan.get("models") if isinstance(plan, dict) else None):
+            slug, tag = m.get("slug"), m.get("tag")
+            if isinstance(slug, str) and RE_SLUG.match(slug):
+                row = self._row(slug, tag if isinstance(tag, str) else None)
+                row["smoke_out"] = row["smoke_out"] or str_or_none(m.get("smoke_out"))
+                row["full_out"] = row["full_out"] or str_or_none(m.get("full_out"))
+
+    def poll(self) -> None:
+        self._read_plan()
+        res = self.tail.poll()
+        if res.reset:
+            self.rec = {}
+            self._plan_read = False
+            self._read_plan()
+        for text in res.lines:
+            ev = parse_status_line(text)
+            if ev is None:
+                continue
+            slug, kind = ev.get("slug"), ev.get("event")
+            if not (isinstance(slug, str) and RE_SLUG.match(slug)) or not isinstance(kind, str):
+                continue
+            row = self._row(slug, str_or_none(ev.get("tag")))
+            if kind in self.PHASE:
+                row["state"] = self.PHASE[kind]
+            if kind == "preflight_fail":
+                row["reason"] = clip(ev.get("detail") or "preflight failed", 160)
+            elif kind == "skipped":
+                row["reason"] = clip(ev.get("reason") or "", 160)
+            elif kind == "smoke_start":
+                row["smoke_out"] = str_or_none(ev.get("out")) or row["smoke_out"]
+            elif kind == "smoke_done":
+                tools = str_or_none(ev.get("tools"))
+                row["tools"] = tools if tools in ("yes", "no", "not checked") else "not checked"
+                row["tools_text"] = clip(ev.get("text") or "", 120)
+            elif kind == "full_start":
+                row["full_out"] = str_or_none(ev.get("out")) or row["full_out"]
+            elif kind == "full_done":
+                row["state"] = "done" if to_int(ev.get("exit_code")) == 0 else "failed"
+                if row["state"] == "failed":
+                    row["reason"] = f"exit code {to_int(ev.get('exit_code'))}"
+
+    @staticmethod
+    def _text(row: dict) -> str:
+        state, tools = row["state"], row["tools_text"]
+        if state == "queued":
+            return "waiting for its turn"
+        if state == "checking":
+            return "checking the model"
+        if state == "smoke":
+            return "smoke run" + (f"; tool calls: {tools}" if tools else "")
+        if state == "running":
+            return "full run in progress" + (f"; tool calls: {tools}" if tools else "")
+        if state == "done":
+            return "full run finished" + (f"; tool calls: {tools}" if tools else "")
+        if state == "failed":
+            return "a step failed" + (f": {row['reason']}" if row["reason"] else "")
+        return "skipped" + (f": {row['reason']}" if row["reason"] else "") + (f"; tool calls: {tools}" if tools else "")
+
+    def models(self) -> List[dict]:
+        rows = sorted(self.rec.values(), key=lambda r: (r["tag"], r["slug"]))
+        return [{"slug": r["slug"], "tag": r["tag"], "state": r["state"], "tools": r["tools"],
+                 "text": self._text(r)} for r in rows]
+
+    def auto_pick(self) -> Optional[str]:
+        """The model to show when none was named: one that is running, else the last one with a log."""
+        rows = sorted(self.rec.values(), key=lambda r: (r["tag"], r["slug"]))
+        for state in ("running", "smoke", "checking"):
+            for r in rows:
+                if r["state"] == state:
+                    return r["slug"]
+        with_log = [r for r in rows if r["full_out"] or r["smoke_out"]]
+        return with_log[-1]["slug"] if with_log else (rows[0]["slug"] if rows else None)
+
+    def log_path(self, slug: Optional[str]) -> Optional[Path]:
+        row = self.rec.get(slug) if slug else None
+        if row is None:
+            return None
+        out = row["full_out"] if row["state"] in ("running", "done", "failed") and row["full_out"] else \
+            (row["smoke_out"] or row["full_out"])
+        if not out:
+            return None
+        p = Path(out)
+        if p.is_absolute() or ".." in p.parts:
+            return None
+        return self.root / p / LOG_NAME
+
+
+def find_batch_dir(root, not_before: Optional[str] = None) -> Optional[Path]:
+    """The newest results/models/<STAMP> folder that has a plan (not older than `not_before`, a stamp)."""
+    base = Path(root) / "results" / "models"
+    best = None
+    try:
+        names = sorted(p.name for p in base.iterdir() if p.is_dir())
+    except OSError:
+        return None
+    for name in names:
+        if not_before and name < not_before:
+            continue
+        if (base / name / "plan.json").is_file() or (base / name / "status.jsonl").is_file():
+            best = base / name
+    return best
+
+
+class BatchFollower:
+    """Follows a model batch: the list of models, and the progress log of the one on show."""
+
+    def __init__(self, session: Session, root, batch_dir=None, follow_model: Optional[str] = None,
+                 not_before: Optional[str] = None) -> None:
+        self.session = session
+        self.root = Path(root)
+        self.batch_dir = Path(batch_dir) if batch_dir is not None else None
+        self.follow_model = follow_model
+        self.not_before = not_before
+        self.watcher: Optional[BatchWatcher] = None
+        self.follower = Follower(session, None, root=root)
+        self._scan_at: Optional[float] = None
+
+    def refresh(self) -> None:
+        """Look for the batch folder again at the next step (the run has ended; nothing more will appear)."""
+        self._scan_at = None
+
+    def step(self, now: float, force: bool = False) -> bool:
+        if self.batch_dir is None and (self._scan_at is None or now - self._scan_at >= BATCH_SCAN_S):
+            self._scan_at = now
+            self.batch_dir = find_batch_dir(self.root, self.not_before)
+        if self.batch_dir is not None and self.watcher is None:
+            self.watcher = BatchWatcher(self.batch_dir, self.root)
+        if self.watcher is not None:
+            self.watcher.poll()
+            self.session.batch = {"models": self.watcher.models()}
+            slug = self.follow_model or self.watcher.auto_pick()
+            path = self.watcher.log_path(slug)
+            if path is not None and path != self.follower.path:
+                self.session.reset()
+                self.follower._open(path)
+        return self.follower.step(now, force=force)
+
+
+# --------------------------------------------------------------------------- #
 # Command line.
 # --------------------------------------------------------------------------- #
 USAGE_TEXT = """\
-macOS / Linux:
+macOS / Linux (from the repo folder):
+  python3 ui/bridge.py --serve                                   # then open http://127.0.0.1:8765/
+  python3 ui/bridge.py --run demo --serve                        # scripted run, shown paced for display
+  python3 ui/bridge.py --run live-short --model qwen2.5:7b-instruct --serve
+  python3 ui/bridge.py --run models --parallel 2 --follow-model qwen2.5-7b-instruct --serve
+  python3 ui/bridge.py --batch results/models/<STAMP> --follow-model <slug> --serve
   python3 ui/bridge.py --replay results/governance/<run>/progress.jsonl --speed 4 --loop
-  python3 ui/bridge.py --bake results/governance/<run>/progress.jsonl
-  python3 ui/bridge.py --follow governance_out/cli_demo
-  python3 ui/bridge.py --follow-latest
+  python3 ui/bridge.py --bake results/governance/<run>/progress.jsonl      # writes ui/data/replay.js
+  python3 ui/bridge.py --follow governance_out/cli_demo | --follow-latest
 
-Windows PowerShell:
+Windows PowerShell (from the repo folder; the repo's .venv is found by itself, else add --python PATH):
+  py ui\\bridge.py --serve
+  py ui\\bridge.py --run demo --serve
+  py ui\\bridge.py --run live-short --model qwen2.5:7b-instruct --serve
+  py ui\\bridge.py --run models --parallel 2 --serve
   py ui\\bridge.py --replay results\\governance\\<run>\\progress.jsonl --speed 4 --loop
   py ui\\bridge.py --bake results\\governance\\<run>\\progress.jsonl
-  py ui\\bridge.py --follow governance_out\\cli_demo
-  py ui\\bridge.py --follow-latest
+  (Stopping a run with Ctrl-C uses CTRL_BREAK_EVENT: not verified on Windows.)
+
+Run keys: demo | live-short (2 tests per split, 1 rep) | live-smoke (1 test, 3 reps) | models.
+After a run the bridge calls ui/export.py --quiet --gov <run folder> (--no-export skips it).
 """
 
 
@@ -1901,6 +2294,16 @@ def _non_negative_float(text: str) -> float:
     return value
 
 
+def _parallel(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number")
+    if not 1 <= value <= 4:
+        raise argparse.ArgumentTypeError("must be from 1 to 4")
+    return value
+
+
 def _port(text: str) -> int:
     try:
         value = int(text)
@@ -1921,6 +2324,18 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--follow-latest", action="store_true", help="follow the newest log under the usual run folders")
     mode.add_argument("--replay", metavar="PATH", help="play a finished log back")
     mode.add_argument("--bake", metavar="PATH", help="write ui/data/replay.js (at most 120 key frames) for file://")
+    mode.add_argument("--run", choices=RUN_KEYS, metavar="KEY",
+                      help="start a run from the fixed list: " + ", ".join(RUN_KEYS))
+    mode.add_argument("--batch", metavar="DIR", help="follow a model batch folder (results/models/<STAMP>)")
+    p.add_argument("--model", metavar="TAG", default=None,
+                   help="with --run demo|live-short|live-smoke: a tag listed in config/models.txt")
+    p.add_argument("--parallel", type=_parallel, default=None, metavar="N", help="with --run models: 1 to 4 (default 2)")
+    p.add_argument("--follow-model", metavar="SLUG", default=None,
+                   help="with --run models or --batch: the model whose pipeline is shown")
+    p.add_argument("--no-export", action="store_true", help="with --run: do not run ui/export.py afterwards")
+    p.add_argument("--python", metavar="PATH", default=None,
+                   help="with --run: the interpreter to use when the repo has no .venv")
+    p.add_argument("--root", metavar="DIR", default=None, help=argparse.SUPPRESS)
     p.add_argument("--speed", type=_positive_float, default=DEFAULT_SPEED, metavar="N",
                    help="replay speed: recorded gaps divided by N, at most 3 s each (default 4)")
     p.add_argument("--loop", action="store_true", help="with --replay: start again after a pause")
@@ -1960,6 +2375,122 @@ def _run_follow(args, data_dir: Path) -> int:
     return 0
 
 
+def _root_of(args) -> Path:
+    return Path(args.root) if args.root else REPO_ROOT
+
+
+def _run_flow(args, data_dir: Path) -> int:
+    """--run KEY: check, (preflight), start the child, follow it, export, report."""
+    root = _root_of(args)
+    key = args.run
+    if args.model:
+        if key == "models":
+            raise BridgeError("--model does not apply to --run models; use --follow-model SLUG to choose what to watch")
+        check_model(root, args.model)
+    py = resolve_python(root, args.python)
+    env = child_env(args.model)
+    stamp = utc_stamp()
+    argv, out_rel = run_argv(key, py, stamp, args.parallel if args.parallel is not None else 2)
+    if not (root / argv[1]).is_file():
+        raise BridgeError(f"{argv[1]} not found")
+    if key == "models" and not read_models(root):
+        raise BridgeError("config/models.txt lists no models")
+    writer = LiveWriter(data_dir / "live.js")
+    session = Session(writer, kind="run", scale=args.pace_scale, gov=out_rel)
+    if key in LIVE_KEYS:
+        _say("bridge: running the preflight checks first ...")
+        ok, why = run_preflight(py, root, env, args.model)
+        if not ok:
+            session.refusal = f"preflight failed. {why}"
+            session.forced_state = "error"
+            session.tick(time.monotonic(), force=True)
+            print(f"bridge: not started: preflight failed. {why}", file=sys.stderr)
+            return 2
+    if key == "models":
+        follower: Any = BatchFollower(session, root, follow_model=args.follow_model, not_before=stamp)
+    else:
+        follower = Follower(session, root / out_rel / LOG_NAME, root=root)
+    child = Child(argv, root, env)
+    child.start()
+    session.child_alive = True
+    _say(f"bridge: started {key}" + (f" (model {args.model})" if args.model else "")
+         + (f", writing {out_rel}" if out_rel else "") + ". Ctrl-C stops the run.")
+    interrupted = False
+    exporter: Optional[threading.Thread] = None
+    try:
+        while True:
+            alive = child.alive()
+            session.child_alive = alive
+            follower.step(time.monotonic())
+            if not alive:
+                break
+            time.sleep(POLL_S)
+        if isinstance(follower, BatchFollower):
+            follower.refresh()
+        follower.step(time.monotonic())
+        code = child.returncode()
+        if code != 0:
+            session.export = {"status": "skipped", "text": "The run did not finish, so the evidence screens were not updated."}
+        elif args.no_export:
+            session.export = None           # the default text is the command to run
+        else:
+            session.export = {"status": "running", "text": "Updating the evidence screens ..."}
+
+            def work() -> None:
+                session.export = run_export(py, root, env, out_rel)
+
+            exporter = threading.Thread(target=work, daemon=True)
+            exporter.start()
+        while session.pacer.pending() or (exporter is not None and exporter.is_alive()):
+            follower.step(time.monotonic())
+            time.sleep(POLL_S)
+        follower.step(time.monotonic())
+    except KeyboardInterrupt:
+        interrupted = True
+        _say("bridge: stopping the run; it keeps its folder")
+    finally:
+        if child.alive():
+            child.stop()
+    code = child.returncode()
+    if interrupted:
+        session.pacer.kind = "instant"
+        session.child_alive = False
+        follower.step(time.monotonic())
+        session.forced_state = session.forced_state or ("stopped" if session.model.run_state == "running" else None)
+        session.notes.append("stopped by you")
+        session.export = {"status": "skipped", "text": "The run was stopped, so the evidence screens were not updated."}
+    elif code not in (0, None) and session.model.run_state == "running":
+        session.forced_state = "error"
+        session.notes.append(f"the run ended with exit code {code} before it finished")
+    session.child_alive = False
+    follower.step(time.monotonic(), force=True)
+    done = session.snapshot(time.monotonic())["done"]
+    _say("bridge: " + (done["text"] if done else
+                       f"the run ended with exit code {code if code is not None else 'unknown'}"))
+    return 130 if interrupted else (code if code is not None else 0)
+
+
+def _run_batch_follow(args, data_dir: Path) -> int:
+    root = _root_of(args)
+    path = Path(args.batch)
+    if not path.is_dir() and (root / path).is_dir():
+        path = root / path
+    if not path.is_dir():
+        raise BridgeError(f"batch folder not found: {display_path(path, root)}")
+    writer = LiveWriter(data_dir / "live.js")
+    session = Session(writer, kind="batch", scale=args.pace_scale)
+    follower = BatchFollower(session, root, batch_dir=path, follow_model=args.follow_model)
+    _say(f"bridge: following the batch {display_path(path, root)}. Ctrl-C stops.")
+    try:
+        while True:
+            follower.step(time.monotonic())
+            time.sleep(POLL_S)
+    except KeyboardInterrupt:
+        follower.step(time.monotonic(), force=True)
+        _say("bridge: stopped")
+    return 0
+
+
 def _run_replay(args, data_dir: Path) -> int:
     path = resolve_log_path(args.replay)
     if not path.is_file():
@@ -1989,12 +2520,22 @@ def _wait_for_ctrl_c() -> None:
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (args.follow or args.follow_latest or args.replay or args.bake or args.serve):
-        parser.error("choose a mode: --follow, --follow-latest, --replay, --bake or --serve")
+    if not (args.follow or args.follow_latest or args.replay or args.bake or args.run or args.batch or args.serve):
+        parser.error("choose a mode: --follow, --follow-latest, --replay, --bake, --run, --batch or --serve")
     if args.loop and not args.replay:
         parser.error("--loop needs --replay")
     if args.port is not None and not args.serve:
         parser.error("--port needs --serve")
+    if args.model and not args.run:
+        parser.error("--model needs --run")
+    if args.parallel is not None and args.run != "models":
+        parser.error("--parallel needs --run models")
+    if args.follow_model and not (args.run == "models" or args.batch):
+        parser.error("--follow-model needs --run models or --batch")
+    if args.follow_model and not RE_SLUG.match(args.follow_model):
+        parser.error("--follow-model: that is not a model slug (letters, digits, . _ - only)")
+    if (args.no_export or args.python) and not args.run:
+        parser.error("--no-export and --python need --run")
     data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
     server = None
     try:
@@ -2009,12 +2550,16 @@ def main(argv=None) -> int:
             out = data_dir / "replay.js"
             frames = bake(args.bake, out, speed=args.speed, scale=args.pace_scale)
             _say(f"bridge: wrote {display_path(out)} ({frames} frames)")
+        elif args.run:
+            rc = _run_flow(args, data_dir)
+        elif args.batch:
+            rc = _run_batch_follow(args, data_dir)
         elif args.replay:
             rc = _run_replay(args, data_dir)
         elif args.follow or args.follow_latest:
             rc = _run_follow(args, data_dir)
-        if server is not None and not (args.follow or args.follow_latest):
-            _wait_for_ctrl_c()              # bake and replay end by themselves; keep the page served
+        if server is not None and rc != 130 and not (args.follow or args.follow_latest or args.batch):
+            _wait_for_ctrl_c()              # bake, replay and run end by themselves; keep the page served
         return rc
     except BridgeError as exc:
         print(f"bridge: {exc}", file=sys.stderr)

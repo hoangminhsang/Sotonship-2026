@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -2072,3 +2073,634 @@ def test_main_rejects_bad_serve_arguments(argv):
     with pytest.raises(SystemExit) as exc:
         bridge.main(argv)
     assert exc.value.code == 2
+
+
+# --------------------------------------------------------------------------- #
+# Step 5: --run (fixed list, preflight, export) and --batch.
+# --------------------------------------------------------------------------- #
+import re as _re  # noqa: E402
+import signal  # noqa: E402
+
+FAKE_GOV = '''\
+import json, os, signal, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+out = Path(args[args.index("--out") + 1])
+out.mkdir(parents=True, exist_ok=True)
+Path(os.environ["FAKE_RECORD_DIR"], "run_governance.json").write_text(json.dumps({
+    "argv": args, "cwd": os.getcwd(), "unbuffered": os.environ.get("PYTHONUNBUFFERED"),
+    "utf8": os.environ.get("PYTHONUTF8"), "model": os.environ.get("LAB_MODEL")}))
+if os.environ.get("FAKE_SLEEP"):
+    def stop(signum, frame):
+        Path(os.environ["FAKE_RECORD_DIR"], "interrupted.txt").write_text("got SIGINT")
+        sys.exit(130)
+    signal.signal(signal.SIGINT, stop)
+lines = Path(os.environ["FAKE_EVENTS"]).read_text().splitlines(True)
+with open(out / "progress.jsonl", "w") as fh:
+    for ln in lines:
+        fh.write(ln)
+        fh.flush()
+if os.environ.get("FAKE_SLEEP"):
+    time.sleep(float(os.environ["FAKE_SLEEP"]))
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
+'''
+FAKE_PREFLIGHT = '''\
+import json, os, sys
+from pathlib import Path
+Path(os.environ["FAKE_RECORD_DIR"], "preflight.json").write_text(json.dumps(
+    {"argv": sys.argv[1:], "model": os.environ.get("LAB_MODEL")}))
+code = int(os.environ.get("FAKE_PREFLIGHT_EXIT", "0"))
+if code:
+    print("OK   files: 6 required files present")
+    print("FAIL ollama: not answering at http://localhost:11434")
+    print("FAIL tracing: unset LANGCHAIN_API_KEY")
+    print("PREFLIGHT FAILED: 2 problems -- do not run LIVE")
+else:
+    print("PREFLIGHT OK -- ready for a LIVE run")
+sys.exit(code)
+'''
+FAKE_EXPORT = '''\
+import json, os, sys
+from pathlib import Path
+Path(os.environ["FAKE_RECORD_DIR"], "export.json").write_text(json.dumps(
+    {"argv": sys.argv[1:], "cwd": os.getcwd()}))
+if os.environ.get("FAKE_EXPORT") == "unknown-flag":
+    sys.stderr.write("usage: export.py [-h] [--quiet]\\nexport.py: error: unrecognized arguments: --gov "
+                     + sys.argv[-1] + "\\n")
+    sys.exit(2)
+print("export: ok")
+'''
+FAKE_MODELS = '''\
+import json, os, sys
+from pathlib import Path
+Path(os.environ["FAKE_RECORD_DIR"], "run_models.json").write_text(json.dumps({"argv": sys.argv[1:]}))
+stamp, slug, tag = os.environ["FAKE_STAMP"], os.environ["FAKE_SLUG"], os.environ["FAKE_TAG"]
+batch = Path("results/models") / stamp
+batch.mkdir(parents=True)
+out = "results/governance/" + stamp + "_" + slug
+Path(out).mkdir(parents=True)
+(batch / "plan.json").write_text(json.dumps({"schema": "run-models/1", "stamp": stamp, "models": [
+    {"tag": tag, "slug": slug, "smoke_out": out + "_smoke", "full_out": out}]}))
+def status(event, **kw):
+    with open(batch / "status.jsonl", "a") as fh:
+        fh.write(json.dumps(dict(event=event, slug=slug, tag=tag, ts="2026-01-01T00:00:00+00:00", **kw)) + "\\n")
+status("queued", position=1)
+status("preflight_ok", exit_code=0)
+status("smoke_start", out=out + "_smoke")
+status("smoke_done", exit_code=0, tools="yes", text="yes (a structured tool call)", out=out + "_smoke")
+status("full_start", out=out)
+lines = Path(os.environ["FAKE_EVENTS"]).read_text().splitlines(True)
+with open(Path(out) / "progress.jsonl", "w") as fh:
+    for ln in lines:
+        fh.write(ln)
+        fh.flush()
+status("full_done", exit_code=0, out=out)
+'''
+
+
+def make_root(tmp_path, models=("qwen2.5:7b-instruct", "other:1b"), with_models_script=False):
+    """A fake repo folder: scripts that record how they were called, a model list, a fake exporter."""
+    root = tmp_path / "repo"
+    (root / "scripts").mkdir(parents=True)
+    (root / "ui").mkdir()
+    (root / "config").mkdir()
+    (root / "scripts" / "run_governance.py").write_text(FAKE_GOV, encoding="utf-8")
+    (root / "scripts" / "preflight.py").write_text(FAKE_PREFLIGHT, encoding="utf-8")
+    (root / "ui" / "export.py").write_text(FAKE_EXPORT, encoding="utf-8")
+    if with_models_script:
+        (root / "scripts" / "run_models.py").write_text(FAKE_MODELS, encoding="utf-8")
+    (root / "config" / "models.txt").write_text(
+        "# Ollama tags\n\n" + "\n".join(models) + "\n# a comment: ibm/granite:placeholder\n", encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def fake_env(tmp_path, monkeypatch):
+    rec = tmp_path / "records"
+    rec.mkdir()
+    events = tmp_path / "events.jsonl"
+    events.write_text("".join(json.dumps(e) + "\n" for e in Run().full()), encoding="utf-8")
+    monkeypatch.setenv("FAKE_RECORD_DIR", str(rec))
+    monkeypatch.setenv("FAKE_EVENTS", str(events))
+    for name in ("FAKE_EXIT", "FAKE_PREFLIGHT_EXIT", "FAKE_EXPORT", "FAKE_SLEEP"):
+        monkeypatch.delenv(name, raising=False)
+    return rec, events
+
+
+def record(rec, name):
+    p = rec / name
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def run_main(tmp_path, root, *extra):
+    data = tmp_path / "data"
+    code = bridge.main(["--root", str(root), "--python", sys.executable, "--data-dir", str(data),
+                        "--pace-scale", "0", *extra])
+    live = None
+    if (data / "live.js").exists():
+        text = (data / "live.js").read_text(encoding="utf-8")
+        live = json.loads(text[len("window.LIVE = "):-2])
+    return code, live
+
+
+STAMP_RE = r"\d{8}T\d{6}Z"
+
+
+def test_run_argv_is_a_fixed_list():
+    assert bridge.RUN_KEYS == ("demo", "live-short", "live-smoke", "models")
+    assert bridge.run_argv("demo", "PY", "S") == (
+        ["PY", "scripts/run_governance.py", "--out", "governance_out/bridge/demo_S"], "governance_out/bridge/demo_S")
+    assert bridge.run_argv("live-short", "PY", "S")[0] == [
+        "PY", "scripts/run_governance.py", "--live", "--sample", "2", "--reps", "1", "--out",
+        "governance_out/bridge/live_S"]
+    assert bridge.run_argv("live-smoke", "PY", "S")[0] == [
+        "PY", "scripts/run_governance.py", "--live", "--sample", "1", "--reps", "3", "--out",
+        "governance_out/bridge/smoke_S"]
+    assert bridge.run_argv("models", "PY", "S", parallel=3) == (
+        ["PY", "scripts/run_models.py", "--models", "config/models.txt", "--parallel", "3"], None)
+    for bad in ("shell", "demo; rm -rf /", "", "Demo", "live"):
+        with pytest.raises(bridge.BridgeError):
+            bridge.run_argv(bad, "PY", "S")
+    for n in (0, 5, -1, "2", None):
+        with pytest.raises(bridge.BridgeError):
+            bridge.run_argv("models", "PY", "S", parallel=n)
+
+
+def test_models_come_from_the_list_and_comments_are_ignored(tmp_path):
+    root = make_root(tmp_path)
+    assert bridge.read_models(root) == ["qwen2.5:7b-instruct", "other:1b"]
+    bridge.check_model(root, "other:1b")
+    for bad in ("ibm/granite:placeholder", "qwen2.5", "QWEN2.5:7B-INSTRUCT", "other:1b ; rm", ""):
+        with pytest.raises(bridge.BridgeError):
+            bridge.check_model(root, bad)
+    with pytest.raises(bridge.BridgeError):
+        bridge.read_models(tmp_path / "nowhere")
+
+
+def test_interpreter_order_is_venv_posix_then_venv_windows_then_python_option(tmp_path):
+    root = tmp_path / "r"
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "Scripts").mkdir(parents=True)
+    other = tmp_path / "other-python"
+    other.write_text("")
+    posix, win = root / ".venv" / "bin" / "python", root / ".venv" / "Scripts" / "python.exe"
+    posix.write_text("")
+    win.write_text("")
+    assert bridge.resolve_python(root, str(other)) == str(posix)
+    posix.unlink()
+    assert bridge.resolve_python(root, str(other)) == str(win)
+    win.unlink()
+    assert bridge.resolve_python(root, str(other)) == str(other)
+    with pytest.raises(bridge.BridgeError):
+        bridge.resolve_python(root, str(tmp_path / "missing-python"))
+    with pytest.raises(bridge.BridgeError):
+        bridge.resolve_python(root, None)
+
+
+def test_the_child_environment_is_unbuffered_utf8_and_names_the_model(monkeypatch):
+    monkeypatch.delenv("LAB_MODEL", raising=False)
+    env = bridge.child_env()
+    assert env["PYTHONUNBUFFERED"] == "1" and env["PYTHONUTF8"] == "1" and "LAB_MODEL" not in env
+    assert bridge.child_env("other:1b")["LAB_MODEL"] == "other:1b"
+    assert set(bridge.child_env()) - set(os.environ) == {"PYTHONUNBUFFERED", "PYTHONUTF8"} - set(os.environ)
+
+
+class FakeProc:
+    def __init__(self, wait_results=()):
+        self.pid = 4242
+        self.signals = []
+        self.calls = []
+        self.code = None
+        self._wait_results = list(wait_results)
+
+    def poll(self):
+        return self.code
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+
+    def terminate(self):
+        self.calls.append("terminate")
+
+    def kill(self):
+        self.calls.append("kill")
+        self.code = -9
+
+    def wait(self, timeout=None):
+        self.calls.append(("wait", timeout))
+        result = self._wait_results.pop(0) if self._wait_results else "ok"
+        if result == "timeout":
+            raise subprocess.TimeoutExpired("x", timeout)
+        self.code = 0
+        return 0
+
+
+def test_a_child_is_started_without_a_shell_in_its_own_group(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_popen(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return FakeProc()
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(bridge, "IS_WINDOWS", False)
+    child = bridge.Child(["PY", "scripts/x.py"], tmp_path, {"A": "1"})
+    child.start()
+    assert seen["argv"] == ["PY", "scripts/x.py"] and isinstance(seen["argv"], list)
+    kw = seen["kw"]
+    assert kw["shell"] is False and kw["cwd"] == str(tmp_path) and kw["env"] == {"A": "1"}
+    assert kw["start_new_session"] is True and "creationflags" not in kw
+    assert kw["stdin"] == subprocess.DEVNULL
+    monkeypatch.setattr(bridge, "IS_WINDOWS", True)
+    child2 = bridge.Child(["PY"], tmp_path, {})
+    child2.start()
+    kw = seen["kw"]
+    assert kw["creationflags"] == 0x00000200 and "start_new_session" not in kw and kw["shell"] is False
+
+
+def test_a_child_that_cannot_start_is_one_line(tmp_path):
+    child = bridge.Child([str(tmp_path / "no-such-python"), "x"], tmp_path, dict(os.environ))
+    with pytest.raises(bridge.BridgeError) as exc:
+        child.start()
+    assert "could not start" in str(exc.value)
+
+
+def test_windows_stops_a_child_with_ctrl_break_then_terminates_then_kills(monkeypatch):
+    monkeypatch.setattr(bridge, "IS_WINDOWS", True)
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", 21, raising=False)
+    proc = FakeProc(wait_results=["timeout", "timeout", "ok"])
+    child = bridge.Child(["PY"], ".", {})
+    child.proc = proc
+    child.stop(grace=0.1, term_wait=0.1)
+    assert proc.signals == [21]
+    assert proc.calls[0] == ("wait", 0.1) and "terminate" in proc.calls and "kill" in proc.calls
+    quick = FakeProc()
+    child2 = bridge.Child(["PY"], ".", {})
+    child2.proc = quick
+    child2.stop(grace=0.1)
+    assert quick.signals == [21] and "terminate" not in quick.calls
+
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="signals to a process group")
+
+
+@posix_only
+def test_stop_sends_one_interrupt_first_so_the_run_can_lock_its_folder(tmp_path):
+    marker = tmp_path / "got-sigint"
+    code = ("import signal,sys,time\n"
+            f"def h(s,f):\n open({str(marker)!r},'w').write('x'); sys.exit(0)\n"
+            "signal.signal(signal.SIGINT,h)\nprint('ready',flush=True)\ntime.sleep(60)\n")
+    child = bridge.Child([sys.executable, "-c", code], tmp_path, dict(os.environ))
+    child.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not child.alive():
+        time.sleep(0.05)
+    time.sleep(0.5)
+    child.stop(grace=5, term_wait=1)
+    assert marker.exists() and child.returncode() == 0
+
+
+@posix_only
+def test_stop_escalates_to_terminate_and_then_kill(tmp_path):
+    ignore_int = "import signal,time\nsignal.signal(signal.SIGINT,signal.SIG_IGN)\ntime.sleep(60)\n"
+    c1 = bridge.Child([sys.executable, "-c", ignore_int], tmp_path, dict(os.environ))
+    c1.start()
+    time.sleep(0.5)
+    c1.stop(grace=0.3, term_wait=2)
+    assert not c1.alive() and c1.returncode() == -signal.SIGTERM
+    ignore_both = ("import signal,time\nsignal.signal(signal.SIGINT,signal.SIG_IGN)\n"
+                   "signal.signal(signal.SIGTERM,signal.SIG_IGN)\ntime.sleep(60)\n")
+    c2 = bridge.Child([sys.executable, "-c", ignore_both], tmp_path, dict(os.environ))
+    c2.start()
+    time.sleep(0.5)
+    c2.stop(grace=0.3, term_wait=0.3)
+    assert not c2.alive() and c2.returncode() == -signal.SIGKILL
+
+
+def test_run_demo_end_to_end(tmp_path, fake_env):
+    rec, _ = fake_env
+    root = make_root(tmp_path)
+    code, live = run_main(tmp_path, root, "--run", "demo")
+    assert code == 0
+    gov = record(rec, "run_governance.json")
+    assert gov["argv"][0] == "--out" and _re.fullmatch(rf"governance_out/bridge/demo_{STAMP_RE}", gov["argv"][1])
+    assert gov["unbuffered"] == "1" and gov["utf8"] == "1" and gov["model"] is None
+    assert Path(gov["cwd"]).resolve() == root.resolve()
+    assert record(rec, "preflight.json") is None                      # a scripted run needs no preflight
+    assert live["state"] == "done" and live["label"]["word"] == "SCRIPTED"
+    assert live["source"]["kind"] == "run"
+    assert live["source"]["log"] == gov["argv"][1] + "/progress.jsonl"
+    exp = record(rec, "export.json")
+    assert exp["argv"] == ["--quiet", "--gov", gov["argv"][1]]
+    assert Path(exp["cwd"]).resolve() == root.resolve()
+    assert live["done"]["export"] == {"status": "ok", "text": "Evidence screens updated: press R."}
+    assert live["done"]["text"].endswith("Evidence screens updated: press R.")
+    assert str(tmp_path) not in json.dumps(live)
+
+
+def test_live_short_runs_the_preflight_first_and_then_the_run(tmp_path, fake_env):
+    rec, _ = fake_env
+    root = make_root(tmp_path)
+    code, live = run_main(tmp_path, root, "--run", "live-short")
+    assert code == 0
+    assert record(rec, "preflight.json")["argv"] == []
+    gov = record(rec, "run_governance.json")
+    assert gov["argv"][:5] == ["--live", "--sample", "2", "--reps", "1"] and gov["argv"][5] == "--out"
+    assert _re.fullmatch(rf"governance_out/bridge/live_{STAMP_RE}", gov["argv"][6])
+    assert (rec / "preflight.json").stat().st_mtime <= (rec / "run_governance.json").stat().st_mtime
+    assert live["state"] == "done"
+
+
+def test_live_smoke_uses_one_test_and_three_reps(tmp_path, fake_env):
+    rec, _ = fake_env
+    code, _live = run_main(tmp_path, make_root(tmp_path), "--run", "live-smoke")
+    assert code == 0
+    gov = record(rec, "run_governance.json")
+    assert gov["argv"][:5] == ["--live", "--sample", "1", "--reps", "3"]
+
+
+def test_a_failed_preflight_refuses_to_start_the_run(tmp_path, fake_env, monkeypatch, capsys):
+    rec, _ = fake_env
+    monkeypatch.setenv("FAKE_PREFLIGHT_EXIT", "1")
+    root = make_root(tmp_path)
+    code, live = run_main(tmp_path, root, "--run", "live-short")
+    assert code == 2
+    assert record(rec, "run_governance.json") is None and record(rec, "export.json") is None
+    assert live["state"] == "error"
+    assert live["done"]["text"].startswith("Not started: preflight failed. FAIL ollama: not answering")
+    assert live["done"]["text"].endswith("(+1 more)")
+    assert capsys.readouterr().err.startswith("bridge: not started: preflight failed.")
+
+
+def test_the_scripted_demo_does_not_need_a_preflight(tmp_path, fake_env, monkeypatch):
+    rec, _ = fake_env
+    monkeypatch.setenv("FAKE_PREFLIGHT_EXIT", "1")
+    code, live = run_main(tmp_path, make_root(tmp_path), "--run", "demo")
+    assert code == 0 and live["state"] == "done"
+
+
+def test_a_model_must_be_listed_in_the_model_file(tmp_path, fake_env, capsys):
+    rec, _ = fake_env
+    root = make_root(tmp_path)
+    code, live = run_main(tmp_path, root, "--run", "live-short", "--model", "not-a-listed:model")
+    assert code == 2 and live is None
+    assert "not listed in config/models.txt" in capsys.readouterr().err
+    assert record(rec, "preflight.json") is None and record(rec, "run_governance.json") is None
+
+
+def test_a_listed_model_reaches_the_preflight_and_the_run(tmp_path, fake_env):
+    rec, _ = fake_env
+    code, _live = run_main(tmp_path, make_root(tmp_path), "--run", "live-short", "--model", "other:1b")
+    assert code == 0
+    assert record(rec, "preflight.json")["argv"] == ["--model", "other:1b"]
+    assert record(rec, "preflight.json")["model"] == "other:1b"
+    assert record(rec, "run_governance.json")["model"] == "other:1b"
+
+
+def test_a_missing_script_is_refused_in_one_line(tmp_path, fake_env, capsys):
+    root = make_root(tmp_path)
+    (root / "scripts" / "run_governance.py").unlink()
+    code, _live = run_main(tmp_path, root, "--run", "demo")
+    assert code == 2
+    assert "scripts/run_governance.py not found" in capsys.readouterr().err
+    code, _live = run_main(tmp_path, make_root(tmp_path / "second"), "--run", "models")
+    assert code == 2 and "scripts/run_models.py not found" in capsys.readouterr().err
+
+
+def test_no_export_leaves_the_command_to_run(tmp_path, fake_env):
+    rec, _ = fake_env
+    code, live = run_main(tmp_path, make_root(tmp_path), "--run", "demo", "--no-export")
+    assert code == 0
+    assert record(rec, "export.json") is None
+    gov = record(rec, "run_governance.json")["argv"][1]
+    assert live["done"]["export"] == {"status": "not_run", "text": f"python ui/export.py --quiet --gov {gov}"}
+    assert "To update the evidence screens run: python ui/export.py --quiet --gov" in live["done"]["text"]
+
+
+def test_an_export_without_the_gov_flag_is_reported_not_raised(tmp_path, fake_env, monkeypatch):
+    rec, _ = fake_env
+    monkeypatch.setenv("FAKE_EXPORT", "unknown-flag")
+    code, live = run_main(tmp_path, make_root(tmp_path), "--run", "demo")
+    gov = record(rec, "run_governance.json")["argv"][1]
+    assert code == 0                                           # the run itself went fine
+    assert live["state"] == "done"
+    assert live["done"]["export"]["status"] == "failed"
+    assert live["done"]["export"]["text"] == f"Export failed: export.py: error: unrecognized arguments: --gov {gov}"
+    assert live["done"]["text"].endswith(live["done"]["export"]["text"])
+
+
+def test_a_missing_exporter_is_reported(tmp_path, fake_env):
+    root = make_root(tmp_path)
+    (root / "ui" / "export.py").unlink()
+    code, live = run_main(tmp_path, root, "--run", "demo")
+    assert code == 0 and live["done"]["export"] == {"status": "failed", "text": "Export failed: ui/export.py not found."}
+
+
+def test_a_failed_run_returns_its_exit_code_and_skips_the_export(tmp_path, fake_env, monkeypatch):
+    rec, events = fake_env
+    cut = [e for e in Run().full() if e["type"] != "pipeline_done"][:40]
+    events.write_text("".join(json.dumps(e) + "\n" for e in cut), encoding="utf-8")
+    monkeypatch.setenv("FAKE_EXIT", "3")
+    code, live = run_main(tmp_path, make_root(tmp_path), "--run", "demo")
+    assert code == 3
+    assert record(rec, "export.json") is None
+    assert live["state"] == "error"
+    assert "the run ended with exit code 3 before it finished" in live["warnings"]
+
+
+@posix_only
+def test_ctrl_c_stops_the_child_with_an_interrupt_and_marks_the_screen_stopped(tmp_path, fake_env, monkeypatch):
+    rec, events = fake_env
+    head = Run()
+    head.head()
+    head.ev("stage_start", "RC-001", "RC-001:runs", title="runs")
+    events.write_text("".join(json.dumps(e) + "\n" for e in head.events), encoding="utf-8")
+    monkeypatch.setenv("FAKE_SLEEP", "60")
+    real_sleep = time.sleep
+    calls = {"n": 0}
+
+    def sleepy(seconds):
+        calls["n"] += 1
+        if calls["n"] == 60:                   # one Ctrl-C, about three seconds after the start
+            raise KeyboardInterrupt
+        real_sleep(seconds)
+
+    monkeypatch.setattr(bridge.time, "sleep", sleepy)
+    code, live = run_main(tmp_path, make_root(tmp_path), "--run", "demo")
+    assert code == 130
+    assert (rec / "interrupted.txt").read_text() == "got SIGINT"
+    assert live["state"] == "stopped"
+    assert "stopped by you" in live["warnings"]
+    assert record(rec, "export.json") is None
+
+
+@pytest.mark.parametrize("argv", [
+    ["--model", "x"],                               # --model without --run
+    ["--run", "demo", "--parallel", "2"],           # --parallel only for models
+    ["--run", "models", "--parallel", "9"],
+    ["--run", "models", "--parallel", "0"],
+    ["--run", "demo", "--follow-model", "abc"],
+    ["--run", "models", "--follow-model", "../etc"],
+    ["--follow", "x", "--no-export"],
+    ["--follow", "x", "--python", "py"],
+    ["--run", "bogus"],
+    ["--run", "demo", "--batch", "x"],
+])
+def test_main_rejects_bad_run_arguments(argv):
+    with pytest.raises(SystemExit) as exc:
+        bridge.main(argv)
+    assert exc.value.code == 2
+
+
+def test_models_run_refuses_the_model_option(tmp_path, fake_env, capsys):
+    root = make_root(tmp_path, with_models_script=True)
+    code, _live = run_main(tmp_path, root, "--run", "models", "--model", "other:1b")
+    assert code == 2 and "--model does not apply to --run models" in capsys.readouterr().err
+
+
+# ---- model batches ------------------------------------------------------- #
+def write_status(path, rows):
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def make_batch(root, stamp="20261018T090000Z"):
+    batch = root / "results" / "models" / stamp
+    batch.mkdir(parents=True)
+    plan = {"schema": "run-models/1", "stamp": stamp, "models": [
+        {"tag": "zeta:1b", "slug": "zeta-1b", "smoke_out": f"results/governance/{stamp}_zeta-1b_smoke",
+         "full_out": f"results/governance/{stamp}_zeta-1b"},
+        {"tag": "alpha:7b", "slug": "alpha-7b", "smoke_out": f"results/governance/{stamp}_alpha-7b_smoke",
+         "full_out": f"results/governance/{stamp}_alpha-7b"}]}
+    (batch / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    return batch
+
+
+def ts(event, slug, tag, **kw):
+    return dict(event=event, slug=slug, tag=tag, ts="2026-01-01T00:00:00+00:00", **kw)
+
+
+def test_batch_rows_are_sorted_by_tag_and_say_what_each_model_is_doing(tmp_path):
+    batch = make_batch(tmp_path)
+    watcher = bridge.BatchWatcher(batch, tmp_path)
+    watcher.poll()
+    rows = watcher.models()
+    assert [r["tag"] for r in rows] == ["alpha:7b", "zeta:1b"]
+    assert all(r["state"] == "queued" and r["tools"] == "not checked" for r in rows)
+    assert rows[0]["text"] == "waiting for its turn"
+    out_a = "results/governance/20261018T090000Z_alpha-7b"
+    out_z = "results/governance/20261018T090000Z_zeta-1b"
+    write_status(batch / "status.jsonl", [
+        ts("queued", "alpha-7b", "alpha:7b", position=1), ts("queued", "zeta-1b", "zeta:1b", position=2),
+        ts("preflight_ok", "alpha-7b", "alpha:7b", exit_code=0),
+        ts("smoke_start", "alpha-7b", "alpha:7b", out=out_a + "_smoke"),
+        ts("smoke_done", "alpha-7b", "alpha:7b", exit_code=0, tools="no", text="no (every run errored)"),
+        ts("skipped", "alpha-7b", "alpha:7b", reason="no tool support"),
+        ts("preflight_ok", "zeta-1b", "zeta:1b", exit_code=0),
+        ts("smoke_start", "zeta-1b", "zeta:1b", out=out_z + "_smoke"),
+        ts("smoke_done", "zeta-1b", "zeta:1b", exit_code=0, tools="yes", text="yes (a structured tool call)"),
+        ts("full_start", "zeta-1b", "zeta:1b", out=out_z),
+    ])
+    watcher.poll()
+    rows = {r["slug"]: r for r in watcher.models()}
+    assert rows["alpha-7b"]["state"] == "skipped" and rows["alpha-7b"]["tools"] == "no"
+    assert rows["alpha-7b"]["text"] == "skipped: no tool support; tool calls: no (every run errored)"
+    assert rows["zeta-1b"]["state"] == "running" and rows["zeta-1b"]["tools"] == "yes"
+    assert rows["zeta-1b"]["text"] == "full run in progress; tool calls: yes (a structured tool call)"
+    assert watcher.auto_pick() == "zeta-1b"
+    assert watcher.log_path("zeta-1b") == tmp_path / out_z / "progress.jsonl"
+    assert watcher.log_path("alpha-7b") == tmp_path / (out_a + "_smoke") / "progress.jsonl"
+    assert watcher.log_path("nobody") is None
+    with open(batch / "status.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(ts("full_done", "zeta-1b", "zeta:1b", exit_code=0, out=out_z)) + "\n")
+        fh.write("junk line\n")
+    watcher.poll()
+    rows = {r["slug"]: r for r in watcher.models()}
+    assert rows["zeta-1b"]["state"] == "done" and rows["zeta-1b"]["text"].startswith("full run finished")
+    assert watcher.auto_pick() == "zeta-1b"
+
+
+def test_batch_failures_are_shown(tmp_path):
+    batch = make_batch(tmp_path)
+    write_status(batch / "status.jsonl", [
+        ts("preflight_fail", "alpha-7b", "alpha:7b", exit_code=1, detail="FAIL model: alpha:7b is not pulled"),
+        ts("full_start", "zeta-1b", "zeta:1b", out="results/governance/x"),
+        ts("full_done", "zeta-1b", "zeta:1b", exit_code=1, out="results/governance/x")])
+    watcher = bridge.BatchWatcher(batch, tmp_path)
+    watcher.poll()
+    rows = {r["slug"]: r for r in watcher.models()}
+    assert rows["alpha-7b"]["state"] == "failed" and "alpha:7b is not pulled" in rows["alpha-7b"]["text"]
+    assert rows["zeta-1b"]["state"] == "failed" and rows["zeta-1b"]["text"] == "a step failed: exit code 1"
+
+
+def test_batch_log_paths_cannot_leave_the_repo(tmp_path):
+    batch = make_batch(tmp_path)
+    write_status(batch / "status.jsonl", [
+        ts("full_start", "zeta-1b", "zeta:1b", out="../../elsewhere"),
+        ts("full_start", "alpha-7b", "alpha:7b", out=str(tmp_path / "abs"))])
+    watcher = bridge.BatchWatcher(batch, tmp_path)
+    watcher.poll()
+    assert watcher.log_path("zeta-1b") is None and watcher.log_path("alpha-7b") is None
+
+
+def test_find_batch_dir_takes_the_newest_with_a_plan_and_not_older_than_the_start(tmp_path):
+    make_batch(tmp_path, "20261018T080000Z")
+    newer = make_batch(tmp_path, "20261018T090000Z")
+    (tmp_path / "results" / "models" / "20261018T100000Z").mkdir()          # no plan, no status: ignored
+    assert bridge.find_batch_dir(tmp_path) == newer
+    assert bridge.find_batch_dir(tmp_path, not_before="20261018T085959Z") == newer
+    assert bridge.find_batch_dir(tmp_path, not_before="20261018T090001Z") is None
+    assert bridge.find_batch_dir(tmp_path / "nothing") is None
+
+
+def test_batch_follower_shows_the_model_list_and_the_chosen_models_pipeline(tmp_path):
+    batch = make_batch(tmp_path)
+    out_z = "results/governance/20261018T090000Z_zeta-1b"
+    out_a = "results/governance/20261018T090000Z_alpha-7b"
+    write_log(tmp_path / out_z / "progress.jsonl", Run(mode="LIVE", uid="zzzzzzzzzzzz").full())
+    write_log(tmp_path / out_a / "progress.jsonl", Run(mode="LIVE", uid="aaaaaaaaaaaa", n_runs=3).full())
+    write_status(batch / "status.jsonl", [
+        ts("full_start", "zeta-1b", "zeta:1b", out=out_z), ts("full_start", "alpha-7b", "alpha:7b", out=out_a)])
+    session, clock = make_session(tmp_path, kind="batch")
+    follower = bridge.BatchFollower(session, tmp_path, batch_dir=batch, follow_model="zeta-1b")
+    drive(follower, clock, 3.0)
+    live = read_live(tmp_path)
+    assert [m["slug"] for m in live["batch"]["models"]] == ["alpha-7b", "zeta-1b"]
+    assert live["source"]["uid"] == "zzzzzzzzzzzz" and live["source"]["log"] == out_z + "/progress.jsonl"
+    follower.follow_model = "alpha-7b"
+    drive(follower, clock, 3.0)
+    live = read_live(tmp_path)
+    assert live["source"]["uid"] == "aaaaaaaaaaaa" and live["source"]["log"] == out_a + "/progress.jsonl"
+
+
+def test_batch_follower_discovers_the_batch_and_waits_for_a_log(tmp_path):
+    session, clock = make_session(tmp_path, kind="batch")
+    follower = bridge.BatchFollower(session, tmp_path, not_before="20261018T080000Z")
+    drive(follower, clock, 2.0)
+    live = read_live(tmp_path)
+    assert live["state"] == "waiting" and live["batch"] is None
+    make_batch(tmp_path)
+    drive(follower, clock, 3.0)
+    live = read_live(tmp_path)
+    assert live["state"] == "waiting" and len(live["batch"]["models"]) == 2
+
+
+def test_main_batch_needs_an_existing_folder(tmp_path, capsys):
+    code = bridge.main(["--batch", str(tmp_path / "nothing"), "--data-dir", str(tmp_path)])
+    assert code == 2 and "batch folder not found" in capsys.readouterr().err
+
+
+def test_run_models_follows_the_batch_and_exports_everything(tmp_path, fake_env, monkeypatch):
+    rec, _ = fake_env
+    monkeypatch.setenv("FAKE_STAMP", "99991231T235959Z")
+    monkeypatch.setenv("FAKE_SLUG", "other-1b")
+    monkeypatch.setenv("FAKE_TAG", "other:1b")
+    root = make_root(tmp_path, with_models_script=True)
+    code, live = run_main(tmp_path, root, "--run", "models", "--parallel", "3")
+    assert code == 0
+    assert record(rec, "run_models.json")["argv"] == ["--models", "config/models.txt", "--parallel", "3"]
+    assert [m["slug"] for m in live["batch"]["models"]] == ["other-1b"]
+    assert live["batch"]["models"][0]["state"] == "done" and live["batch"]["models"][0]["tools"] == "yes"
+    assert live["state"] == "done"
+    assert live["source"]["log"] == "results/governance/99991231T235959Z_other-1b/progress.jsonl"
+    assert record(rec, "export.json")["argv"] == ["--quiet"]            # no single run folder to name
+    assert live["done"]["export"]["status"] == "ok"
