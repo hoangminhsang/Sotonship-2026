@@ -188,10 +188,11 @@ RE_VERIFY_DETAIL = (
     re.compile(r"^broken link at entry \d+: prev_hash does not match entry -?\d+$"),
     re.compile(r"^contents of entry \d+ were changed after it was written$"),
 )
-# repr() of lab.governance.audit.LogCheck, which the CLI prints. Later fields (kind, entries, last_hash) are optional.
+# repr() of lab.governance.audit.LogCheck, which the CLI prints. Later fields (kind, entries, last_hash, truncated_after) are optional.
 RE_LOGCHECK_REPR = re.compile(
     r"^LogCheck\(ok=(True|False), bad_seq=(None|\d+), detail=(['\"])(.*?)\3"
-    r"(?:, kind=(?:None|'[a-z]+'))?(?:, entries=\d+)?(?:, last_hash=(?:None|'[0-9a-f]*'))?\)$")
+    r"(?:, kind=(?:None|'[a-z_]+'))?(?:, entries=\d+)?(?:, last_hash=(?:None|'[0-9a-f]*'))?"
+    r"(?:, truncated_after=(?:None|\d+))?\)$")   # truncated_after: added by the hardened audit (head anchor)
 RE_LIKELIHOOD = re.compile(r"^(High|Medium|Low) \((\d+)/(\d+), (\d+)%\)$")
 RE_TICKET_LEFT = re.compile(r"^([A-Z]+-\d+): (.+)$")
 RE_TICKET_RIGHT = re.compile(r"^(.*), due (.*), risk (\S+)\)$")

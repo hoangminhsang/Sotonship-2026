@@ -621,7 +621,9 @@ def test_the_mutations_cover_every_kind_of_tampering_and_the_intact_case(tmp_pat
         mutate(lines)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         kinds.add(audit.verify_log(path).kind)
-    assert kinds == {None, *audit.KINDS}
+    # "truncated" and "anchor" come from the head-anchor file, not from editing log lines;
+    # tests/test_audit.py covers them. Every kind a line edit can produce is covered here.
+    assert kinds == {None, *(set(audit.KINDS) - {"truncated", "anchor"})}
 
 
 def test_an_empty_or_missing_log_is_accepted_as_ok(ex, tmp_path):
