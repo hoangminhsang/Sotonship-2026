@@ -947,6 +947,13 @@ def test_done_text_for_a_real_run_and_a_finished_export():
     assert snap["done"]["text"].startswith("Done in 2.5 s. To update the evidence screens run: python ui/export.py")
 
 
+def test_a_finished_replay_does_not_offer_an_export():
+    model, _ = build(Run(mode="LIVE").full())
+    snap = bridge.build_live(model, bridge.View(kind="replay", speed=4.0))
+    assert snap["done"]["text"] == "Replay finished; the run took 2.5 s."
+    assert snap["done"]["export"] == {"status": "skipped", "text": ""}
+
+
 def test_pipeline_error_marks_the_running_nodes_stopped():
     run = Run()
     run.head()
@@ -1339,3 +1346,512 @@ def _committed(path):
 
 def test_committed_live_js_is_the_placeholder():
     assert _committed("ui/data/live.js") == "window.LIVE = null;\n", "restore it: git checkout -- ui/data/live.js"
+
+
+# --------------------------------------------------------------------------- #
+# Step 3: pacing, replay, bake, follow.
+# --------------------------------------------------------------------------- #
+def iso_at(seconds: float) -> str:
+    """A UTC timestamp `seconds` after 2026-01-01 00:00:00."""
+    from datetime import datetime, timedelta, timezone
+    return (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="microseconds")
+
+
+def with_gaps(events, gaps):
+    """Copy events and re-time them: event k happens gaps[k] seconds after event k-1 (gaps[0] is ignored)."""
+    out, t = [], 0.0
+    for e, g in zip(events, gaps):
+        t += g
+        out.append(dict(e, t=iso_at(t)))
+    return out
+
+
+def simulate(pacer, model, until=10_000.0, step=None):
+    """Drive a pacer on a virtual clock; returns [(time, event, beat)] for every applied event."""
+    applied, now = [], 0.0
+    guard = 0
+    while pacer.pending() and guard < 100_000:
+        guard += 1
+        t = pacer.next_time(model)
+        now = max(now, t if t is not None else now)
+        if now > until:
+            break
+        applied.extend((when, ev, beat) for ev, beat, when in pacer.pump(model, now))
+        if step:
+            now += step
+    return applied
+
+
+def fresh(kind="follow", speed=1.0, scale=1.0):
+    return bridge.Pacer(kind=kind, speed=speed, scale=scale), bridge.LiveModel()
+
+
+def test_display_pacing_holds_after_each_beat_and_spaces_run_done():
+    pacer, model = fresh()
+    events = Run(n_runs=6).full()
+    pacer.push(events, 0.0)
+    applied = simulate(pacer, model)
+    assert len(applied) == len(events)
+    beats = [t for t, _, beat in applied if beat]
+    assert len(beats) >= 15
+    assert all(b - a >= 1.4 - 1e-9 for a, b in zip(beats, beats[1:]))
+    # a stretch of run_done events that are not beats is paced at about 40 ms each
+    runs = [t for t, e, beat in applied if e["type"] == "run_done" and not beat]
+    gaps = [b - a for a, b in zip(runs, runs[1:]) if b - a < 1.0]
+    assert gaps and all(abs(g - 0.04) < 1e-9 for g in gaps)
+
+
+def test_display_pacing_applies_the_first_event_at_once():
+    pacer, model = fresh()
+    pacer.push(Run().full(), 5.0)
+    first = pacer.pump(model, 5.0)
+    assert first and first[0][0]["type"] == "pipeline_start"
+
+
+def test_pace_scale_shortens_the_holds():
+    pacer, model = fresh(scale=0.5)
+    pacer.push(Run().full(), 0.0)
+    beats = [t for t, _, beat in simulate(pacer, model) if beat]
+    gaps = [b - a for a, b in zip(beats, beats[1:])]
+    assert min(gaps) >= 0.7 - 1e-9 and max(gaps) < 1.4
+
+
+def test_live_pacing_keeps_1_2_seconds_between_beats_then_catches_up():
+    pacer, model = fresh()
+    events = Run(mode="LIVE", n_runs=6).full()
+    pacer.push(events, 0.0)                      # a backlog that all arrived at once
+    applied = simulate(pacer, model)
+    beats = [t for t, _, beat in applied if beat]
+    early = [t for t in beats if t <= 15.0]
+    assert len(early) >= 8
+    assert all(b - a >= 1.2 - 1e-9 for a, b in zip(early, early[1:]))
+    assert applied[-1][0] < 17.0                 # more than 15 s behind: the holds are dropped
+    assert model.run_state == "done"
+
+
+def test_live_pacing_applies_a_late_event_the_moment_it_arrives():
+    pacer, model = fresh()
+    pacer.push(Run(mode="LIVE").full()[:1], 0.0)
+    pacer.pump(model, 0.0)
+    more = Run(mode="LIVE")
+    more.head()
+    pacer.push(more.events[1:2], 30.0)           # stage_start setup, 30 s later
+    assert [e["type"] for e, _, _ in pacer.pump(model, 30.0)] == ["stage_start"]
+
+
+def test_live_pacing_never_holds_a_stream_that_is_slower_than_the_hold():
+    pacer, model = fresh()
+    events = Run(mode="LIVE").full()
+    t = 0.0
+    seen = []
+    for e in events[:12]:
+        t += 5.0                                  # one event every 5 s
+        pacer.push([e], t)
+        seen.extend(pacer.pump(model, t))
+    assert len(seen) == 12                        # each applied the moment it arrived
+
+
+def test_replay_pacing_divides_gaps_by_speed_and_caps_them():
+    events = Run(mode="LIVE").full()[:5]
+    timed = with_gaps(events, [0, 2.0, 40.0, 0.5, 0.0])
+    pacer, model = fresh("replay", speed=4.0)
+    pacer.push(timed, 100.0)
+    times = [t for t, _, _ in simulate(pacer, model)]
+    assert times == pytest.approx([100.0, 100.5, 103.5, 103.625, 103.625])
+
+
+def test_replay_of_a_scripted_log_uses_the_display_schedule_not_the_recorded_gaps():
+    pacer, model = fresh("replay", speed=4.0)
+    events = with_gaps(Run().full(), [0.001] * 1000)       # 1 ms apart, like lane A's fixture
+    pacer.push(events, 0.0)
+    applied = simulate(pacer, model)
+    beats = [t for t, _, beat in applied if beat]
+    assert all(b - a >= 1.4 - 1e-9 for a, b in zip(beats, beats[1:]))
+    assert applied[-1][0] > 20
+
+
+def test_instant_pacing_applies_everything_in_one_pump():
+    pacer, model = fresh("instant")
+    events = Run().full()
+    pacer.push(events, 0.0)
+    assert len(pacer.pump(model, 0.0)) == len(events)
+    assert model.run_state == "done"
+
+
+def test_display_path_is_never_absolute(tmp_path):
+    inside = REPO / "ui" / "data" / "live.js"
+    assert bridge.display_path(inside) == "ui/data/live.js"
+    assert bridge.display_path(tmp_path / "x" / "progress.jsonl") == "<outside repo>/progress.jsonl"
+    assert bridge.display_path(tmp_path / "a" / "b.jsonl", root=tmp_path) == "a/b.jsonl"
+
+
+def write_log(path: Path, events) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(e, sort_keys=True, separators=(",", ":")) + "\n" for e in events),
+                    encoding="utf-8")
+    return path
+
+
+def test_load_events_skips_junk_and_a_second_run(tmp_path):
+    first = Run(uid="aaaaaaaaaaaa").full()
+    second = Run(uid="bbbbbbbbbbbb").full()
+    p = tmp_path / "progress.jsonl"
+    p.write_text("junk\n" + "".join(json.dumps(e) + "\n" for e in first[:5])
+                 + "".join(json.dumps(e) + "\n" for e in second[:3]) + "\n[]\n"
+                 + "".join(json.dumps(e) + "\n" for e in first[5:]), encoding="utf-8")
+    events, bad = bridge.load_events(p)
+    assert len(events) == len(first)
+    assert all(e["uid"] == "aaaaaaaaaaaa" for e in events)
+    assert bad == 2
+
+
+def make_session(tmp_path, kind="follow", speed=None, scale=1.0, clock=None):
+    clock = clock or FakeClock(1000.0)
+    writer = bridge.LiveWriter(tmp_path / "live.js", clock=clock, wall=lambda: "t")
+    return bridge.Session(writer, kind=kind, log="results/run/progress.jsonl", speed=speed, scale=scale, clock=clock), clock
+
+
+def read_live(tmp_path):
+    text = (tmp_path / "live.js").read_text(encoding="utf-8")
+    assert text.startswith("window.LIVE = ") and text.endswith(";\n")
+    return json.loads(text[len("window.LIVE = "):-2])
+
+
+def test_replay_session_writes_live_js_as_time_passes(tmp_path):
+    session, clock = make_session(tmp_path, kind="replay", speed=4.0)
+    events = with_gaps(Run(mode="LIVE", n_runs=6).full(), [0] + [1.0] * 1000)
+    session.feed(events, clock())
+    states_seen, labels = set(), set()
+    for _ in range(4000):
+        session.tick(clock())
+        live = read_live(tmp_path) if (tmp_path / "live.js").exists() else None
+        if live:
+            states_seen.add(live["state"])
+            labels.add(live["label"]["text"])
+        if not session.pacer.pending():
+            break
+        clock.t += 0.05
+    session.tick(clock(), force=True)
+    final = read_live(tmp_path)
+    assert final["state"] == "done" and final["source"]["kind"] == "replay" and final["source"]["speed"] == 4.0
+    assert "running" in states_seen
+    assert any(t.endswith("4× speed · long gaps shortened") for t in labels)
+    assert final["source"]["log"] == "results/run/progress.jsonl"
+
+
+def test_replay_loop_restarts_after_a_pause(tmp_path):
+    session, clock = make_session(tmp_path, kind="replay", speed=1000.0)
+    events = with_gaps(Run(mode="LIVE").full(), [0] + [0.001] * 1000)
+    sleeps = []
+
+    def sleep(s):
+        sleeps.append(s)
+        clock.t += s
+
+    runs = {"n": 0}
+
+    def stop():
+        return runs["n"] >= 2 and not session.pacer.pending()
+
+    original_reset = session.reset
+
+    def counting_reset():
+        runs["n"] += 1
+        original_reset()
+
+    session.reset = counting_reset
+    bridge.replay_loop(session, events, loop=True, clock=clock, sleep=sleep, stop=stop, pause=3.0)
+    assert runs["n"] >= 2                         # it started a second time
+    assert sum(sleeps) >= 3.0
+
+
+def test_replay_without_loop_stops_after_the_last_event(tmp_path):
+    session, clock = make_session(tmp_path, kind="replay", speed=1000.0)
+    events = with_gaps(Run(mode="LIVE").full(), [0] + [0.001] * 1000)
+    bridge.replay_loop(session, events, loop=False, clock=clock, sleep=lambda s: setattr(clock, "t", clock.t + s),
+                       stop=lambda: False, pause=3.0)
+    assert read_live(tmp_path)["state"] == "done"
+
+
+# ---- bake ---------------------------------------------------------------- #
+def read_replay(path):
+    text = Path(path).read_text(encoding="utf-8")
+    assert text.startswith("window.LIVE_REPLAY = ") and text.endswith(";\n") and text.isascii()
+    for ch in "<>&":
+        assert ch not in text
+    return json.loads(text[len("window.LIVE_REPLAY = "):-2])
+
+
+def test_bake_writes_at_most_120_key_frames(tmp_path):
+    src = write_log(tmp_path / "in" / "progress.jsonl", lane_a_events())
+    out = tmp_path / "replay.js"
+    n = bridge.bake(src, out)
+    data = read_replay(out)
+    assert data["schema"] == "ui-replay/1"
+    assert n == len(data["frames"]) and 30 < n <= 120
+    frames = data["frames"]
+    assert frames[0]["t"] == 0
+    assert [f["t"] for f in frames] == sorted(f["t"] for f in frames)
+    assert all(isinstance(f["t"], int) for f in frames)
+    assert [f["live"]["rev"] for f in frames] == list(range(1, n + 1))
+    assert all(f["live"]["schema"] == "ui-live/1" for f in frames)
+    assert frames[-1]["live"]["state"] == "done"
+    assert {f["live"]["label"]["word"] for f in frames} == {"SCRIPTED"}
+    assert data["source"]["mode"] == "SCRIPTED" and data["source"]["speed"] == 4.0
+    assert data["source"]["log"] == "<outside repo>/progress.jsonl"
+    assert "/Users" not in out.read_text(encoding="utf-8")
+
+
+def test_bake_keeps_every_node_change(tmp_path):
+    src = write_log(tmp_path / "progress.jsonl", lane_a_events())
+    bridge.bake(src, tmp_path / "replay.js")
+    frames = read_replay(tmp_path / "replay.js")["frames"]
+    touched = set()
+    for f in frames:
+        touched.update(k for k, v in f["live"]["nodes"].items() if v["state"] != "idle")
+    assert touched == set(SPEC_NODES)
+    assert [r["verdict"] for r in frames[-1]["live"]["rail"]] == ["FAIL", "FAIL", "PASS"]
+
+
+def test_bake_of_a_real_model_log_says_replay_with_the_speed(tmp_path):
+    events = with_gaps(Run(mode="LIVE", n_runs=6).full(), [0] + [2.0] * 1000)
+    src = write_log(tmp_path / "progress.jsonl", events)
+    bridge.bake(src, tmp_path / "replay.js", speed=8.0)
+    data = read_replay(tmp_path / "replay.js")
+    labels = {f["live"]["label"]["text"] for f in data["frames"]}
+    assert labels == {"REPLAY · real-model run of 2026-01-01 00:00 UTC · 8× speed · long gaps shortened"}
+    assert {f["live"]["label"]["status"] for f in data["frames"]} == {"REAL"}
+    assert data["frames"][-1]["t"] > 0
+    # gaps of 2 s at 8x are 0.25 s each
+    assert data["source"]["speed"] == 8.0
+
+
+def test_bake_small_run_keeps_every_distinct_state(tmp_path):
+    events = Run(n_runs=3).full()
+    src = write_log(tmp_path / "progress.jsonl", events)
+    n = bridge.bake(src, tmp_path / "replay.js")
+    model = bridge.LiveModel()
+    seen = []
+    for e in events:
+        model.apply(e)
+        snap = bridge.build_live(model, bridge.View(kind="replay", speed=4.0, last_event_age=0.0))
+        snap["rev"] = 0
+        if not seen or seen[-1] != snap:
+            seen.append(snap)
+    assert 10 < n <= len(seen)
+
+
+def test_select_frames_keeps_the_first_the_last_and_the_key_frames():
+    frames = [(i * 100, {"i": i}, i % 10 == 0) for i in range(500)]
+    kept = bridge.select_frames(frames, limit=120)
+    assert len(kept) == 120
+    idx = [f[1]["i"] for f in kept]
+    assert idx[0] == 0 and idx[-1] == 499
+    assert idx == sorted(set(idx))
+    assert all(i in idx for i in range(0, 500, 10))        # all 50 key frames survive
+    short = bridge.select_frames(frames[:30], limit=120)
+    assert len(short) == 30
+    few = bridge.select_frames(frames, limit=10)
+    assert len(few) == 10 and few[0][1]["i"] == 0 and few[-1][1]["i"] == 499
+
+
+def test_bake_refuses_an_empty_log(tmp_path):
+    p = tmp_path / "progress.jsonl"
+    p.write_text("junk\n", encoding="utf-8")
+    with pytest.raises(bridge.BridgeError):
+        bridge.bake(p, tmp_path / "replay.js")
+    with pytest.raises(bridge.BridgeError):
+        bridge.bake(tmp_path / "missing.jsonl", tmp_path / "replay.js")
+
+
+# ---- follow -------------------------------------------------------------- #
+def test_resolve_log_path(tmp_path):
+    (tmp_path / "out").mkdir()
+    assert bridge.resolve_log_path(tmp_path / "out") == tmp_path / "out" / "progress.jsonl"
+    assert bridge.resolve_log_path(tmp_path / "x.jsonl") == tmp_path / "x.jsonl"
+    assert bridge.resolve_log_path(tmp_path / "later") == tmp_path / "later" / "progress.jsonl"
+    f = tmp_path / "odd.log"
+    f.write_text("x")
+    assert bridge.resolve_log_path(f) == f
+
+
+def test_find_latest_log_prefers_the_newest_and_ignores_rotated_files(tmp_path):
+    old = write_log(tmp_path / "governance_out" / "bridge" / "demo_a" / "progress.jsonl", Run().full())
+    new = write_log(tmp_path / "results" / "governance" / "b" / "progress.jsonl", Run().full())
+    rotated = write_log(tmp_path / "governance_out" / "c" / "progress.20260101T000000Z.jsonl", Run().full())
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+    os.utime(rotated, (3000, 3000))
+    assert bridge.find_latest_log(tmp_path) == new
+    assert bridge.find_latest_log(tmp_path / "nothing") is None
+
+
+def make_follower(tmp_path, log, **kw):
+    session, clock = make_session(tmp_path, kind="follow", scale=kw.pop("scale", 1.0))
+    return bridge.Follower(session, log, **kw), session, clock
+
+
+def drive(follower, clock, seconds, step=0.05):
+    end = clock.t + seconds
+    while clock.t < end:
+        follower.step(clock())
+        clock.t += step
+
+
+def test_follow_waits_for_a_missing_log_then_follows_it(tmp_path):
+    log = tmp_path / "run" / "progress.jsonl"
+    follower, session, clock = make_follower(tmp_path, log)
+    drive(follower, clock, 1.0)
+    live = read_live(tmp_path)
+    assert live["state"] == "waiting" and live["label"]["text"] == "Waiting for a run"
+    events = Run(mode="LIVE", n_runs=4).full()
+    write_log(log, events[:8])
+    drive(follower, clock, 3.0)
+    live = read_live(tmp_path)
+    assert live["state"] == "running" and live["label"]["word"] == "LIVE"
+    assert live["source"]["uid"] == UID and live["source"]["kind"] == "follow"
+    write_log(log, events)
+    drive(follower, clock, 120.0)
+    assert read_live(tmp_path)["state"] == "done"
+
+
+def test_follow_shows_a_scripted_run_slowly_and_completely(tmp_path):
+    log = write_log(tmp_path / "progress.jsonl", Run(n_runs=4).full())
+    follower, session, clock = make_follower(tmp_path, log)
+    snapshots = []
+    end = clock.t + 200
+    while clock.t < end and not (snapshots and snapshots[-1]["state"] == "done"):
+        follower.step(clock())
+        if (tmp_path / "live.js").exists():
+            snapshots.append(read_live(tmp_path))
+        clock.t += 0.05
+    assert snapshots[-1]["state"] == "done"
+    # nodes appeared one at a time: no snapshot has more than 4 nodes newly running at once
+    assert len({s["active"] for s in snapshots if s["active"]}) >= 10
+    assert {s["label"]["word"] for s in snapshots} <= {"SCRIPTED"}
+
+
+def test_follow_resets_when_a_new_run_takes_the_place_of_the_log(tmp_path):
+    log = write_log(tmp_path / "progress.jsonl", Run(uid="aaaaaaaaaaaa", mode="LIVE").full())
+    follower, session, clock = make_follower(tmp_path, log)
+    drive(follower, clock, 120.0)
+    assert read_live(tmp_path)["state"] == "done"
+    log.rename(tmp_path / "progress.20260101T000000Z.jsonl")
+    newer = Run(uid="bbbbbbbbbbbb", mode="LIVE")
+    newer.head()
+    write_log(log, newer.events)
+    drive(follower, clock, 5.0)
+    live = read_live(tmp_path)
+    assert live["source"]["uid"] == "bbbbbbbbbbbb" and live["state"] == "running"
+    assert live["nodes"]["rt.attack"]["state"] == "idle"
+    assert live["rev"] > 1
+
+
+def test_follow_label_goes_from_live_to_replay_and_then_stopped_when_the_log_goes_quiet(tmp_path):
+    events = Run(mode="LIVE").full()[:12]
+    log = write_log(tmp_path / "progress.jsonl", events)
+    follower, session, clock = make_follower(tmp_path, log)
+    drive(follower, clock, 20.0)
+    assert read_live(tmp_path)["label"]["word"] == "LIVE"
+    drive(follower, clock, 45.0)                               # 65 s since the last event arrived
+    live = read_live(tmp_path)
+    assert live["label"]["word"] == "REPLAY" and live["state"] == "running"
+    drive(follower, clock, 130.0)                              # more than 180 s
+    live = read_live(tmp_path)
+    assert live["state"] == "stopped" and "log stopped growing" in live["warnings"]
+    more = Run(mode="LIVE").full()
+    with open(log, "a", encoding="utf-8") as fh:
+        for e in more[12:14]:
+            fh.write(json.dumps(e) + "\n")
+    drive(follower, clock, 3.0)
+    live = read_live(tmp_path)
+    assert live["state"] == "running" and live["label"]["word"] == "LIVE"
+
+
+def test_follow_counts_malformed_lines(tmp_path):
+    events = Run(mode="LIVE").full()[:6]
+    log = tmp_path / "progress.jsonl"
+    log.write_text("junk\n" + "".join(json.dumps(e) + "\n" for e in events) + "{broken\n", encoding="utf-8")
+    follower, session, clock = make_follower(tmp_path, log)
+    drive(follower, clock, 3.0)
+    assert "2 malformed log lines skipped" in read_live(tmp_path)["warnings"]
+
+
+def test_follow_latest_switches_to_a_newer_log(tmp_path):
+    a = write_log(tmp_path / "governance_out" / "bridge" / "a" / "progress.jsonl", Run(uid="aaaaaaaaaaaa", mode="LIVE").full())
+    os.utime(a, (1000, 1000))
+    session, clock = make_session(tmp_path)
+    follower = bridge.Follower(session, None, latest_root=tmp_path)
+    drive(follower, clock, 130.0)
+    assert read_live(tmp_path)["source"]["uid"] == "aaaaaaaaaaaa"
+    newer = Run(uid="bbbbbbbbbbbb", mode="LIVE")
+    newer.head()
+    b = write_log(tmp_path / "results" / "governance" / "b" / "progress.jsonl", newer.events)
+    os.utime(b, (2000, 2000))
+    drive(follower, clock, 5.0)
+    live = read_live(tmp_path)
+    assert live["source"]["uid"] == "bbbbbbbbbbbb" and live["state"] == "running"
+    assert live["source"]["log"] == "<outside repo>/progress.jsonl"
+
+
+def test_follow_latest_waits_when_there_is_no_log(tmp_path):
+    session, clock = make_session(tmp_path)
+    follower = bridge.Follower(session, None, latest_root=tmp_path)
+    drive(follower, clock, 2.0)
+    assert read_live(tmp_path)["state"] == "waiting"
+
+
+# ---- the command line ---------------------------------------------------- #
+def test_main_bake(tmp_path, capsys):
+    src = write_log(tmp_path / "progress.jsonl", Run(n_runs=3).full())
+    assert bridge.main(["--bake", str(src), "--data-dir", str(tmp_path / "data")]) == 0
+    assert (tmp_path / "data" / "replay.js").is_file()
+    assert not (tmp_path / "data" / "live.js").exists()
+    assert "replay.js" in capsys.readouterr().out
+
+
+def test_main_replay_runs_to_the_end_and_writes_the_final_state(tmp_path):
+    events = with_gaps(Run(mode="LIVE").full(), [0] + [0.5] * 1000)
+    src = write_log(tmp_path / "progress.jsonl", events)
+    data = tmp_path / "data"
+    assert bridge.main(["--replay", str(src), "--speed", "10000", "--data-dir", str(data)]) == 0
+    text = (data / "live.js").read_text(encoding="utf-8")
+    assert json.loads(text[len("window.LIVE = "):-2])["state"] == "done"
+
+
+def test_main_replay_of_a_scripted_log_can_be_sped_up_with_the_hidden_pace_scale(tmp_path):
+    src = write_log(tmp_path / "progress.jsonl", Run(n_runs=3).full())
+    data = tmp_path / "data"
+    assert bridge.main(["--replay", str(src), "--pace-scale", "0", "--data-dir", str(data)]) == 0
+    live = json.loads((data / "live.js").read_text(encoding="utf-8")[len("window.LIVE = "):-2])
+    assert live["state"] == "done" and live["label"]["word"] == "SCRIPTED"
+
+
+def test_main_reports_problems_without_a_traceback(tmp_path, capsys):
+    assert bridge.main(["--replay", str(tmp_path / "missing.jsonl"), "--data-dir", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("bridge: log not found") and "Traceback" not in err and str(tmp_path) not in err
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert bridge.main(["--bake", str(empty), "--data-dir", str(tmp_path)]) == 2
+    assert "no readable events" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ["--replay", "x", "--speed", "0"],
+    ["--replay", "x", "--speed", "-3"],
+    ["--replay", "x", "--speed", "fast"],
+    ["--follow", "x", "--loop"],
+    ["--follow", "x", "--replay", "y"],
+    ["--bake", "x", "--follow-latest"],
+])
+def test_main_rejects_bad_arguments(argv):
+    with pytest.raises(SystemExit) as exc:
+        bridge.main(argv)
+    assert exc.value.code == 2
+
+
+def test_main_without_a_mode_prints_help_and_fails(capsys):
+    with pytest.raises(SystemExit) as exc:
+        bridge.main([])
+    assert exc.value.code == 2

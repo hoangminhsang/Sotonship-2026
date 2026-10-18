@@ -69,11 +69,13 @@ This file grows in steps. Step 2 (this one): the state builder, the live.js writ
 """
 from __future__ import annotations
 
+import argparse
 import getpass
 import json
 import math
 import os
 import re
+import sys
 import tempfile
 import time
 from collections import deque
@@ -1148,8 +1150,12 @@ def make_done(model: LiveModel, view: View) -> Optional[dict]:
     if d is None:
         return None
     cmd = "python ui/export.py --quiet" + (f" --gov {view.gov}" if view.gov else "")
-    export = dict(view.export) if view.export else {"status": "not_run", "text": cmd}
     dur = d["dur"]
+    if view.kind == "replay":
+        # A replay shows an old run; nothing is exported from it.
+        text = "Replay finished" + (f"; the run took {dur}" if dur else "") + "."
+        return {"exit_code": d["exit_code"], "dur": dur, "text": text, "export": {"status": "skipped", "text": ""}}
+    export = dict(view.export) if view.export else {"status": "not_run", "text": cmd}
     if d["status"] == "ok":
         lead = f"Done in {dur}" if dur else "Done"
         if is_paced(model, view):
@@ -1348,5 +1354,496 @@ class LiveWriter:
         return True
 
 
-if __name__ == "__main__":  # pragma: no cover - the command line arrives in a later step
-    raise SystemExit("ui/bridge.py: command line not built yet")
+# --------------------------------------------------------------------------- #
+# Pacing: when does each event reach the screen?
+#   SCRIPTED / SAVED  "display": about 40 ms per run_done, at least 1.4 s per node transition
+#   LIVE              real time, at least 1.2 s per node transition; the holds are dropped
+#                     when the screen is more than 15 s behind the log
+#   replay (LIVE log) the recorded gap divided by the speed, at most 3 s
+# --------------------------------------------------------------------------- #
+DISPLAY_HOLD_S = 1.4
+LIVE_HOLD_S = 1.2
+RUN_COST_S = 0.04
+CATCH_UP_S = 15.0
+REPLAY_GAP_CAP_S = 3.0
+STALL_S = 180.0            # a log that stops growing this long, with nothing running it, is "stopped"
+LOOP_PAUSE_S = 3.0
+LATEST_RESCAN_S = 1.0
+POLL_S = 0.05
+MAX_FRAMES = 120
+DEFAULT_SPEED = 4.0
+LATEST_PATTERNS = ("governance_out/bridge/*/" + LOG_NAME, "governance_out/*/" + LOG_NAME,
+                   "results/governance/*/" + LOG_NAME)
+
+
+class BridgeError(Exception):
+    """A problem to tell the user in one line, without a traceback."""
+
+
+def display_path(path, root=REPO_ROOT) -> str:
+    """A repo-relative POSIX path, or <outside repo>/<name>; never an absolute path."""
+    p = Path(path)
+    try:
+        return p.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return f"<outside repo>/{p.name}"
+
+
+def _event_ts(ev: dict) -> Optional[float]:
+    dt = parse_time(ev.get("t"))
+    return dt.timestamp() if dt else None
+
+
+class Pacer:
+    """Holds events back and releases them to the model on the display schedule."""
+
+    def __init__(self, kind: str = "follow", speed: float = 1.0, scale: float = 1.0) -> None:
+        self.kind = kind                    # follow | replay | instant
+        self.speed = speed if speed and speed > 0 else 1.0
+        self.scale = max(0.0, float(scale))   # the hidden --pace-scale: 1 is the spec, 0 has no holds
+        self.queue: deque = deque()         # (arrival time, due time or None, event)
+        self.next_free = 0.0
+        self._prev_ts: Optional[float] = None
+        self._due: Optional[float] = None
+
+    def pending(self) -> int:
+        return len(self.queue)
+
+    def push(self, events, now: float) -> None:
+        for ev in events:
+            due = None
+            if self.kind == "replay":
+                ts = _event_ts(ev)
+                gap = 0.0
+                if ts is not None and self._prev_ts is not None:
+                    gap = max(0.0, ts - self._prev_ts)
+                if ts is not None:
+                    self._prev_ts = ts
+                base = now if self._due is None else self._due
+                self._due = base + min(gap / self.speed, REPLAY_GAP_CAP_S)
+                due = self._due
+            self.queue.append((now, due, ev))
+
+    def mode_for(self, model: LiveModel) -> str:
+        if self.kind == "instant":
+            return "instant"
+        if model.mode in ("SCRIPTED", "SAVED"):
+            return "display"
+        return "replay" if self.kind == "replay" else "live"
+
+    def next_time(self, model: LiveModel) -> Optional[float]:
+        """When the first queued event may be applied (None if the queue is empty)."""
+        if not self.queue:
+            return None
+        mode = self.mode_for(model)
+        if mode == "instant":
+            return 0.0
+        if mode == "replay":
+            due = self.queue[0][1]
+            return self.next_free if due is None else due
+        return self.next_free
+
+    def pump(self, model: LiveModel, now: float) -> List[Tuple[dict, bool, float]]:
+        """Apply every event whose time has come; returns [(event, beat, now)]."""
+        applied: List[Tuple[dict, bool, float]] = []
+        while self.queue:
+            arrival, due, ev = self.queue[0]
+            mode = self.mode_for(model)
+            if mode == "replay":
+                if due is not None and now < due:
+                    break
+            elif mode != "instant" and now < self.next_free:
+                break
+            self.queue.popleft()
+            beat = model.apply(ev)
+            applied.append((ev, beat, now))
+            if mode == "display":
+                if beat:
+                    self.next_free = now + DISPLAY_HOLD_S * self.scale
+                elif ev.get("type") == "run_done":
+                    self.next_free = max(self.next_free, now - 0.1) + RUN_COST_S * self.scale
+            elif mode == "live" and beat:
+                hold = 0.0 if now - arrival > CATCH_UP_S else LIVE_HOLD_S * self.scale
+                self.next_free = now + hold
+        return applied
+
+
+# --------------------------------------------------------------------------- #
+# A session ties a model, its pacer and the writer together.
+# --------------------------------------------------------------------------- #
+class Session:
+    def __init__(self, writer: LiveWriter, kind: str = "follow", log: Optional[str] = None,
+                 speed: Optional[float] = None, scale: float = 1.0, gov: Optional[str] = None,
+                 clock=time.monotonic) -> None:
+        self.writer = writer
+        self.kind = kind
+        self.log = log
+        self.speed = speed
+        self.scale = scale
+        self.gov = gov
+        self.clock = clock
+        self.child_alive: Optional[bool] = None
+        self.export: Optional[dict] = None
+        self.batch: Optional[dict] = None
+        self.notes: List[str] = []
+        self.forced_state: Optional[str] = None
+        self.malformed = 0
+        self._new_run()
+
+    def _new_run(self) -> None:
+        self.model = LiveModel()
+        self.pacer = Pacer("replay" if self.kind == "replay" else "follow", self.speed or 1.0, self.scale)
+        self.last_arrival: Optional[float] = None
+
+    def reset(self) -> None:
+        self._new_run()
+
+    def feed(self, events, now: float) -> None:
+        if events:
+            self.pacer.push(events, now)
+            self.last_arrival = now
+
+    def view(self, now: float) -> View:
+        age = None if self.last_arrival is None else max(0.0, now - self.last_arrival)
+        stalled = (self.kind != "replay" and self.model.run_state == "running" and age is not None
+                   and age > STALL_S and self.child_alive is not True and self.pacer.pending() == 0)
+        notes = list(self.notes) + (["log stopped growing"] if stalled else [])
+        return View(kind=self.kind, log=self.log, speed=self.speed if self.kind == "replay" else None,
+                    child_alive=self.child_alive, last_event_age=age, malformed=self.malformed,
+                    export=self.export, gov=self.gov, batch=self.batch, notes=notes,
+                    state=self.forced_state, stalled=stalled)
+
+    def snapshot(self, now: float) -> dict:
+        return build_live(self.model, self.view(now))
+
+    def tick(self, now: float, force: bool = False) -> bool:
+        """Release due events, then offer the snapshot to the writer; True if live.js was rewritten."""
+        self.pacer.pump(self.model, now)
+        return self.writer.offer(self.snapshot(now), force=force)
+
+
+# --------------------------------------------------------------------------- #
+# Reading logs: one file at a time, or the newest one.
+# --------------------------------------------------------------------------- #
+def resolve_log_path(arg) -> Path:
+    """PATH may be the progress.jsonl file itself or the run folder that holds it."""
+    p = Path(arg)
+    if p.is_dir():
+        return p / LOG_NAME
+    if p.suffix.lower() == ".jsonl" or p.exists():
+        return p
+    return p / LOG_NAME          # a run folder that does not exist yet
+
+
+def find_latest_log(root=REPO_ROOT) -> Optional[Path]:
+    """The progress.jsonl that was written most recently under the usual run folders."""
+    best, best_m = None, -1.0
+    for pattern in LATEST_PATTERNS:
+        for p in Path(root).glob(pattern):
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            if m > best_m:
+                best, best_m = p, m
+    return best
+
+
+def load_events(path) -> Tuple[List[dict], int]:
+    """All events of one run in a finished log, and how many lines were not readable."""
+    data = Path(path).read_bytes()
+    events: List[dict] = []
+    bad = 0
+    uid = None
+    for raw in data.split(b"\n"):
+        event, why = parse_line(raw.rstrip(b"\r").decode("utf-8", errors="replace"))
+        if event is None:
+            bad += 1 if why else 0
+            continue
+        u = event.get("uid")
+        if isinstance(u, str) and u:
+            if uid is None:
+                uid = u
+            elif u != uid:
+                continue            # a second run in the same file is not part of this one
+        events.append(event)
+    return events, bad
+
+
+class Follower:
+    """Follows one progress.jsonl as it grows (or, with latest_root, the newest one)."""
+
+    def __init__(self, session: Session, log=None, latest_root=None) -> None:
+        self.session = session
+        self.latest_root = Path(latest_root) if latest_root is not None else None
+        self.reader: Optional[LogReader] = None
+        self.path: Optional[Path] = None
+        self._last_scan: Optional[float] = None
+        if log is not None:
+            self._open(resolve_log_path(log))
+
+    def _open(self, path: Path) -> None:
+        self.path = Path(path)
+        self.reader = LogReader(self.path)
+        self.session.log = display_path(self.path)
+
+    def _rescan(self, now: float) -> None:
+        if self.latest_root is None:
+            return
+        if self._last_scan is not None and now - self._last_scan < LATEST_RESCAN_S:
+            return
+        self._last_scan = now
+        newest = find_latest_log(self.latest_root)
+        if newest is None or newest == self.path:
+            return
+        s = self.session
+        quiet = s.last_arrival is None or now - s.last_arrival > 3.0
+        if self.path is None or quiet or s.model.run_state in ("done", "error", "stopped"):
+            s.reset()
+            self._open(newest)
+
+    def step(self, now: float, force: bool = False) -> bool:
+        self._rescan(now)
+        s = self.session
+        if self.reader is not None:
+            res = self.reader.read()
+            if res.reset:
+                s.reset()
+            s.malformed = res.malformed
+            s.feed(res.events, now)
+        return s.tick(now, force=force)
+
+
+def replay_loop(session: Session, events: List[dict], loop: bool = False, clock=time.monotonic,
+                sleep=time.sleep, stop=lambda: False, pause: float = LOOP_PAUSE_S) -> None:
+    """Play a finished log through the session; with `loop`, again and again."""
+    while True:
+        session.reset()
+        session.feed(events, clock())
+        while session.pacer.pending():
+            if stop():
+                return
+            session.tick(clock())
+            sleep(POLL_S)
+        session.tick(clock(), force=True)
+        if not loop:
+            return
+        until = clock() + pause
+        while clock() < until:
+            if stop():
+                return
+            sleep(POLL_S)
+
+
+# --------------------------------------------------------------------------- #
+# Baking a replay for file:// (no bridge running): ui/data/replay.js, ui-replay/1.
+# --------------------------------------------------------------------------- #
+def _key_signature(snap: dict) -> tuple:
+    return (snap["state"], snap["active"], tuple(n["state"] for n in snap["nodes"].values()),
+            tuple(snap["edges"].values()), tuple((r["state"], r["verdict"]) for r in snap["rail"]),
+            snap["done"] is not None)
+
+
+def simulate_frames(events: List[dict], speed: float, scale: float, log: str) -> List[tuple]:
+    """Run the events through the replay schedule on a virtual clock: [(t_ms, snapshot, is_key)]."""
+    model = LiveModel()
+    pacer = Pacer("replay", speed, scale)
+    pacer.push(events, 0.0)
+    view = View(kind="replay", log=log, speed=speed, last_event_age=0.0)
+    frames: List[tuple] = []
+    prev_body = prev_key = None
+    now = 0.0
+    guard = 0
+    while pacer.pending() and guard < 4 * len(events) + 100:
+        guard += 1
+        t = pacer.next_time(model)
+        now = max(now, 0.0 if t is None else t)
+        pacer.pump(model, now)
+        snap = build_live(model, view)
+        body = json.dumps(snap, sort_keys=True, default=str)
+        if body == prev_body:
+            continue
+        key = _key_signature(snap)
+        frames.append((int(round(now * 1000)), snap, key != prev_key))
+        prev_body, prev_key = body, key
+    return frames
+
+
+def _spread(items: List[int], k: int) -> List[int]:
+    if k <= 0:
+        return []
+    if len(items) <= k:
+        return list(items)
+    return [items[int(j * len(items) / k)] for j in range(k)]
+
+
+def select_frames(frames: List[tuple], limit: int = MAX_FRAMES) -> List[tuple]:
+    """At most `limit` frames: the first, the last and every frame where a node changed come first."""
+    n = len(frames)
+    if n <= limit:
+        return list(frames)
+    keep = {0, n - 1}
+    keys = [i for i, f in enumerate(frames) if f[2]]
+    if len(keep | set(keys)) <= limit:
+        keep |= set(keys)
+        rest = [i for i in range(n) if i not in keep]
+        keep |= set(_spread(rest, limit - len(keep)))
+    else:
+        pool = [i for i in keys if i not in keep]
+        keep |= set(_spread(pool, limit - len(keep)))
+    return [frames[i] for i in sorted(keep)]
+
+
+def bake(src, out_path, speed: float = DEFAULT_SPEED, scale: float = 1.0, limit: int = MAX_FRAMES) -> int:
+    """Write the replay of a finished log to `out_path` (window.LIVE_REPLAY); returns the frame count."""
+    path = resolve_log_path(src)
+    if not path.is_file():
+        raise BridgeError(f"log not found: {display_path(path)}")
+    events, _bad = load_events(path)
+    if not events:
+        raise BridgeError("the log has no readable events")
+    log = display_path(path)
+    chosen = select_frames(simulate_frames(events, speed, scale, log), limit)
+    frames = []
+    for i, (t, snap, _key) in enumerate(chosen, start=1):
+        live = dict(snap)
+        live["rev"] = i
+        frames.append({"t": t, "live": live})
+    last = chosen[-1][1]
+    obj = {"schema": SCHEMA_REPLAY, "baked_at": utc_now_iso(),
+           "source": {"log": log, "mode": last["mode"], "uid": last["source"]["uid"], "speed": speed},
+           "frames": frames}
+    write_atomic(out_path, render_js(Scrubber().walk(obj), var="LIVE_REPLAY"))
+    return len(frames)
+
+
+# --------------------------------------------------------------------------- #
+# Command line.
+# --------------------------------------------------------------------------- #
+USAGE_TEXT = """\
+macOS / Linux:
+  python3 ui/bridge.py --replay results/governance/<run>/progress.jsonl --speed 4 --loop
+  python3 ui/bridge.py --bake results/governance/<run>/progress.jsonl
+  python3 ui/bridge.py --follow governance_out/cli_demo
+  python3 ui/bridge.py --follow-latest
+
+Windows PowerShell:
+  py ui\\bridge.py --replay results\\governance\\<run>\\progress.jsonl --speed 4 --loop
+  py ui\\bridge.py --bake results\\governance\\<run>\\progress.jsonl
+  py ui\\bridge.py --follow governance_out\\cli_demo
+  py ui\\bridge.py --follow-latest
+"""
+
+
+def _positive_float(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number")
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return value
+
+
+def _non_negative_float(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number")
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="bridge.py", description="Feed the pipeline screen from a run's progress.jsonl "
+        "(writes ui/data/live.js, or ui/data/replay.js with --bake).",
+        epilog=USAGE_TEXT, formatter_class=argparse.RawDescriptionHelpFormatter)
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--follow", metavar="PATH|OUT_DIR", help="follow a log (or a run folder) as it grows")
+    mode.add_argument("--follow-latest", action="store_true", help="follow the newest log under the usual run folders")
+    mode.add_argument("--replay", metavar="PATH", help="play a finished log back")
+    mode.add_argument("--bake", metavar="PATH", help="write ui/data/replay.js (at most 120 key frames) for file://")
+    p.add_argument("--speed", type=_positive_float, default=DEFAULT_SPEED, metavar="N",
+                   help="replay speed: recorded gaps divided by N, at most 3 s each (default 4)")
+    p.add_argument("--loop", action="store_true", help="with --replay: start again after a pause")
+    p.add_argument("--data-dir", metavar="DIR", default=None, help="folder for live.js and replay.js (default ui/data)")
+    p.add_argument("--pace-scale", type=_non_negative_float, default=1.0, help=argparse.SUPPRESS)
+    return p
+
+
+def _say(text: str) -> None:
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", "replace").decode("ascii"), flush=True)
+
+
+def _run_follow(args, data_dir: Path) -> int:
+    writer = LiveWriter(data_dir / "live.js")
+    session = Session(writer, kind="follow", scale=args.pace_scale)
+    follower = Follower(session, args.follow, latest_root=REPO_ROOT if args.follow_latest else None)
+    _say("bridge: following " + (session.log or "the newest log under governance_out and results/governance")
+         + ". Ctrl-C stops.")
+    last = None
+    try:
+        while True:
+            follower.step(time.monotonic())
+            state = session.snapshot(time.monotonic())["state"]
+            if state != last:
+                _say(f"bridge: {state}")
+                last = state
+            time.sleep(POLL_S)
+    except KeyboardInterrupt:
+        follower.step(time.monotonic(), force=True)
+        _say("bridge: stopped")
+    return 0
+
+
+def _run_replay(args, data_dir: Path) -> int:
+    path = resolve_log_path(args.replay)
+    if not path.is_file():
+        raise BridgeError(f"log not found: {display_path(path)}")
+    events, bad = load_events(path)
+    if not events:
+        raise BridgeError("the log has no readable events")
+    writer = LiveWriter(data_dir / "live.js")
+    session = Session(writer, kind="replay", log=display_path(path), speed=args.speed, scale=args.pace_scale)
+    session.malformed = bad
+    _say(f"bridge: replaying {session.log} at {args.speed:g}x" + (", looping" if args.loop else "") + ". Ctrl-C stops.")
+    try:
+        replay_loop(session, events, loop=args.loop)
+    except KeyboardInterrupt:
+        _say("bridge: stopped")
+    return 0
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not (args.follow or args.follow_latest or args.replay or args.bake):
+        parser.error("choose a mode: --follow, --follow-latest, --replay or --bake")
+    if args.loop and not args.replay:
+        parser.error("--loop needs --replay")
+    data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
+    try:
+        clean_stale_temp(data_dir)
+        if args.bake:
+            out = data_dir / "replay.js"
+            frames = bake(args.bake, out, speed=args.speed, scale=args.pace_scale)
+            _say(f"bridge: wrote {display_path(out)} ({frames} frames)")
+            return 0
+        if args.replay:
+            return _run_replay(args, data_dir)
+        return _run_follow(args, data_dir)
+    except BridgeError as exc:
+        print(f"bridge: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("bridge: stopped", file=sys.stderr)
+        return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
