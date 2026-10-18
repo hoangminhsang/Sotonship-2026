@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -63,7 +64,7 @@ if str(REPO) not in sys.path:
 
 import pandas as pd  # noqa: E402
 
-from lab import agent, corpus, defences, metrics, run_folder, world  # noqa: E402
+from lab import agent, corpus, defences, metrics, progress, run_folder, world  # noqa: E402
 from lab.demo import demo_traces  # noqa: E402  (the one offline run generator; no local copy)
 from lab.assurance import (  # noqa: E402
     evidence,
@@ -132,12 +133,14 @@ def run_candidate(
     saved_dir: Path | None = None,
     replay_traces: list[dict] | None = None,
     out_dir: Path | None = None,
+    prog: progress.Progress | None = None,
 ) -> tuple[pd.DataFrame, Path | None]:
     """Return ``(runs, proof_file)`` for one candidate.
 
     ``proof_file`` is the real ``runs.csv`` the evidence register points at: the
     locked run folder's file for LIVE and SAVED runs, otherwise a copy written
-    under ``out_dir/<candidate_id>/``.
+    under ``out_dir/<candidate_id>/``. ``prog`` (optional) receives a ``run_done``
+    event for every run.
     """
     proof: Path | None = None
     if saved is not None:
@@ -159,6 +162,8 @@ def run_candidate(
         if defence_codes:
             traces = defences.replay(traces, rules, list(defence_codes))
     runs = metrics.build_runs_frame(traces, rules, tests_by_id)
+    if prog is not None and (saved is not None or not live):
+        emit_scored_runs(prog, traces, runs)  # SCRIPTED / SAVED: the runs exist already, one run_done each
     if proof is None and out_dir is not None:
         proof = Path(out_dir) / candidate_id / "runs.csv"
         # Same writer as a run folder: sorted rows, summary.csv beside it (C-07).
@@ -170,16 +175,35 @@ def run_candidate(
 # Small reporting helpers.
 # --------------------------------------------------------------------------- #
 class Report:
-    """Collects the text report and the files written, for a tidy summary."""
+    """Collects the text report and the files written, for a tidy summary.
 
-    def __init__(self, out_dir: Path, tag: str = "", note: str = "") -> None:
+    Also tells the progress log (``prog``, optional) where the run is: a section
+    with a ``stage`` opens that pipeline stage, a file written is an artifact.
+    """
+
+    def __init__(self, out_dir: Path, tag: str = "", note: str = "",
+                 prog: progress.Progress | None = None) -> None:
         self.out_dir = out_dir
         self.written: list[Path] = []
         self.tag = tag      # SCRIPTED / LIVE / SAVED: stamped on every artifact written
         self.note = note    # one sentence on what the numbers are (scripted mode)
+        self.prog = prog
 
-    def section(self, title: str) -> None:
+    def section(self, title: str, stage: str | None = None) -> None:
         print(f"\n{'=' * 70}\n{title}\n{'=' * 70}")
+        if stage is not None:
+            self.stage(stage, title)
+
+    def stage(self, stage: str, title: str) -> None:
+        """Open a pipeline stage in the progress log, closing the previous one. Prints nothing."""
+        if self.prog is not None:
+            self.prog.begin_stage(stage, title)
+
+    def add_file(self, path: Path, kind: str) -> None:
+        """Count a file this script wrote (not through :meth:`write`) as an artifact."""
+        self.written.append(path)
+        if self.prog is not None:
+            self.prog.emit("artifact", name=Path(path).name, path=path, kind=kind)
 
     def say(self, text: str = "") -> None:
         print(text)
@@ -196,7 +220,7 @@ class Report:
     def write(self, name: str, text: str) -> Path:
         path = self.out_dir / name
         path.write_text(self.label(text, plain=name.endswith(".txt")).rstrip() + "\n", encoding="utf-8")
-        self.written.append(path)
+        self.add_file(path, artifact_kind(name))
         return path
 
 
@@ -274,9 +298,169 @@ def _fmt_summary(s: dict, tag: str = "") -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Progress log: the field builders for the events (the format is in lab/progress.py).
+# Every hook goes through ``prog.emit_lazy`` / ``prog.guard`` so that a surprise
+# while building an event can only switch the log off, never stop the run.
+# --------------------------------------------------------------------------- #
+ARTIFACT_KINDS = (
+    ("gate_", "gate"), ("inventory_card", "inventory"), ("risk_register", "risk_register"),
+    ("fix_tickets", "tickets"), ("evidence_register", "evidence"), ("traceability", "trace"),
+    ("manager_summary", "summary"), ("audit_log", "audit_log"),
+)
+
+# The re-tests after RC-001: id, defences enforced, the flag that supplies a saved run, the reviewer's BLOCK reason.
+RETESTS = [
+    ("RC-002", ("D2",), "--run-after",
+     "D2 stops the leaks, but unrequested P1 tickets still land. Add D3."),
+    ("RC-003", ("D2", "D3"), "--run-after-d3",
+     "Still above the policy limit with D2 + D3; needs more work."),
+]
+
+
+def artifact_kind(name: str) -> str:
+    """A short word for what kind of file ``name`` is, for the ``artifact`` event."""
+    for prefix, kind in ARTIFACT_KINDS:
+        if name.startswith(prefix):
+            return kind
+    return Path(name).suffix.lstrip(".") or "file"
+
+
+def emit_scored_runs(prog: progress.Progress, traces: list[dict], runs: pd.DataFrame) -> None:
+    """One ``run_done`` event per run that already exists (SCRIPTED, SAVED and replayed candidates)."""
+    if prog.disabled:
+        return
+    with prog.guard():
+        stats = progress.RunningStats()
+        n = len(runs)
+        for i, (trace, row) in enumerate(zip(traces, runs.to_dict("records")), start=1):
+            prog.emit_lazy("run_done", lambda: progress.run_fields(i, n, trace, row, stats))
+
+
+def audit_fields(record: dict) -> dict:
+    """The ``audit`` event for one entry just appended to the log (``entry`` is the log's own number)."""
+    return {
+        "cand": record.get("candidate_id"),
+        "entry": record.get("seq"),
+        "event": record.get("event"),
+        "by": record.get("by"),
+        "reviewer": record.get("reviewer"),
+        "verdict": record.get("verdict"),
+        "decision": record.get("decision"),
+        "reason": record.get("reason") or record.get("detail") or None,
+        "scripted": bool(record.get("scripted")),
+        "hash12": progress.short(record.get("hash")),
+    }
+
+
+def gate_fields(cid: str, verdict, report: str, path: Path) -> dict:
+    return {
+        "cand": cid,
+        "verdict": verdict.status,
+        "reasons": [c.name for c in verdict.failures()],
+        "checks": [{"name": c.name, "ok": c.ok, "value": c.value, "limit": c.limit, "note": c.note}
+                   for c in verdict.checks],
+        "lines": report.splitlines(),
+        "file": path,
+    }
+
+
+def headline_entry(cid: str, verdict, summary: dict) -> dict:
+    """One candidate in ``pipeline_done.headline``; a rate with nothing behind it is null, not 0%."""
+    measured_attacks, measured_benign = summary["attack_runs"] > 0, summary["benign_n"] > 0
+    return {
+        "id": cid,
+        "verdict": verdict.status,
+        "asr": summary["asr"] if measured_attacks else None,
+        "asr_lo": summary["asr_lo"] if measured_attacks else None,
+        "asr_hi": summary["asr_hi"] if measured_attacks else None,
+        "attack_runs": summary["attack_runs"],
+        "attack_violations": summary["attack_violations"],
+        "benign_rate": summary["benign_rate"] if measured_benign else None,
+        "benign_n": summary["benign_n"],
+    }
+
+
+RISK_FIELDS = ("id", "title", "violation_class", "successes", "runs", "rate", "ci_low", "ci_high",
+               "likelihood", "impact", "control", "owner", "status", "note")
+
+
+def risk_rows(register) -> list[dict]:
+    return [{k: getattr(r, k) for k in RISK_FIELDS} for r in register]
+
+
+def ticket_rows(tickets) -> list[dict]:
+    return [{k: getattr(t, k) for k in ("id", "title", "control", "risk_id", "owner", "due", "status")}
+            for t in tickets]
+
+
+def evidence_rows(rows) -> list[dict]:
+    return [{"control": e.control, "proof_needed": e.proof_needed,
+             "proof_file": progress.display_path(e.proof_file, REPO), "result": e.result} for e in rows]
+
+
+def controls_used(rows) -> list[str]:
+    return sorted({r.control for r in rows if r.control})
+
+
+def chain_fields(real, forged=None) -> dict:
+    """The ``chain`` event: the real log's check, and (once the demo ran) the forged copy's."""
+    return {
+        "ok": real.ok,
+        "entries": real.entries,
+        "head12": progress.short(real.last_hash),
+        "detail": real.detail,
+        "tamper": None if forged is None else {"ok": forged.ok, "bad_seq": forged.bad_seq, "kind": forged.kind},
+    }
+
+
+def run_folder_id(saved, proof, live: bool) -> str | None:
+    """The locked run folder of a LIVE or SAVED candidate; None for DEMO runs and replays (no folder)."""
+    if saved is not None:
+        return saved[0].get("run_id")
+    if live and proof is not None:
+        return Path(proof).parent.name
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Main pipeline.
 # --------------------------------------------------------------------------- #
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
+    """Run the pipeline and record it in ``<out>/progress.jsonl`` (see :mod:`lab.progress`).
+
+    Emits ``pipeline_start`` first and ``pipeline_done`` always, also when the body
+    raises or is interrupted; the exception then goes on unchanged, so Ctrl-C still
+    locks a partial run folder. Writing the log can never fail the run.
+    """
+    prog = progress.Progress(args.out, repo=REPO, deferred=True)  # writes nothing until _run is past its checks
+    started = time.monotonic()
+    prog.emit_lazy("pipeline_start", lambda: {
+        "mode": SAVED if args.run else (LIVE if args.live else SCRIPTED),
+        "argv": progress.relativise_argv(list(argv or []), REPO),
+        "out": progress.display_path(args.out, REPO),
+        "platform": sys.platform,
+        "git_commit": progress.git_commit(REPO),
+    })
+    status, code = "ok", 0
+    try:
+        code = _run(args, prog)
+        status = "ok" if code == 0 else "error"
+        return code
+    except KeyboardInterrupt:
+        status, code = "interrupted", 130
+        raise
+    except Exception as exc:
+        status, code = "error", 1
+        prog.error = f"{type(exc).__name__}: {progress.scrub(exc)}"
+        raise
+    finally:
+        prog.end_stage("ok" if status == "ok" else "error")
+        prog.emit("pipeline_done", status=status, exit_code=code, dur_s=round(time.monotonic() - started, 3),
+                  headline={"cands": list(prog.headline)}, error=prog.error)
+        prog.close()
+
+
+def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
     # Saved runs are loaded and hash-verified before anything is written.
     saved_before = None
     saved_retests: dict[str, tuple] = {"RC-002": (None, None), "RC-003": (None, None)}
@@ -300,12 +484,14 @@ def run(args: argparse.Namespace) -> int:
                     saved_retests[cid] = (saved, path)
         except (run_folder.RunFolderError, ValueError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
+            prog.error = progress.scrub(exc)
             return 2
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    prog.activate()  # the run is past its checks: progress.jsonl starts here (an old one is rotated)
     tag = SAVED if saved_before is not None else (LIVE if args.live else SCRIPTED)
-    rep = Report(out_dir, tag=tag, note=SCRIPTED_NOTE if tag == SCRIPTED else "")
+    rep = Report(out_dir, tag=tag, note=SCRIPTED_NOTE if tag == SCRIPTED else "", prog=prog)
 
     rules = world.load_rules()
     policy = load_policy()
@@ -320,7 +506,9 @@ def run(args: argparse.Namespace) -> int:
         try:
             corpus.check_matches_generator()
         except corpus.CorpusMismatch as exc:
-            print(f"error: {' '.join(str(exc).split())}", file=sys.stderr)
+            message = " ".join(str(exc).split())
+            print(f"error: {message}", file=sys.stderr)
+            prog.error = progress.scrub(message)
             return 2
         tests = corpus.read_jsonl(corpus.TEST_PATH)
     tests_by_id = {t["id"]: t for t in tests}
@@ -333,7 +521,7 @@ def run(args: argparse.Namespace) -> int:
         mode = "LIVE (real model; each candidate saved to results/runs/<run_id>/)"
     else:
         mode = "DEMO (offline, deterministic)"
-    rep.section("Agent Release Gate — Governance & Assurance")
+    rep.section("Agent Release Gate — Governance & Assurance", stage="setup")
     rep.say(f"Mode     : [{tag}] {mode}")
     if rep.note:
         rep.say(f"           {rep.note}")
@@ -364,6 +552,28 @@ def run(args: argparse.Namespace) -> int:
         model_name = agent.MODEL
         model_digest = "sha256:845dbda0..."  # best-effort provenance for the demo
 
+    reps = saved_before[0].get("reps") if saved_before is not None else args.reps
+    with prog.guard():
+        used = live_subset(tests, args.sample) if tag == LIVE else tests  # the records the candidates run
+        expected = (saved_before[0].get("expected_runs") or len(saved_before[2])) if saved_before is not None \
+            else len(used) * args.reps
+        prog.emit(
+            "meta",
+            model=model_name,
+            digest12="placeholder (DEMO)" if tag == SCRIPTED else progress.short(model_digest),
+            policy_version=policy.get("policy_version"),
+            test_set={
+                "records": len(used),
+                "attacks": sum(t["kind"] == "attack" for t in used),
+                "benign": sum(t["kind"] == "benign" for t in used),
+                "sha12": progress.short(candidate.sha256_text(test_set_text)),
+            },
+            reps=reps,
+            sample=args.sample if tag == LIVE else None,
+            candidates=[{"id": cid, "defences": list(codes), "expected_runs": expected}
+                        for cid, codes in [("RC-001", ())] + [(c, d) for c, d, _flag, _why in RETESTS]],
+        )
+
     # Fresh audit log unless asked to keep it. An existing log is never deleted:
     # it is rotated to audit_log.<UTC timestamp>.jsonl next to the new one.
     audit_path = out_dir / "audit_log.jsonl"
@@ -380,12 +590,20 @@ def run(args: argparse.Namespace) -> int:
         """
         if tag == SCRIPTED or event.get("event") in ("decision", "decision_refused"):
             event = {**event, "scripted": True}
-        return audit.append(audit_path, event)
+        record = audit.append(audit_path, event)
+        prog.emit_lazy("audit", lambda: audit_fields(record))
+        return record
+
+    def gated(cid: str, verdict, summary: dict, report: str, path: Path) -> None:
+        """Tell the progress log the gate's verdict for ``cid`` (and keep it for the final headline)."""
+        prog.emit_lazy("gate", lambda: gate_fields(cid, verdict, report, path))
+        with prog.guard():
+            prog.headline.append(headline_entry(cid, verdict, summary))
 
     # ----------------------------------------------------------------------- #
     # RC-001: the insecure agent.
     # ----------------------------------------------------------------------- #
-    rep.section("1. RC-001 — the insecure agent (no defences)")
+    rep.section("1. RC-001 — the insecure agent (no defences)", stage="RC-001:runs")
     runs_before, proof_before = run_candidate(
         tests,
         tests_by_id,
@@ -399,10 +617,16 @@ def run(args: argparse.Namespace) -> int:
         saved=saved_before,
         saved_dir=Path(args.run) if args.run else None,
         out_dir=out_dir,
+        prog=prog,
     )
     summary_before = gate.summarise(runs_before)
     rep.say(_fmt_summary(summary_before, tag))
     rep.say(f"Runs file: {proof_before}")
+    prog.emit_lazy("runs_done", lambda: {
+        "run_id": run_folder_id(saved_before, proof_before, args.live),
+        "runs_csv": proof_before,
+        "summary": summary_before,
+    })
 
     fp_001 = candidate.fingerprint(
         "RC-001",
@@ -416,16 +640,19 @@ def run(args: argparse.Namespace) -> int:
         test_set_text=test_set_text,
     )
     candidate.save(fp_001, out_dir)
-    rep.written.append(out_dir / "RC-001.json")
+    rep.add_file(out_dir / "RC-001.json", "fingerprint")
     rep.say(f"\nFingerprint RC-001 identity: {fp_001.identity_hash()}")
+    prog.emit_lazy("fingerprint", lambda: {"identity12": progress.short(fp_001.identity_hash()),
+                                           "changed_vs_prev": None})
 
-    rep.section("2. Gate verdict for RC-001")
+    rep.section("2. Gate verdict for RC-001", stage="RC-001:gate")
     verdict_001 = gate.evaluate(summary_before, policy)
     report_001 = gate_report("RC-001", verdict_001, summary_before)
     rep.say(report_001)
-    rep.write("gate_RC-001.txt", report_001)
+    gate_file_001 = rep.write("gate_RC-001.txt", report_001)
+    gated("RC-001", verdict_001, summary_before, report_001, gate_file_001)
 
-    rep.section("3. Audit log + human decision for RC-001")
+    rep.section("3. Audit log + human decision for RC-001", stage="RC-001:decide")
     log({"event": "submit", "candidate_id": "RC-001", "by": args.engineer, "defences": []})
     log({"event": "verdict", "candidate_id": "RC-001", "verdict": verdict_001.status})
 
@@ -454,7 +681,7 @@ def run(args: argparse.Namespace) -> int:
     # ----------------------------------------------------------------------- #
     # Assurance for RC-001: inventory, risks, fixes, evidence.
     # ----------------------------------------------------------------------- #
-    rep.section("4. Assurance — inventory, risk register, fix tickets")
+    rep.section("4. Assurance — inventory, risk register, fix tickets", stage="RC-001:assure")
     card = inventory.build_card(fp_001, policy)
     card_md = inventory.to_markdown(card)
     rep.write("inventory_card.md", card_md)
@@ -463,6 +690,8 @@ def run(args: argparse.Namespace) -> int:
     register_before = risks.build_register(runs_before, policy, control_map)
     reg_before_md = risks.to_markdown(register_before)
     rep.write("risk_register_before.md", reg_before_md)
+    prog.emit_lazy("risks", lambda: {"rows": risk_rows(register_before),
+                                     "controls_used": controls_used(register_before)})
     rep.say("\n" + reg_before_md)
 
     tickets = risks.fix_tickets(
@@ -474,6 +703,7 @@ def run(args: argparse.Namespace) -> int:
         f"{t.id}: {t.title}  (owner {t.owner}, due {t.due}, risk {t.risk_id})" for t in tickets
     ]
     rep.write("fix_tickets.md", "**Fix tickets**\n\n" + "\n".join(f"- {line}" for line in ticket_lines))
+    prog.emit_lazy("tickets", lambda: {"rows": ticket_rows(tickets), "controls_used": controls_used(tickets)})
     rep.say("\nFix tickets:")
     for line in ticket_lines:
         rep.say(f"  {line}")
@@ -483,23 +713,17 @@ def run(args: argparse.Namespace) -> int:
     # gated, decided by the reviewer, and closes only the risks its own
     # controls cover -- D2 alone never proves D3.
     # ----------------------------------------------------------------------- #
-    retests = [
-        ("RC-002", ("D2",), "--run-after",
-         "D2 stops the leaks, but unrequested P1 tickets still land. Add D3."),
-        ("RC-003", ("D2", "D3"), "--run-after-d3",
-         "Still above the policy limit with D2 + D3; needs more work."),
-    ]
+    retests = RETESTS
     summaries = {"RC-001": summary_before}
     verdicts = {"RC-001": verdict_001}
     proofs = {"RC-001": proof_before}
     prev_cid, prev_fp, prev_summary, prev_register = "RC-001", fp_001, summary_before, register_before
     register_final, ev_md_final, last_cid = register_before, "", "RC-001"
     last_approved: dict | None = None  # asr + what it was measured on, for the regression check
-    reps = saved_before[0].get("reps") if saved_before is not None else args.reps
     section = 5
     for cid, codes, flag, block_reason in retests:
         label = "+".join(codes)
-        rep.section(f"{section}. {cid} — defences {label} enforced (re-test)")
+        rep.section(f"{section}. {cid} — defences {label} enforced (re-test)", stage=f"{cid}:runs")
         fp = candidate.fingerprint(
             cid,
             submitted_by=args.engineer,
@@ -512,7 +736,7 @@ def run(args: argparse.Namespace) -> int:
             test_set_text=test_set_text,
         )
         candidate.save(fp, out_dir)
-        rep.written.append(out_dir / f"{cid}.json")
+        rep.add_file(out_dir / f"{cid}.json", "fingerprint")
         rep.say(f"Fingerprint changed vs {prev_cid}: {prev_fp.identity_hash() != fp.identity_hash()}")
         rep.say(f"(so {prev_cid}'s decision does not carry over — the re-test rule forces a fresh review)")
 
@@ -532,8 +756,19 @@ def run(args: argparse.Namespace) -> int:
             # A saved RC-001 without a saved re-test run: replay the defences over its traces.
             replay_traces=saved_before[2] if (saved_before is not None and saved is None) else None,
             out_dir=out_dir,
+            prog=prog,
         )
         summary = gate.summarise(runs)
+        prog.emit_lazy("runs_done", lambda: {
+            "run_id": run_folder_id(saved, proof, args.live),
+            "runs_csv": proof,
+            "summary": summary,
+        })
+        # Same order as RC-001 in the log (runs, then fingerprint), though the file was written first.
+        prog.emit_lazy("fingerprint", lambda: {
+            "identity12": progress.short(fp.identity_hash()),
+            "changed_vs_prev": prev_fp.identity_hash() != fp.identity_hash(),
+        })
         rep.say("\n" + _fmt_summary(summary, tag))
         if saved_before is not None and saved is None:
             rep.say(f"({cid} is a deterministic {label} replay of the saved RC-001 traces, not a measured "
@@ -545,7 +780,7 @@ def run(args: argparse.Namespace) -> int:
         )
 
         section += 1
-        rep.section(f"{section}. Gate verdict for {cid}, then the reviewer decides")
+        rep.section(f"{section}. Gate verdict for {cid}, then the reviewer decides", stage=f"{cid}:gate")
         current = {"candidate_id": cid, "test_set_sha256": fp.test_set_sha256, "reps": reps, "mode": tag}
         baseline_asr, why_not = regression_baseline(last_approved, current)
         if why_not:
@@ -558,8 +793,11 @@ def run(args: argparse.Namespace) -> int:
         verdict = gate.evaluate(summary, policy, last_approved_asr=baseline_asr)
         report = gate_report(cid, verdict, summary)
         rep.say(report)
-        rep.write(f"gate_{cid}.txt", report)
+        gate_file = rep.write(f"gate_{cid}.txt", report)
+        gated(cid, verdict, summary, report, gate_file)
 
+        # The gate and the reviewer's decision share one printed section; the log gives the decision its own stage.
+        rep.stage(f"{cid}:decide", f"Reviewer decision for {cid}")
         log({"event": "submit", "candidate_id": cid, "by": args.engineer, "defences": list(codes)})
         log({"event": "verdict", "candidate_id": cid, "verdict": verdict.status})
         if verdict.passed:
@@ -578,17 +816,19 @@ def run(args: argparse.Namespace) -> int:
         log(ev)
 
         section += 1
-        rep.section(f"{section}. Assurance after {cid} — risk register, evidence register")
+        rep.section(f"{section}. Assurance after {cid} — risk register, evidence register", stage=f"{cid}:assure")
         prior = risks.prior_from(prev_register)  # carries whether each risk had landed
         register = risks.build_register(runs, policy, control_map, prior=prior, defences=codes)
         reg_md = risks.to_markdown(register)
         rep.write(f"risk_register_{cid}.md", reg_md)
+        prog.emit_lazy("risks", lambda: {"rows": risk_rows(register), "controls_used": controls_used(register)})
         rep.say(reg_md)
 
         measured = evidence.control_results(runs, [r.control for r in register if r.control], defences=codes)
         ev_rows = evidence.build_register(register, retest_candidate=cid, results=measured, proof_file=str(proof))
         ev_md = evidence.to_markdown(ev_rows)
         rep.write(f"evidence_register_{cid}.md", ev_md)
+        prog.emit_lazy("evidence", lambda: {"rows": evidence_rows(ev_rows), "controls_used": controls_used(ev_rows)})
         rep.say("\nEvidence register:\n" + ev_md)
 
         summaries[cid], verdicts[cid], proofs[cid] = summary, verdict, proof
@@ -604,7 +844,7 @@ def run(args: argparse.Namespace) -> int:
     # ----------------------------------------------------------------------- #
     # Traceability: one finding, start to finish.
     # ----------------------------------------------------------------------- #
-    rep.section(f"{section}. Traceability — one finding, start to finish")
+    rep.section(f"{section}. Traceability — one finding, start to finish", stage="trace")
     leaked = runs_before[
         (runs_before["kind"] == "attack")
         & runs_before["violation_classes"].str.contains("V_exfiltration", na=False)
@@ -616,13 +856,14 @@ def run(args: argparse.Namespace) -> int:
     )
     tr_md = thread.to_markdown(tr)
     rep.write("traceability.md", tr_md)
+    prog.emit_lazy("trace", lambda: {"finding": finding_id, "steps_n": len(tr.steps)})
     rep.say(tr_md)
 
     # ----------------------------------------------------------------------- #
     # Manager summary.
     # ----------------------------------------------------------------------- #
     section += 1
-    rep.section(f"{section}. Manager summary")
+    rep.section(f"{section}. Manager summary", stage="summary")
     s = summary_page.build_summary(
         register_final,
         audit.read_log(audit_path),
@@ -635,6 +876,9 @@ def run(args: argparse.Namespace) -> int:
     if rep.note:
         s_md += f"\n- **Numbers:** {rep.note}"
     rep.write("manager_summary.md", s_md)
+    prog.emit_lazy("summary", lambda: {
+        "bullets": [ln[2:].replace("**", "") for ln in s_md.splitlines() if ln.startswith("- ")],
+    })
     rep.say(rep.label(s_md))
 
     # ----------------------------------------------------------------------- #
@@ -642,9 +886,10 @@ def run(args: argparse.Namespace) -> int:
     # The real audit_log.jsonl is left intact and verifiable.
     # ----------------------------------------------------------------------- #
     section += 1
-    rep.section(f"{section}. The audit log is tamper-evident")
+    rep.section(f"{section}. The audit log is tamper-evident", stage="chain")
     real = audit.verify_log(audit_path)
     rep.say(f"Real log      : {real}")
+    prog.emit_lazy("chain", lambda: chain_fields(real))
 
     if args.tamper_demo:
         tampered = out_dir / "audit_log_tampered_demo.jsonl"
@@ -657,16 +902,17 @@ def run(args: argparse.Namespace) -> int:
             rec["decision"] = "APPROVE"  # forge an approval
             lines[idx] = json.dumps(rec, sort_keys=True)
             tampered.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            rep.written.append(tampered)
+            rep.add_file(tampered, "tamper_demo")
             check = audit.verify_log(tampered)
             rep.say(f"Forged copy   : {check}")
             if not check.ok:
                 rep.say(f">>> TAMPERING DETECTED at entry #{check.bad_seq} (real log untouched) <<<")
+            prog.emit_lazy("chain", lambda: chain_fields(real, check))
 
     # ----------------------------------------------------------------------- #
     # Final summary of artifacts + the headline verdicts.
     # ----------------------------------------------------------------------- #
-    rep.section("Done — artifacts written")
+    rep.section("Done — artifacts written", stage="done")
     for p in rep.written:
         rep.say(f"  {p}")
     rep.say(f"  {audit_path}")
@@ -760,7 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
     if (args.run_after or args.run_after_d3) and not args.run:
         print("error: --run-after / --run-after-d3 need --run", file=sys.stderr)
         return 2
-    return run(args)
+    return run(args, list(sys.argv[1:] if argv is None else argv))
 
 
 if __name__ == "__main__":

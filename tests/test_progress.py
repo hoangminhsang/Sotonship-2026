@@ -7,17 +7,25 @@ failure paths, the committed scripted fixture, the LIVE per-run events).
 """
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import math
+import os
 import re
+import sys
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from lab import progress
+from lab import corpus, progress
+from lab.governance import audit
 
 ROOT = Path(__file__).resolve().parent.parent
+FIXTURE = ROOT / "tests" / "fixtures" / "progress_scripted.jsonl"
 HEX12 = re.compile(r"^[0-9a-f]{12}$")
 ISO_US = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}\+00:00$")
 
@@ -415,3 +423,429 @@ def test_run_fields_shape_limits_and_json_safety():
                                 progress.RunningStats())
     assert quiet["error"] is None and quiet["classes"] == [] and quiet["benign_success"] is True
     assert quiet["duration_s"] is None and quiet["calls"] == 0 and quiet["blocked"] == 0
+
+
+# =========================================================================== #
+# The CLI hooks: scripts/run_governance.py writes <out>/progress.jsonl.
+# =========================================================================== #
+CANDS = ("RC-001", "RC-002", "RC-003")
+EXPECTED_STAGES = [
+    "setup",
+    "RC-001:runs", "RC-001:gate", "RC-001:decide", "RC-001:assure",
+    "RC-002:runs", "RC-002:gate", "RC-002:decide", "RC-002:assure",
+    "RC-003:runs", "RC-003:gate", "RC-003:decide", "RC-003:assure",
+    "trace", "summary", "chain", "done",
+]
+
+
+@pytest.fixture(scope="module")
+def gov():
+    spec = importlib.util.spec_from_file_location("run_governance_progress", ROOT / "scripts" / "run_governance.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["run_governance_progress"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def demo(gov, tmp_path_factory):
+    """One full DEMO run (tamper demo on), shared by the read-only checks below."""
+    out = tmp_path_factory.mktemp("progress") / "demo"      # fixed leaf name: paths in events are deterministic
+    assert gov.main(["--out", str(out)]) == 0
+    return SimpleNamespace(out=out, events=read_events(out / "progress.jsonl"))
+
+
+def of_type(events, type_):
+    return [e for e in events if e["type"] == type_]
+
+
+def gate_counts(text: str) -> tuple[int, int]:
+    m = re.search(r"attack_success_rate.*?\((\d+)/(\d+)", text)
+    return int(m.group(1)), int(m.group(2))
+
+
+def test_demo_has_one_start_one_done_and_the_stage_order(demo):
+    ev = demo.events
+    assert [e["type"] for e in ev if e["type"] in ("pipeline_start", "pipeline_done")] == [
+        "pipeline_start", "pipeline_done"]
+    assert ev[0]["type"] == "pipeline_start" and ev[-1]["type"] == "pipeline_done"
+    assert ev[-1]["status"] == "ok" and ev[-1]["exit_code"] == 0 and ev[-1]["error"] is None
+    assert [e["stage"] for e in of_type(ev, "stage_start")] == EXPECTED_STAGES
+    assert [(e["stage"], e["status"]) for e in of_type(ev, "stage_done")] == [(s, "ok") for s in EXPECTED_STAGES]
+
+    # Stages never overlap, and every event between a start and a done carries that stage.
+    open_stage = None
+    for e in ev:
+        if e["type"] == "stage_start":
+            assert open_stage is None, e
+            open_stage = e["stage"]
+        elif e["type"] == "stage_done":
+            assert e["stage"] == open_stage, e
+            open_stage = None
+        elif e["type"] in ("pipeline_start", "pipeline_done"):
+            assert e["stage"] is None
+        else:
+            assert e["stage"] == open_stage, e
+        assert e["cand"] == (e["stage"].split(":")[0] if e["stage"] and ":" in e["stage"] else e["cand"]), e
+    assert open_stage is None
+
+
+def test_demo_common_keys_are_consistent(demo):
+    ev = demo.events
+    assert [e["seq"] for e in ev] == list(range(1, len(ev) + 1))
+    assert {e["uid"] for e in ev} == {ev[0]["uid"]} and HEX12.match(ev[0]["uid"])
+    assert all(e["v"] == 1 and ISO_US.match(e["t"]) for e in ev)
+    stamps = [datetime.fromisoformat(e["t"]) for e in ev]
+    assert stamps == sorted(stamps) and all(s.utcoffset() == timedelta(0) for s in stamps)
+    raw = (demo.out / "progress.jsonl").read_text(encoding="utf-8")
+    assert raw.isascii() and "\r" not in raw and "NaN" not in raw
+    for line in raw.splitlines():
+        assert line == canonical(json.loads(line))
+
+
+def test_demo_event_counts_and_per_candidate_order(demo):
+    ev = demo.events
+    by = Counter(e["type"] for e in ev)
+    n_runs = len(corpus.read_jsonl(corpus.TEST_PATH)) * 3
+    assert by["run_done"] == 3 * n_runs and by["run_start"] == 0           # run_start is LIVE only
+    assert (by["meta"], by["runs_done"], by["fingerprint"], by["gate"]) == (1, 3, 3, 3)
+    assert (by["audit"], by["risks"], by["tickets"], by["evidence"]) == (10, 3, 1, 2)
+    assert (by["trace"], by["summary"], by["chain"]) == (1, 1, 2)          # chain: the real log, then the forged copy
+    for cid in CANDS:
+        order = [e["type"] for e in ev if e["cand"] == cid and e["type"] in ("runs_done", "fingerprint", "gate")]
+        assert order == ["runs_done", "fingerprint", "gate"], cid
+
+
+def test_pipeline_start_and_meta(demo):
+    start = demo.events[0]
+    assert start["mode"] == "SCRIPTED" and start["platform"] == sys.platform
+    assert start["argv"] == ["--out", "<outside repo>/demo"] and start["out"] == "<outside repo>/demo"
+    assert start["git_commit"] is None or re.fullmatch(r"[0-9a-f]{40}", start["git_commit"])
+    assert str(demo.out.parent) not in json.dumps(demo.events)             # no absolute path anywhere
+
+    (meta,) = of_type(demo.events, "meta")
+    tests = corpus.read_jsonl(corpus.TEST_PATH)
+    assert meta["stage"] == "setup" and meta["digest12"] == "placeholder (DEMO)"
+    assert meta["test_set"]["records"] == len(tests)
+    assert meta["test_set"]["attacks"] == sum(t["kind"] == "attack" for t in tests)
+    assert meta["test_set"]["benign"] == sum(t["kind"] == "benign" for t in tests)
+    assert HEX12.match(meta["test_set"]["sha12"]) and meta["reps"] == 3 and meta["sample"] is None
+    assert meta["model"] and meta["policy_version"] is not None
+    assert [(c["id"], c["defences"], c["expected_runs"]) for c in meta["candidates"]] == [
+        ("RC-001", [], len(tests) * 3), ("RC-002", ["D2"], len(tests) * 3), ("RC-003", ["D2", "D3"], len(tests) * 3)]
+
+
+def test_run_done_events_carry_running_counters_that_match_runs_done(demo):
+    n_runs = len(corpus.read_jsonl(corpus.TEST_PATH)) * 3
+    summaries = {e["cand"]: e["summary"] for e in of_type(demo.events, "runs_done")}
+    for cid in CANDS:
+        runs = [e for e in of_type(demo.events, "run_done") if e["cand"] == cid]
+        assert [e["i"] for e in runs] == list(range(1, n_runs + 1)) and {e["n"] for e in runs} == {n_runs}
+        assert {e["stage"] for e in runs} == {f"{cid}:runs"}
+        keys = ("attack_runs", "attack_violations", "benign_n", "errors", "runs")
+        for a, b in zip(runs, runs[1:]):                                   # counters only ever grow
+            assert all(b["running"][k] >= a["running"][k] for k in keys)
+        last = runs[-1]["running"]
+        assert all(last[k] == summaries[cid][k] for k in keys)
+        for k in ("asr", "asr_lo", "asr_hi", "benign_rate"):
+            assert last[k] == pytest.approx(summaries[cid][k])
+    first = of_type(demo.events, "run_done")[0]
+    assert first["kind"] in ("attack", "benign") and first["test_id"] and first["rep"] == 1
+    assert isinstance(first["violated"], bool) and isinstance(first["classes"], list)
+    assert first["calls"] >= 1 and first["blocked"] == 0 and first["error"] is None
+
+
+def test_runs_done_and_fingerprint_events(demo):
+    for e in of_type(demo.events, "runs_done"):
+        assert e["run_id"] is None and e["runs_csv"] == "<outside repo>/runs.csv"      # DEMO: no run folder
+        text = (demo.out / f"gate_{e['cand']}.txt").read_text()
+        assert (e["summary"]["attack_violations"], e["summary"]["attack_runs"]) == gate_counts(text)
+    fps = of_type(demo.events, "fingerprint")
+    assert [e["changed_vs_prev"] for e in fps] == [None, True, True]
+    for e in fps:
+        card = json.loads((demo.out / f"{e['cand']}.json").read_text())
+        assert e["identity12"] == card["identity_hash"].split(":", 1)[1][:12]
+
+
+def test_gate_events_match_the_gate_files(demo):
+    gates = {e["cand"]: e for e in of_type(demo.events, "gate")}
+    assert [gates[c]["verdict"] for c in CANDS] == ["FAIL", "FAIL", "PASS"]
+    for cid, g in gates.items():
+        text = (demo.out / f"gate_{cid}.txt").read_text()
+        assert text == "[SCRIPTED] " + "\n".join(g["lines"]) + "\n"        # the very lines the reader sees
+        assert g["file"] == f"<outside repo>/gate_{cid}.txt"
+        assert [c["name"] for c in g["checks"] if not c["ok"]] == g["reasons"]
+        assert {"name", "ok", "value", "limit", "note"} == set(g["checks"][0])
+        assert g["stage"] == f"{cid}:gate" and bool(g["reasons"]) == (g["verdict"] == "FAIL")
+    assert gates["RC-001"]["reasons"] == ["attack_success_rate"] and gates["RC-003"]["reasons"] == []
+    asr = next(c for c in gates["RC-001"]["checks"] if c["name"] == "attack_success_rate")
+    assert asr["value"] > asr["limit"] and isinstance(asr["limit"], float)
+
+
+def test_audit_events_mirror_the_log(demo):
+    log = audit.read_log(demo.out / "audit_log.jsonl")
+    evs = of_type(demo.events, "audit")
+    assert [e["entry"] for e in evs] == [r["seq"] for r in log] == list(range(1, 11))
+    assert [e["hash12"] for e in evs] == [r["hash"][:12] for r in log]
+    assert [e["event"] for e in evs] == [r["event"] for r in log]
+    assert [e["cand"] for e in evs] == [r["candidate_id"] for r in log]
+    assert all(e["scripted"] is True for e in evs)
+    assert {e["stage"] for e in evs} == {"RC-001:decide", "RC-002:decide", "RC-003:decide"}
+    assert [(e["cand"], e["decision"], e["reviewer"]) for e in evs if e["event"] == "decision"] == [
+        ("RC-001", "BLOCK", "sarah"), ("RC-002", "BLOCK", "sarah"), ("RC-003", "APPROVE", "sarah")]
+    (refused,) = [e for e in evs if e["event"] == "decision_refused"]
+    assert refused["reviewer"] == "tom" and refused["reason"] and refused["decision"] is None
+    assert {e["by"] for e in evs if e["event"] == "submit"} == {"tom"}
+    assert [e["verdict"] for e in evs if e["event"] == "verdict"] == ["FAIL", "FAIL", "PASS"]
+
+
+def test_assurance_events(demo):
+    risks = of_type(demo.events, "risks")
+    assert [e["cand"] for e in risks] == list(CANDS) and all(e["rows"] and "controls_used" in e for e in risks)
+    row = risks[0]["rows"][0]
+    assert {"id", "title", "violation_class", "successes", "runs", "rate", "likelihood", "impact", "control",
+            "owner", "status"} <= set(row)
+    assert risks[0]["rows"][0]["status"] == "Open" and risks[0]["controls_used"] == ["D2", "D3"]
+    (tickets,) = of_type(demo.events, "tickets")
+    assert tickets["cand"] == "RC-001" and [t["id"] for t in tickets["rows"]] == ["FIX-01", "FIX-02", "FIX-03"]
+    ev = of_type(demo.events, "evidence")
+    assert [e["cand"] for e in ev] == ["RC-002", "RC-003"]
+    assert all(r["proof_file"] == "<outside repo>/runs.csv" for e in ev for r in e["rows"])
+    assert str(demo.out) not in json.dumps(ev)
+
+
+def test_artifact_events_name_every_file_written(demo):
+    arts = of_type(demo.events, "artifact")
+    names = [a["name"] for a in arts]
+    assert len(names) == len(set(names))
+    assert all((demo.out / n).is_file() for n in names)
+    assert {a["path"] for a in arts} == {f"<outside repo>/{n}" for n in names}
+    expected = {"RC-001.json", "RC-002.json", "RC-003.json", "gate_RC-001.txt", "gate_RC-002.txt", "gate_RC-003.txt",
+                "inventory_card.md", "risk_register_before.md", "fix_tickets.md", "risk_register_RC-002.md",
+                "evidence_register_RC-002.md", "risk_register_RC-003.md", "evidence_register_RC-003.md",
+                "risk_register_after.md", "evidence_register.md", "traceability.md", "manager_summary.md",
+                "audit_log_tampered_demo.jsonl"}
+    assert set(names) == expected
+    kinds = {a["name"]: a["kind"] for a in arts}
+    assert kinds["RC-001.json"] == "fingerprint" and kinds["gate_RC-002.txt"] == "gate"
+    assert kinds["manager_summary.md"] == "summary" and kinds["audit_log_tampered_demo.jsonl"] == "tamper_demo"
+    assert kinds["risk_register_after.md"] == "risk_register" and kinds["evidence_register.md"] == "evidence"
+
+
+def test_trace_summary_and_chain_events(demo):
+    (trace,) = of_type(demo.events, "trace")
+    text = (demo.out / "traceability.md").read_text()
+    assert f"**Traceability for {trace['finding']}**" in text
+    assert trace["steps_n"] == len(re.findall(r"^\d+\. ", text, flags=re.M)) > 0
+    (summary,) = of_type(demo.events, "summary")
+    md = (demo.out / "manager_summary.md").read_text()
+    assert summary["bullets"] == [ln[2:].replace("**", "") for ln in md.splitlines() if ln.startswith("- ")]
+    real = audit.verify_log(demo.out / "audit_log.jsonl")
+    forged = audit.verify_log(demo.out / "audit_log_tampered_demo.jsonl")
+    first, second = of_type(demo.events, "chain")
+    for c in (first, second):
+        assert (c["ok"], c["entries"], c["head12"], c["detail"]) == (True, 10, real.last_hash[:12], real.detail)
+    assert first["tamper"] is None
+    assert second["tamper"] == {"ok": False, "bad_seq": forged.bad_seq, "kind": forged.kind}
+    assert first["stage"] == second["stage"] == "chain"
+
+
+def test_pipeline_done_headline_matches_the_verdicts(demo):
+    done = demo.events[-1]
+    cands = done["headline"]["cands"]
+    assert [(c["id"], c["verdict"]) for c in cands] == [("RC-001", "FAIL"), ("RC-002", "FAIL"), ("RC-003", "PASS")]
+    summaries = {e["cand"]: e["summary"] for e in of_type(demo.events, "runs_done")}
+    for c in cands:
+        s = summaries[c["id"]]
+        for k in ("asr", "asr_lo", "asr_hi", "attack_runs", "attack_violations", "benign_rate", "benign_n"):
+            assert c[k] == pytest.approx(s[k]), (c["id"], k)
+    assert isinstance(done["dur_s"], float) and done["dur_s"] >= 0
+
+
+# --------------------------------------------------------------------------- #
+# Folders, rotation, refusals and failures.
+# --------------------------------------------------------------------------- #
+def test_second_run_in_the_same_folder_rotates_the_progress_file(gov, tmp_path):
+    out = tmp_path / "gov"
+    assert gov.main(["--out", str(out), "--no-tamper-demo"]) == 0
+    first = (out / "progress.jsonl").read_bytes()
+    assert gov.main(["--out", str(out), "--no-tamper-demo"]) == 0
+    (rotated,) = [p for p in out.glob("progress.*.jsonl")]
+    assert rotated.read_bytes() == first                                   # the old file, byte for byte
+    old, new = read_events(rotated), read_events(out / "progress.jsonl")
+    assert old[0]["uid"] != new[0]["uid"] and new[0]["seq"] == 1
+    assert [e["type"] for e in new].count("pipeline_start") == 1 == [e["type"] for e in new].count("pipeline_done")
+
+
+def test_a_refused_run_leaves_no_folder_and_no_progress_file(gov, tmp_path, capsys):
+    out = tmp_path / "o"
+    assert gov.main(["--run", str(tmp_path / "missing"), "--out", str(out)]) == 2
+    assert "error" in capsys.readouterr().err and not out.exists()
+    existing = tmp_path / "keep"
+    existing.mkdir()
+    (existing / "progress.jsonl").write_text("previous run\n")
+    assert gov.main(["--run", str(tmp_path / "missing"), "--out", str(existing)]) == 2
+    assert [p.name for p in existing.iterdir()] == ["progress.jsonl"]      # not rotated by a refused run
+    assert (existing / "progress.jsonl").read_text() == "previous run\n"
+
+
+def test_corpus_mismatch_is_recorded_as_an_error(gov, tmp_path, monkeypatch):
+    def mismatch(*a, **k):
+        raise corpus.CorpusMismatch("corpus file(s) ['test.jsonl'] differ from the seed-7 generator output.")
+
+    monkeypatch.setattr(corpus, "check_matches_generator", mismatch)
+    out = tmp_path / "gov"
+    assert gov.main(["--out", str(out), "--no-tamper-demo"]) == 2
+    ev = read_events(out / "progress.jsonl")
+    assert [e["type"] for e in ev] == ["pipeline_start", "pipeline_done"]
+    assert ev[-1]["status"] == "error" and ev[-1]["exit_code"] == 2 and "test.jsonl" in ev[-1]["error"]
+
+
+def test_an_exception_is_recorded_and_still_raised(gov, tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boom in the register")
+
+    monkeypatch.setattr(gov.risks, "build_register", boom)
+    out = tmp_path / "gov"
+    with pytest.raises(RuntimeError, match="boom in the register"):
+        gov.main(["--out", str(out), "--no-tamper-demo"])
+    ev = read_events(out / "progress.jsonl")
+    assert ev[-2]["type"] == "stage_done" and ev[-2]["stage"] == "RC-001:assure" and ev[-2]["status"] == "error"
+    done = ev[-1]
+    assert done["type"] == "pipeline_done" and done["status"] == "error" and done["exit_code"] == 1
+    assert "RuntimeError" in done["error"] and "boom in the register" in done["error"]
+    assert [c["id"] for c in done["headline"]["cands"]] == ["RC-001"]       # what was gated before it stopped
+    assert not [e for e in ev if e["type"] == "pipeline_start"][1:]
+
+
+def test_ctrl_c_is_recorded_and_still_raised(gov, tmp_path, monkeypatch):
+    def interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(gov.inventory, "build_card", interrupt)
+    out = tmp_path / "gov"
+    with pytest.raises(KeyboardInterrupt):
+        gov.main(["--out", str(out), "--no-tamper-demo"])
+    ev = read_events(out / "progress.jsonl")
+    assert ev[-2]["type"] == "stage_done" and ev[-2]["status"] == "error"
+    assert ev[-1]["type"] == "pipeline_done" and ev[-1]["status"] == "interrupted" and ev[-1]["exit_code"] == 130
+
+
+def test_a_broken_emitter_never_changes_the_run(gov, tmp_path, monkeypatch, capsys):
+    def no_access(path):
+        raise PermissionError("no write access")
+
+    monkeypatch.setattr(progress, "_open_new", no_access)
+    out = tmp_path / "gov"
+    assert gov.main(["--out", str(out), "--no-tamper-demo"]) == 0
+    captured = capsys.readouterr()
+    err_lines = [ln for ln in captured.err.splitlines() if ln.strip()]
+    assert len(err_lines) == 1 and err_lines[0].startswith("progress: disabled")
+    assert not (out / "progress.jsonl").exists()
+    assert audit.verify_log(out / "audit_log.jsonl").ok and (out / "manager_summary.md").is_file()
+    assert "[SCRIPTED] Headline: attack success" in captured.out
+
+
+def test_emitting_costs_little(gov, tmp_path, monkeypatch):
+    """The emitter must not slow a run noticeably: well under a second for a whole DEMO run."""
+    import time
+
+    out = tmp_path / "gov"
+    real_emit = progress.Progress.emit
+    spent = [0.0]
+
+    def timed(self, *a, **k):
+        t0 = time.perf_counter()
+        try:
+            return real_emit(self, *a, **k)
+        finally:
+            spent[0] += time.perf_counter() - t0
+
+    monkeypatch.setattr(progress.Progress, "emit", timed)
+    assert gov.main(["--out", str(out), "--no-tamper-demo"]) == 0
+    events = len(read_events(out / "progress.jsonl"))
+    runs = 3 * len(corpus.read_jsonl(corpus.TEST_PATH)) * 3                  # candidates x records x reps
+    assert events > runs and spent[0] < 1.0, (events, spent[0])
+
+
+# --------------------------------------------------------------------------- #
+# The committed scripted fixture (consumed by ui/bridge.py and the pipeline screen).
+# --------------------------------------------------------------------------- #
+FIXTURE_NOTE = (
+    "tests/fixtures/progress_scripted.jsonl is a normalised DEMO run (clock, uid, git commit, platform, "
+    "durations and hashes are fixed values). Regenerate it on purpose with:\n"
+    "    REGEN_PROGRESS_FIXTURE=1 .venv/bin/python -m pytest -p no:warnings tests/test_progress.py -k fixture"
+)
+
+
+def normalise(events: list[dict]) -> list[dict]:
+    """Fixed values for what changes from run to run, so the fixture can be compared exactly.
+
+    * ``t`` becomes a fixed base plus ``seq`` milliseconds (still ordered), ``uid`` and ``git_commit``
+      and ``platform`` become constants, every duration becomes 0.0;
+    * every hash (``hash12``, ``head12``, ``identity12``, ``sha12``, a 64-hex head in the summary text)
+      becomes a counter, so equal hashes stay equal and different ones stay different;
+    * a date in the manager-summary bullets becomes a fixed date.
+    """
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    tokens: dict[str, str] = {}
+
+    def token(value, width=12):
+        if value is None:
+            return None
+        return tokens.setdefault(value, format(len(tokens) + 1, "x").zfill(width))
+
+    def swap_hashes(text):
+        text = re.sub(r"\b[0-9a-f]{64}\b", lambda m: token(m.group(0), 64), text)
+        for known in [k for k in tokens if len(k) == 12]:
+            text = text.replace(known, tokens[known])
+        return text
+
+    out = []
+    for ev in events:
+        ev = json.loads(json.dumps(ev))                                    # deep copy
+        ev["t"] = (base + timedelta(milliseconds=ev["seq"])).isoformat(timespec="microseconds")
+        ev["uid"] = "0123456789ab"
+        for key in ("hash12", "head12", "identity12"):
+            if key in ev:
+                ev[key] = token(ev[key])
+        if isinstance(ev.get("test_set"), dict):
+            ev["test_set"]["sha12"] = token(ev["test_set"]["sha12"])
+        if ev["type"] == "pipeline_start":
+            ev["git_commit"], ev["platform"] = "0" * 40, "linux"
+        for key in ("dur_s", "duration_s"):
+            if ev.get(key) is not None:
+                ev[key] = 0.0
+        out.append(ev)
+    for ev in out:                                                         # second pass: hashes inside text
+        if ev["type"] == "chain":
+            ev["detail"] = swap_hashes(ev["detail"])
+        if ev["type"] == "summary":
+            ev["bullets"] = [re.sub(r"\d{4}-\d\d-\d\d", "2026-01-01", swap_hashes(b)) for b in ev["bullets"]]
+    return out
+
+
+def test_normalise_is_stable_and_keeps_hash_relations(demo):
+    a, b = normalise(demo.events), normalise(demo.events)
+    assert a == b
+    audits = of_type(a, "audit")
+    assert len({e["hash12"] for e in audits}) == 10 and all(HEX12.match(e["hash12"]) for e in audits)
+    assert of_type(a, "chain")[0]["head12"] == audits[-1]["hash12"]       # the head is the last entry's hash
+    assert audits[-1]["hash12"] in of_type(a, "chain")[0]["detail"]
+    assert a[0]["t"] < a[1]["t"] < a[-1]["t"]
+
+
+def test_scripted_fixture_matches_a_fresh_demo_run(demo):
+    fresh = normalise(demo.events)
+    if os.environ.get("REGEN_PROGRESS_FIXTURE"):
+        FIXTURE.parent.mkdir(parents=True, exist_ok=True)
+        with open(FIXTURE, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("".join(canonical(ev) + "\n" for ev in fresh))
+    assert FIXTURE.is_file(), FIXTURE_NOTE
+    saved = FIXTURE.read_text(encoding="utf-8").splitlines()
+    assert len(saved) == len(fresh), FIXTURE_NOTE
+    for number, (line, ev) in enumerate(zip(saved, fresh), start=1):
+        assert line == canonical(ev), f"line {number} differs. {FIXTURE_NOTE}"
+    text = "\n".join(saved)
+    assert str(ROOT) not in text and str(Path.home()) not in text           # nothing personal in a committed file
+    assert [e["type"] for e in map(json.loads, saved)][0] == "pipeline_start"

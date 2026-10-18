@@ -62,9 +62,10 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import IO, Any, Callable, Mapping
+from typing import IO, Any, Callable, Iterator, Mapping
 
 REPO = Path(__file__).resolve().parent.parent
 SCHEMA = 1
@@ -418,6 +419,29 @@ class Progress:
             elif len(self._pending) < MAX_PENDING:
                 self._pending.append(line)
         except Exception as exc:  # noqa: BLE001 - never BaseException: Ctrl-C must get through
+            self._fail(exc)
+
+    def emit_lazy(self, type: str, build: Callable[[], Mapping[str, Any]], **fields: Any) -> None:  # noqa: A002
+        """Like :meth:`emit`, but the fields come from ``build()``.
+
+        ``build`` runs only while the emitter is enabled, and an ``Exception`` in
+        it (a surprise in the data) disables the emitter instead of the run.
+        """
+        if self.disabled:
+            return
+        try:
+            data = dict(build())
+        except Exception as exc:  # noqa: BLE001 - never BaseException
+            self._fail(exc)
+            return
+        self.emit(type, **{**data, **fields})
+
+    @contextmanager
+    def guard(self) -> Iterator[None]:
+        """``with prog.guard():`` runs a block whose ``Exception`` disables the emitter, not the run."""
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001 - never BaseException
             self._fail(exc)
 
     def begin_stage(self, stage: str, title: str) -> None:
