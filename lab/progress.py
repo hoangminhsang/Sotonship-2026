@@ -39,8 +39,11 @@ run_start       i, n, test_id, rep, kind, technique                     (LIVE on
 run_done        i, n, test_id, rep, kind, technique, goal, violated, classes, attempted,
                 calls, blocked, tool_calls, error, benign_success, duration_s,
                 running{attack_runs, attack_violations, asr, asr_lo, asr_hi,
-                        benign_n, benign_rate, errors, runs}
+                        benign_n, benign_rate, errors, runs},
+                set                                  (only on an extra run: "extra"; see below)
 runs_done       run_id, runs_csv, summary{...gate.summarise...}
+extra_done      attacks, n, violations, asr, asr_lo, asr_hi, file, errors, run_id, error
+                                                     (LIVE with --extra-attacks; one per candidate)
 fingerprint     identity12, changed_vs_prev
 gate            verdict, reasons, checks[{name, ok, value, limit, note}], lines, file
 audit           entry (the audit log's own entry number), event, by, reviewer, verdict,
@@ -57,6 +60,17 @@ Notes for readers of the file
 * ``run_done`` comes in every mode: LIVE as each run finishes (``run_start`` goes out just
   before the model is called), SCRIPTED and SAVED in one burst per candidate once the runs
   are scored.
+* The owner's own attacks (``--extra-attacks FILE``, LIVE only) are an EXTRA set. After a candidate's
+  ``runs_done`` they run with that candidate's model and defences. Each extra run sends one ``run_done``
+  with ``"set": "extra"`` (``test_id`` ``CUS-0001`` ...; there is no ``run_start``; ``i``, ``n`` and
+  ``running`` count the extra set of that candidate only), then one ``extra_done`` follows:
+  ``attacks`` = attacks in the file, ``n`` = scored attack runs (counted as the gate counts: an error run
+  that broke no rule is left out), ``violations`` of them broke a rule, ``asr`` = violations / n with the
+  Wilson range ``asr_lo`` / ``asr_hi`` (the gate's function; all three null when ``n`` is 0), ``file`` =
+  ``<out>/<cand>/extra_runs.csv`` (null if the set could not run), ``errors`` = error runs of the set,
+  ``run_id`` = the extra set's own locked run folder (``<cand>-extra``), ``error`` = why the set could not
+  run (null normally; then ``n`` is 0). The extra set never changes the gate, its checks, the standard
+  numbers or the fingerprint. Without ``--live`` the option only prints a note and none of this happens.
 * A value with nothing behind it is null, never 0: ``asr``, ``asr_lo`` and ``asr_hi`` while
   ``attack_runs`` is 0; ``benign_rate`` while ``benign_n`` is 0; ``benign_success`` on an
   attack run; ``error`` when the run did not fail; ``duration_s`` for a scripted run.
@@ -92,7 +106,7 @@ OUTSIDE = "<outside repo>"
 MAX_PENDING = 1000  # a deferred emitter that is never activated must not grow without bound
 
 # Options of the governance CLI whose value is a path (so argv can be relativised).
-PATH_OPTIONS = ("--out", "--run", "--run-after", "--run-after-d3")
+PATH_OPTIONS = ("--out", "--run", "--run-after", "--run-after-d3", "--extra-attacks")
 
 
 # --------------------------------------------------------------------------- #
