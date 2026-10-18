@@ -3526,11 +3526,12 @@ def build_demo(ctx: Ctx) -> dict:
         gov_eff = effective_governance(ctx, folder, how)
     if gov_eff:
         runs = safe(ctx, "Run folders", scan_run_folders, ctx, rf.get("glob") or RUN_GLOB) or []
-        for c in gov_eff["candidates"]:
+        # Scripted output was not made from any run folder: do not match it with the run folders of real runs.
+        scripted_folder = detect_mode(ctx, gov_eff, None, folder_mode_tags(ctx, gov_eff)) == MODE_SCRIPTED
+        for c in ([] if scripted_folder else gov_eff["candidates"]):
             rd = candidate_run_dir(ctx, c, runs, candidate_digest(ctx, folder, c["id"]))
             if rd is None:
-                if detect_mode(ctx, gov_eff, None, folder_mode_tags(ctx, gov_eff)) != MODE_SCRIPTED:
-                    ctx.warn("info", f"No usable run folder found for {c['id']}; its gate is not compared with run data.")
+                ctx.warn("info", f"No usable run folder found for {c['id']}; its gate is not compared with run data.")
                 continue
             run = next((r for r in runs if r["run_dir"] == rd), {"name": Path(rd).name, "run_dir": rd, "manifest": None})
             cfg = run_folder_config(run)

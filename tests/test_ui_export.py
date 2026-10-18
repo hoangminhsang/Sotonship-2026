@@ -1420,6 +1420,17 @@ def test_a_scripted_folder_does_not_warn_about_run_folders_it_never_had(ex, repo
     assert not [w for w in demo["warnings"] if "No usable run folder" in w["text"]], demo["warnings"]
 
 
+def test_a_scripted_folder_is_never_matched_with_the_run_folders_of_real_runs(ex, repo, run_repo):
+    """Real run folders of RC-001..RC-003 lie next to a scripted CLI folder: the gate must not be held against them."""
+    assert run_repo.root == repo                    # both fixtures use the same throw-away folder
+    for cid in ("RC-001", "RC-002", "RC-003"):
+        run_repo.make(cid)
+    _ctx, demo = multi_demo(ex, repo, ["--gov", "governance_out"], allow_sample=True)
+    assert demo["console"]["gate"]["status"] == ex.SAMPLE, demo["warnings"]
+    assert [c["evidence_batch"] for c in demo["governance"]["candidates"]] == [None, None, None]
+    assert not [w for w in demo["warnings"] if "Gate" in w["text"] or "run folder" in w["text"]], demo["warnings"]
+
+
 def test_gov_dir_may_be_given_as_a_path_inside_the_repo(ex, run_repo, cli_mod):
     make_multi(run_repo, cli_mod)
     for given in (str(run_repo.root / GOV_DIR), GOV_DIR + "/", "./" + GOV_DIR):
