@@ -738,12 +738,17 @@ class Batch:
         for position, model in enumerate(self.models, start=1):
             self.status.emit("queued", model, position=position)
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.plan["parallel"], thread_name_prefix="model")
-        futures = [pool.submit(self._worker, model) for model in self.models]
         try:
             with _stop_signals():
+                futures = [pool.submit(self._worker, model) for model in self.models]
                 self._wait(futures)
         except KeyboardInterrupt:
-            self.children.terminate()    # an interrupt while handling an interrupt: end the children now
+            # Only reached for an interrupt outside the wait loop, or a second one while the first was being
+            # handled. The first one asks the children to stop; the second ends them.
+            if self.children.stopping:
+                self.children.terminate()
+            else:
+                self.children.interrupt()
         finally:
             pool.shutdown(wait=True)
         return self._finish()
