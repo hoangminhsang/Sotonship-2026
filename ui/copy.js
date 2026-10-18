@@ -281,6 +281,7 @@ window.COPY = {
       "finished": "Finished. The results are updated.",
       "finished_no_export": "Finished. The results are not updated yet.",
       "failed": "The run failed.",
+        "stopped": "Stopped. The results were not updated.",
       "starting": "Starting",
       "stopping": "Stopping",
       "could_not": "The run could not start.",

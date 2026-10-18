@@ -118,9 +118,17 @@
   @media (prefers-reduced-motion: reduce) { .node { transition:none; } .scan::after { animation:none; } .node.running::before, #wires path.lit { animation:none; } .msg, .dots i { animation:none !important; } .stream-body { scroll-behavior:auto; } }
 
   /* ---------- live run: the stream under the flowchart ---------- */
-  .stream { background:var(--card); border:1px solid var(--line); border-radius:20px; margin-top:16px; height:400px; display:flex; flex-direction:column; overflow:hidden; }
+  .stream { background:var(--card); border:1px solid var(--line); border-radius:20px; margin-top:16px; height:470px; display:flex; flex-direction:column; overflow:hidden; }
   .stream-head { padding:14px 28px; border-bottom:1px solid var(--line); color:var(--soft); font-size:21px; flex:none; }
-  .stream-body { flex:1; overflow-y:auto; padding:18px 28px 22px; display:flex; flex-direction:column; gap:12px; scroll-behavior:smooth; }
+  .stream-cols { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(0, 1fr); }
+  /* in the two columns: compact pinned bubbles, one-line rows */
+  .stream-pin .bub { font-size:20px; padding:8px 16px 10px; } .stream-pin .msg { gap:12px; } .stream-pin .msg .ico { width:44px; height:44px; }
+  .stream-pin .bub .who, .stream-pin .bub .tagline, .stream-pin .bub .mono { font-size:18px; }
+  .stream-body .msg.row { padding-left:0; white-space:nowrap; } .stream-body .msg.row > * { flex:none; }
+  .stream-body .msg.row > :nth-child(2) { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .stream-pin { min-height:0; overflow-y:auto; padding:18px 28px 22px; display:flex; flex-direction:column; gap:12px; border-right:1px solid var(--line); }
+  @media (max-width: 760px) { .stream-cols { grid-template-columns:1fr; } .stream-pin { border-right:0; border-bottom:1px solid var(--line); } }
+  .stream-body { flex:1; min-height:0; overflow-y:auto; padding:18px 28px 22px; display:flex; flex-direction:column; gap:12px; scroll-behavior:smooth; }
   .msg { display:flex; gap:16px; align-items:flex-start; animation:slidein .45s ease both; }
   .msg .ico { flex:none; width:52px; height:52px; border-radius:50%; background:var(--bg); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; }
   .ico svg { width:30px; height:30px; fill:none; stroke:var(--ink); stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
@@ -197,7 +205,7 @@
       <div class="card" id="happened"><h3 id="happened-title"></h3><p class="src" id="ex-src"></p><dl class="ex" id="ex"></dl></div>
       <div class="card"><h3 id="chips-title"></h3><div class="chips" id="chips"></div></div>
     </div>
-    <div class="stream" id="stream" hidden><div class="stream-head" id="stream-head"></div><div class="stream-body" id="stream-body" aria-live="polite"></div></div>
+    <div class="stream" id="stream" hidden><div class="stream-head" id="stream-head"></div><div class="stream-cols"><div class="stream-pin" id="stream-pin"></div><div class="stream-body" id="stream-body" aria-live="polite"></div></div></div>
   </section>
 
   <section class="view" id="view-results" hidden>
@@ -584,7 +592,7 @@
     (ICONS[name] || []).forEach(function (p) { svg.appendChild(sv('path', { d: p })); });
     d.appendChild(svg); return d;
   }
-  var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sBodyEl = $('stream-body');
+  var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sBodyEl = $('stream-body'), sPinEl = $('stream-pin');
   function lab(group, code) {
     var m = (window.DEMO && window.DEMO.labels && window.DEMO.labels[group]) || {};
     return m[code] || code;
@@ -596,6 +604,8 @@
     while (sBodyEl.children.length > 90) sBodyEl.removeChild(sBodyEl.firstChild);
     toEnd();
   }
+  /* the pinned example stays in its own column so it is on screen for the whole beat */
+  function putPin(node) { sPinEl.appendChild(node); sPinEl.scrollTop = sPinEl.scrollHeight; }
   function msg(cls, ic, bubble) { var m = el('div', 'msg' + (cls ? ' ' + cls : '')); if (ic) m.appendChild(ic); if (bubble) m.appendChild(bubble); return m; }
   function bub(label, tone) { var b = el('div', 'bub' + (tone ? ' ' + tone : '')); if (label) b.appendChild(el('span', 'who', label)); return b; }
   function typeInto(g, node, text, ms) {
@@ -612,7 +622,7 @@
     var t = 0, STEP = 1800, TYPE = reduce ? 0 : 1500;
     if (r.user_task) {
       var b1 = bub(S.asks); b1.appendChild(document.createTextNode(String(r.user_task)));
-      later(g, t, function () { put(msg('', icon('user'), b1)); }); t += STEP;
+      later(g, t, function () { putPin(msg('', icon('user'), b1)); }); t += STEP;
     }
     if (r.doc || r.hidden) {
       var b2 = bub(r.doc ? String(r.doc) : S.document);
@@ -620,21 +630,21 @@
         b2.appendChild(el('span', 'tagline', S.hidden_tag));
         b2.appendChild(el('span', 'hid', cleanHidden(r.hidden)));
       }
-      later(g, t, function () { put(msg('', icon('doc'), b2)); }); t += STEP;
+      later(g, t, function () { putPin(msg('', icon('doc'), b2)); }); t += STEP;
     }
     if (r.tool_calls) {
       var dots = el('div', 'bub'), dd = el('span', 'dots'); dd.appendChild(el('i')); dd.appendChild(el('i')); dd.appendChild(el('i')); dots.appendChild(dd);
       var typing = msg('', icon('agent'), dots), b3 = bub(agentName());
       b3.appendChild(el('span', 'mono', String(r.tool_calls)));
-      later(g, t, function () { put(typing); });
-      later(g, t + TYPE, function () { if (typing.parentNode) typing.parentNode.removeChild(typing); put(msg('', icon('agent'), b3)); });
+      later(g, t, function () { putPin(typing); });
+      later(g, t + TYPE, function () { if (typing.parentNode) typing.parentNode.removeChild(typing); putPin(msg('', icon('agent'), b3)); });
       t += STEP + TYPE;
     }
     if (typeof r.violated === 'boolean') {
       var words = classWords(r.classes), b4;
       if (r.violated) { b4 = bub(null, 'bad'); b4.appendChild(document.createTextNode(S.caught + (words ? ': ' + words : ''))); }
       else { b4 = bub(null, 'good'); b4.appendChild(document.createTextNode(S.held)); }
-      later(g, t, function () { put(msg('', icon(r.violated ? 'caught' : 'held', r.violated ? 'bad' : 'good'), b4)); }); t += STEP;
+      later(g, t, function () { putPin(msg('', icon(r.violated ? 'caught' : 'held', r.violated ? 'bad' : 'good'), b4)); }); t += STEP;
     }
     return t;
   }
@@ -652,12 +662,12 @@
   function play(g, it) {
     var d = it.d || {};
     if (it.type === 'pin') return playPin(g, d);
-    if (it.type === 'more') { put(msg('more', null, el('span', null, '+ ' + it.n + ' ' + S.more_runs))); return 400; }
+    if (it.type === 'more') { putPin(msg('more', null, el('span', null, '+ ' + it.n + ' ' + S.more_runs))); return 400; }
     if (it.type === 'run') { put(runRow(d)); return 170; }
     if (it.type === 'fingerprint') {
       var b = bub(S.fingerprint), id = el('span', 'mono'), box = el('span', 'scan'); box.appendChild(id); b.appendChild(box);
       if (typeof d.changed_vs_prev === 'boolean') b.appendChild(el('span', 'sub', d.changed_vs_prev ? S.changed : S.same));
-      put(msg('', icon('finger'), b));
+      putPin(msg('', icon('finger'), b));
       if (d.identity12) typeInto(g, id, String(d.identity12), 60);
       return 1300 + (reduce ? 0 : 700);
     }
@@ -665,7 +675,7 @@
       var bg = bub(null), ok = d.verdict === 'PASS', bad = d.verdict === 'FAIL';
       if (ok || bad) bg.appendChild(el('span', 'pill ' + (ok ? 'good' : 'bad'), S.gate + ': ' + d.verdict));
       if (d.reason) { var cl = ((window.DEMO || {}).labels || {}).checks || {}; bg.appendChild(el('span', 'sub', String(cl[d.reason] || d.reason))); }
-      put(msg('', icon(ok ? 'held' : 'caught', ok ? 'good' : bad ? 'bad' : ''), bg));
+      putPin(msg('', icon(ok ? 'held' : 'caught', ok ? 'good' : bad ? 'bad' : ''), bg));
       return 1500;
     }
     if (it.type === 'audit') {
@@ -674,7 +684,7 @@
       if (d.entry != null) ba.appendChild(el('span', 'sub', S.entry + ' ' + d.entry));
       ba.appendChild(h);
       if (d.scripted) ba.appendChild(el('span', 'sub', S.reviewer_tag));
-      put(msg('', icon('lock'), ba));
+      putPin(msg('', icon('lock'), ba));
       if (d.hash12) typeInto(g, h, String(d.hash12), 60);
       return 1300 + (reduce ? 0 : 700);
     }
@@ -682,14 +692,14 @@
       var bc = bub(null, d.ok ? 'good' : 'bad');
       bc.appendChild(document.createTextNode(d.ok ? S.chain_ok : S.chain_bad));
       if (d.entries != null) bc.appendChild(el('span', 'sub', d.entries + ' ' + S.entries));
-      put(msg('', icon('chain', d.ok ? 'good' : 'bad'), bc));
+      putPin(msg('', icon('chain', d.ok ? 'good' : 'bad'), bc));
       return 1300;
     }
     if (it.type === 'tickets') {
       var bt = bub(null);
       bt.appendChild(document.createTextNode(S.ticket));
       var tt = d.title || d.first; if (tt) bt.appendChild(el('span', 'sub', String(tt)));
-      put(msg('', icon('wrench'), bt));
+      putPin(msg('', icon('wrench'), bt));
       return 1300;
     }
     return 0;
@@ -707,7 +717,7 @@
     if (a.seq != null && b.seq != null && a.seq === b.seq) return true;
     return a.test_id != null && a.test_id === b.test_id && a.cand === b.cand && a.rep === b.rep;
   }
-  function resetStream() { sGen++; sQueue = []; sBusy = false; sMax = -1; sPinned = false; clear(sBodyEl); }
+  function resetStream() { sGen++; sQueue = []; sBusy = false; sMax = -1; sPinned = false; clear(sBodyEl); clear(sPinEl); }
   function paintStream() {
     var L = fresh(), on = !!L;
     $('lower').hidden = on; $('stream').hidden = !on;
@@ -793,10 +803,11 @@
       line = RUN.running + (what ? ': ' + what : '') + (S.model ? ' · ' + S.model : '') + (prog ? ' · ' + prog : '');
     } else if (notice) line = notice;
     else if (last && last.exit_code === 0) line = last.export_status === 'ok' ? RUN.finished : RUN.finished_no_export + (last.export_text ? ' ' + last.export_text : '');
+    else if (last && last.exit_code === 130) line = RUN.stopped || RUN.failed;
     else if (last) line = RUN.failed + (last.export_text ? ' ' + last.export_text : '');
     else line = RUN.idle;
     runText.textContent = line;
-    runText.className = 'runtext' + (!running && !notice && last && last.exit_code !== 0 ? ' bad' : '');
+    runText.className = 'runtext' + (!running && !notice && last && last.exit_code !== 0 && last.exit_code !== 130 ? ' bad' : '');
   }
   function pollStatus() {
     call('GET', 'status').then(function (r) {
