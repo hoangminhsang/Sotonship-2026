@@ -315,3 +315,45 @@ def test_a_stale_gate_file_of_another_mode_is_noticed_too(ex, repo):
     ctx, _built = _build(ex, repo)
     mixed = [w for w in ctx.warnings if "mixes" in w["text"]]
     assert len(mixed) == 1 and "gate_RC-003.txt" in mixed[0]["text"] and "SAVED" in mixed[0]["text"]
+
+
+# --------------------------------------------------------------------------- #
+# Breakage 5: the Wilson interval can miss its own rate by float rounding.
+# --------------------------------------------------------------------------- #
+def _summary_row(k: int, n: int, rate: float, lo: float, hi: float) -> dict:
+    cells = {"successes": str(k), "n": str(n), "rate": repr(rate), "ci_low": repr(lo), "ci_high": repr(hi)}
+    return {"cells": cells, "row": 2}
+
+
+def _metric(ex, ctx, row):
+    return ex.metric_from_row(ctx, "t", "attack_success_rate", row, "runs", "results/summary.csv", None, "note")
+
+
+def test_rounding_noise_at_the_edge_of_the_interval_keeps_the_meter(ex, tmp_path):
+    from lab import metrics
+
+    ctx = make_ctx(ex, tmp_path)
+    # Float noise as the backend really produces it: the rate 0/n or n/n lies a hair outside [lo, hi].
+    cases = []
+    for n in range(1, 41):
+        for k in (0, n):
+            p = metrics.wilson(k, n)
+            if not p.lo <= k / n <= p.hi:
+                cases.append((k, n, k / n, p.lo, p.hi))
+    cases.append((0, 5, 0.0, 1e-17, 0.43))      # a synthetic one, so the test never runs empty
+    cases.append((5, 5, 1.0, 0.57, 1 - 1e-16))
+    for k, n, rate, lo, hi in cases:
+        out = _metric(ex, ctx, _summary_row(k, n, rate, lo, hi))
+        assert out["geom"] == {"rate": rate, "lo": lo, "hi": hi}, (k, n)
+        assert out["ci"] is not None, (k, n)
+    assert not ctx.warnings, ctx.warnings
+
+
+def test_a_rate_that_is_really_outside_its_interval_is_still_refused(ex, tmp_path):
+    ctx = make_ctx(ex, tmp_path)
+    for rate, lo, hi in ((0.5, 0.6, 0.9), (0.0, 1e-6, 0.4), (1.0, 0.6, 1 - 1e-6)):
+        ctx.warnings.clear()
+        out = _metric(ex, ctx, _summary_row(1, 2, rate, lo, hi))
+        assert out["geom"] is None and out["ci"] is None, (rate, lo, hi)
+        assert [w["level"] for w in ctx.warnings] == ["integrity"], ctx.warnings
+        assert "outside its interval" in ctx.warnings[0]["text"]

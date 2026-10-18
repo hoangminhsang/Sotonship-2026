@@ -65,6 +65,7 @@ DIFFERENT_BATCH = "gate output describes a different batch"
 DEMO_DIGEST = "sha256:845dbda0..."  # literal used by scripts/run_governance.py in DEMO mode
 NOT_RECORDED = "not recorded"
 CHECKER = "plain code (lab/oracle.py)"
+CI_EPS = 1e-9  # float slack when a rate is compared with its confidence interval
 
 FIXTURE_FORMATS = {
     "gate": "gate_report_text",
@@ -1428,7 +1429,9 @@ def metric_from_row(ctx: Ctx, pid: str, name: str, row, unit: str, src: str, rev
                                  {"kind": "csv", "row": rowno, "columns": ["rate"], "key": key})
         lo = parse_unit_float(cells["ci_low"], f"{name} ci_low")
         hi = parse_unit_float(cells["ci_high"], f"{name} ci_high")
-        if not lo <= rate <= hi:
+        # The Wilson interval of 0/n or n/n can miss its own rate by float rounding (lo = 5.6e-17 for a
+        # rate of 0.0, hi = 0.9999999999999999 for 1.0). That noise is not an integrity problem.
+        if not lo - CI_EPS <= rate <= hi + CI_EPS:
             raise SourceError(f"{name}: rate is outside its interval")
         out["ci"] = ctx.pfield(f"{pid}.ci", fmt_range(cells["ci_low"], cells["ci_high"]), REAL,
                                f"{cells['ci_low']}, {cells['ci_high']}",
