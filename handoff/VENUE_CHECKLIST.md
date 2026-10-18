@@ -30,17 +30,21 @@ Steps V1–V15 are v2 (the batch runner). Steps F0–F7 are the v1 sequential fa
 ## Bridge check, about 10:45
 
 Do this when no batch runs and the results are sent. Details are in runbook V15.
-The pipeline screen (`#s=6`) is in the push `005ae13` and later, so every part of check 15 works now.
+The pipeline screen is now on the details page (`details.html#s=6`). The run bar needs lane W (bridge run API) in the pull; without it, skip check 16 and say so.
 
 14. `cd $HOME\Desktop\redline`, then V1. `git status --short` shows no `corpus/` line.
 15. `& $PY ui\bridge.py --run demo --serve --no-export`. Check:
     - Two `bridge:` lines appear: `serving ui/ at http://127.0.0.1:8765/ ...` and `started demo, writing governance_out/bridge/demo_<STAMP>`.
     - `(Get-Item ui\data\live.js).LastWriteTime` changes while the run goes.
-    - Browser: `http://127.0.0.1:8765/` loads. After the push with screen 6: `http://127.0.0.1:8765/#s=6` shows the pipeline moving.
+    - Browser: `http://127.0.0.1:8765/` loads the one-page dashboard (cover, then Live run, Results, Proof). `http://127.0.0.1:8765/details.html#s=6` shows the pipeline moving.
     - No line `bridge: the run ended with exit code 1` (or another code that is not 0) appears. Ctrl-C stops the bridge.
-16. Replay of a real run: `& $PY ui\bridge.py --replay results\governance\<STAMP>_<slug>\progress.jsonl --speed 4 --loop --serve`. Check that it plays and starts again. Ctrl-C stops it.
-17. Clean up: `git checkout -- ui/data`. Run the process check of V2 (no python process left).
-18. Tell the owner `bridge ok`, or copy every `bridge:` line and what the window showed after Ctrl-C (not verified on Windows).
+16. Run bar (needs lane W). Stop the bridge of check 15 first. Start `& $PY ui\bridge.py --serve`, open `http://127.0.0.1:8765/`, press any key. Check:
+    - The run bar shows above the flow on Live run. If it does not, copy the `bridge:` lines and go on.
+    - Pick "Scripted demo (no model)" and press "Run". The text says "Running" and the flow moves.
+    - Start it again and press "Stop". The text says "Stopping", then the run ends. The process check of V2 shows no python process left (not verified on Windows).
+17. Replay of a real run: `& $PY ui\bridge.py --replay results\governance\<STAMP>_<slug>\progress.jsonl --speed 4 --loop --serve`. Check that it plays and starts again. Ctrl-C stops it.
+18. Clean up: `git checkout -- ui/data`. Run the process check of V2 (no python process left).
+19. Tell the owner `bridge ok`, or copy every `bridge:` line and what the window showed after Ctrl-C (not verified on Windows).
 
 ## Time rule
 

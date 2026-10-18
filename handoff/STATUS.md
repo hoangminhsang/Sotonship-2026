@@ -41,10 +41,28 @@ The v1 sequential commands (F0–F7) stay the fallback for all of these.
 
 ## Coming (the owner tells you)
 
-- Dashboard **screen 6** (pipeline) and **screen 7** (models) are in this push (`005ae13` and later).
-  `http://127.0.0.1:8765/#s=6` shows the pipeline during a bridge run.
+- The dashboard is now one page: `http://127.0.0.1:8765/`. It has a cover ("Redline", "Press any key to start") and three views: Live run, Results and Proof.
+  The old seven-screen page moved to `http://127.0.0.1:8765/details.html`. Its address works as before: `details.html#s=6` shows the pipeline during a bridge run, and `details.html#s=7` shows the models.
 - Do not pull while a batch runs. Pull between batches (V3).
-- Expected `pytest` last line on macOS for this push: `916 passed`.
+- Expected `pytest` last line on macOS for this push: <<PYTEST_LINE>>
+
+## Run the pipeline from the page
+
+Not verified on Windows. The server part needs lane W (bridge run API) in the pull. Without it, the page shows no run bar: use the commands in V15 instead.
+
+1. Start the bridge: `& $PY ui\bridge.py --serve`. Do V1 first, and start no batch at the same time.
+2. Open the address that the `bridge:` line prints (`http://127.0.0.1:8765/`). Press any key to leave the cover. The run bar sits above the flow on the Live run view.
+3. Pick a run kind in the first list (label "Run"). The choices are:
+   - "Scripted demo (no model)": needs no model and no Ollama.
+   - "Quick live check": needs Ollama running with the model pulled.
+   - "Full run": needs Ollama running with the model pulled. It runs `--live --sample 26 --reps 3`.
+   - "All models": the code does not say if Ollama is needed. Treat it as yes.
+4. For "Quick live check" and "Full run", a second list (label "Model") appears. Pick a tag from it. Check the tag against `ollama list`.
+5. Press "Run". "Full run" and "All models" first ask "This run takes a long time on this machine. Start it anyway?"
+6. Watch the flow on the Live run view. The text next to the buttons says "Running", and later "Finished. The results are updated."
+7. Press "Stop" to end the run. The text says "Stopping". Then run the process check of V2 (no python process left).
+
+If the run bar does not appear, the bridge has no run API. Copy the `bridge:` lines to the owner.
 
 ## Known effects
 

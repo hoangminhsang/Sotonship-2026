@@ -387,8 +387,9 @@ the exit codes, and what `ollama ps` showed.
 
 ## V15. Dashboard bridge check (about 10:45)
 
-`ui\bridge.py` reads a run's `progress.jsonl` and writes `ui\data\live.js`. The pipeline screen reads that file.
-The pipeline screen (screen 6) arrives with the owner's next push. Until then you check the bridge itself.
+`ui\bridge.py` reads a run's `progress.jsonl` and writes `ui\data\live.js`. The dashboard reads that file.
+The dashboard is one page (`http://127.0.0.1:8765/`) with a cover and three views: Live run, Results and Proof.
+The old seven-screen page is `http://127.0.0.1:8765/details.html`. Its pipeline screen is `details.html#s=6`.
 Do this when no batch is running. Do V1 first.
 
 1. **Scripted rehearsal.** It needs no model and no Ollama. It writes to `governance_out\bridge\...` (git ignores it) and not to `results\`.
@@ -401,7 +402,7 @@ Do this when no batch is running. Do V1 first.
 Expected: two lines start with `bridge:`.
 The first says `serving ui/ at http://127.0.0.1:8765/ (this computer only)`.
 The second says `started demo, writing governance_out/bridge/demo_<STAMP>`.
-Open `http://127.0.0.1:8765/` in a browser. After the push with the pipeline screen, open `http://127.0.0.1:8765/#s=6`; the pipeline moves.
+Open `http://127.0.0.1:8765/` in a browser (press any key to leave the cover). Then open `http://127.0.0.1:8765/details.html#s=6`; the pipeline moves.
 Wait until the run ends. In a second window check that the time changed:
 
 ```powershell
@@ -410,7 +411,18 @@ Wait until the run ends. In a second window check that the time changed:
 
 Press Ctrl-C to stop the bridge. A line `bridge: the run ended with exit code N` with N other than 0 is a failure: copy all `bridge:` lines to the owner.
 
-2. **Replay of a real log.** Use the `out` folder of a finished full run (`results\governance\<STAMP>_<slug>`):
+2. **Run bar** (needs lane W, the bridge run API, in the pull; not verified on Windows). Stop the bridge of step 1 first, then start it without a run:
+
+```powershell
+& $PY ui\bridge.py --serve
+```
+
+Open `http://127.0.0.1:8765/` and press any key. On the Live run view, a run bar shows above the flow. If it does not, the bridge has no run API: copy all `bridge:` lines to the owner and go on.
+Choose "Scripted demo (no model)" in the list labelled "Run" and press "Run". The text next to the buttons says "Running" and the flow moves.
+Start it again and press "Stop". The text says "Stopping" and the run ends. Then run the process check of V2: no python process stays.
+The kinds "Quick live check" and "Full run" need Ollama running with the model pulled. "Scripted demo (no model)" does not.
+
+3. **Replay of a real log.** Use the `out` folder of a finished full run (`results\governance\<STAMP>_<slug>`):
 
 ```powershell
 & $PY ui\bridge.py --replay results\governance\<STAMP>_<slug>\progress.jsonl --speed 4 --loop --serve
@@ -418,14 +430,14 @@ Press Ctrl-C to stop the bridge. A line `bridge: the run ended with exit code N`
 
 Open the same address. The replay plays the real run at 4 times the speed and starts again after a pause. Ctrl-C stops it.
 
-3. **Live view of a batch** (optional, only while a batch runs, in a second window):
+4. **Live view of a batch** (optional, only while a batch runs, in a second window):
 
 ```powershell
 & $PY ui\bridge.py --serve --follow-latest                                                   # the newest progress.jsonl
 & $PY ui\bridge.py --batch results\models\<STAMP> --follow-model <slug> --serve              # one model of a batch
 ```
 
-4. **Clean up.** The bridge rewrote tracked files in `ui\data\`. Restore them before any later `git pull`:
+5. **Clean up.** The bridge rewrote tracked files in `ui\data\`. Restore them before any later `git pull`:
 
 ```powershell
 git checkout -- ui/data
