@@ -344,7 +344,11 @@ def fmt_check_value(value) -> str:
 
 
 def noun(n: int, word: str) -> str:
-    return word if n == 1 else word + "s"
+    if n == 1:
+        return word
+    if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
+        return word[:-1] + "ies"      # entry -> entries
+    return word + "s"
 
 
 def plural(n: int, word: str) -> str:
@@ -504,6 +508,7 @@ class LiveModel:
         self.unknown = 0
         self.problems = 0
         self.open_risks: Optional[int] = None
+        self._log_was_done = False
         self._deferred: List[tuple] = []
         self._beat = False
         self._tiles_reset(None, 0)
@@ -639,6 +644,7 @@ class LiveModel:
         self.prev_cand, self.cand = self.cand, cand
         self.pass_no += 1
         self._rail_entry(cand)["state"] = "running"
+        self._log_was_done = self.nodes["sl.log"]["state"] == "done"
         for nid in PASS_NODES:
             node = self.nodes[nid]
             if node["state"] != "idle":
@@ -663,6 +669,8 @@ class LiveModel:
         fact = ("adds " + ", ".join(delta)) if delta else "re-test"
         fact2 = f"{cand} enforces {', '.join(defs)}" if defs else ""
         self._start("fix.ticket", fact=fact, fact2=fact2)
+        if getattr(self, "_log_was_done", False):
+            self.edges["sl.log>fix.ticket"] = "done"       # the last pass's log was written; now the fix
         self._defer("finish", "fix.ticket")
         self._defer("start", "rt.attack", self._planned_fact())
 
@@ -1072,6 +1080,9 @@ class LiveModel:
         if kind == "summary":
             return "Summary written"
         if kind == "chain":
+            tamper = ev.get("tamper")
+            if isinstance(tamper, dict):
+                return "Tamper check on a copy: " + ("caught" if tamper.get("ok") is False else "NOT caught")
             return "Audit chain checked: " + ("intact" if ev.get("ok") is True else "broken")
         if kind == "pipeline_done":
             return f"Run finished: {str_or_none(ev.get('status')) or 'unknown'}"

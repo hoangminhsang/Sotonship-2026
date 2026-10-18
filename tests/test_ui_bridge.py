@@ -837,7 +837,9 @@ def test_a_second_candidate_starts_a_new_pass_with_a_fix_ticket_first():
     assert snap["nodes"]["rt.fixes"]["state"] == "done" and snap["nodes"]["ll.risks"]["state"] == "done"
     assert snap["rail"][0]["state"] == "done" and snap["rail"][1]["state"] == "running"
     assert snap["tiles"]["cand"] == "RC-002"
-    assert all(v == "idle" for k, v in snap["edges"].items() if k.startswith(("rt.attack>rt.", "sl.")))
+    assert all(v == "idle" for k, v in snap["edges"].items()
+               if k.startswith(("rt.attack>rt.", "sl.")) and k != "sl.log>fix.ticket")
+    assert snap["edges"]["sl.log>fix.ticket"] == "done"        # the last pass's log leads to the fix
     # the next event hands over: fix ticket done, the attack starts, the "test again" edge lights
     model.apply(run.ev("artifact", "RC-002", "RC-002:runs", kind="fingerprint", name="RC-002.json", path="x"))
     snap = bridge.build_live(model, bridge.View())
@@ -876,6 +878,16 @@ def test_trace_summary_and_chain_facts():
     _, snap = build(run.events)
     assert snap["nodes"]["ll.trace"]["fact"] == "nothing to trace"
     assert snap["nodes"]["sl.log"]["fact2"] == ""
+
+
+def test_the_events_tail_tells_the_chain_check_from_the_tamper_check():
+    run = Run()
+    run.head()
+    run.tail()
+    _, snap = build(run.events)
+    lines = [x for x in snap["events_tail"] if "chain" in x.lower() or "tamper" in x.lower()]
+    assert "Audit chain checked: intact" in lines
+    assert "Tamper check on a copy: caught" in lines
 
 
 def test_a_tamper_check_that_is_not_caught_is_said_plainly():
