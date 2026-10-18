@@ -34,11 +34,15 @@ def ex():
 
 
 @pytest.fixture(scope="module")
-def cli_out(tmp_path_factory):
+def cli_mod():
+    return _load("run_governance_for_ui_export", "scripts/run_governance.py")
+
+
+@pytest.fixture(scope="module")
+def cli_out(tmp_path_factory, cli_mod):
     """One SCRIPTED run of the governance CLI, shared by the tests of this module."""
-    gov = _load("run_governance_for_ui_export", "scripts/run_governance.py")
     out = tmp_path_factory.mktemp("cli") / "gov"
-    assert gov.main(["--out", str(out)]) == 0
+    assert cli_mod.main(["--out", str(out)]) == 0
     return out
 
 
@@ -731,3 +735,310 @@ def test_validate_demo_still_refuses_absolute_paths_and_user_names(ex, tmp_path,
     for path in ("/Users/someone/x/runs.csv", "/home/someone/x/runs.csv", "/private/tmp/x/runs.csv", "C:\\\\work\\\\runs.csv"):
         assert "an absolute path would be written" in ex.validate_demo(ctx, _minimal_demo(ex, path)), path
     assert "the local user name would be written" in ex.validate_demo(ctx, _minimal_demo(ex, "owner tester-name"))
+
+
+# --------------------------------------------------------------------------- #
+# Numbers sheet: one flat table that holds every number the page and the script say.
+# --------------------------------------------------------------------------- #
+LIVE_SIZE = {"attack": 60, "benign": 30, "reps": 3}
+LIVE_RUN = {"RC-001": (21, 21), "RC-002": (9, 21), "RC-003": (0, 21)}   # (landed, attempted) of the attack runs
+LIVE_GOV = {"connected": True, "candidate_id": "RC-001", "evidence_batch": "b",
+            "gate_report": "governance_out/gate_RC-001.txt", "fingerprint": ["governance_out/RC-001.json"],
+            "audit_log": "governance_out/audit_log.jsonl"}
+SHEET_KEYS_FOR_THE_SCRIPT = ["headline.model", "runs.attack", "rc001.asr", "rc001.asr_range", "rc002.asr",
+                             "rc003.asr", "tamper.entry", "runs.total", "reps", "models.n", "policy.max_asr"]
+SHEET_KEYS_FOR_THE_PAGE = ["rc001.attack_runs", "rc001.violations", "benign.rate", "benign.n", "audit.entries",
+                           "chain.status"]
+
+
+def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, model: str = "qwen2.5:7b-instruct",
+                      run_index: bool = True) -> None:
+    """governance_out/ of a real-model run in the layout of the CLI output, with synthetic numbers.
+
+    The gate text comes from the CLI's own gate_report(), the log and its verify result from the real
+    audit module. The numbers are arbitrary: the tests work out what the sheet must say from the same inputs.
+    """
+    from lab import metrics
+    from lab.governance import audit, gate, load_policy
+
+    run, size = dict(run or LIVE_RUN), dict(size or LIVE_SIZE)
+    out = root / "governance_out"
+    out.mkdir(parents=True, exist_ok=True)
+    policy = load_policy()
+    for cid, (landed, attempted) in run.items():
+        asr, att = metrics.wilson(landed, size["attack"]), metrics.wilson(attempted, size["attack"])
+        ben = metrics.wilson(size["benign"], size["benign"])
+        summary = {"asr": asr.rate, "asr_lo": asr.lo, "asr_hi": asr.hi, "attack_runs": size["attack"],
+                   "attack_violations": landed, "attempted_rate": att.rate, "attempted_runs": size["attack"],
+                   "attempted_count": attempted, "benign_rate": ben.rate, "benign_n": size["benign"],
+                   "errors": 0, "errors_with_violation": 0, "runs": size["attack"] + size["benign"]}
+        text = cli.gate_report(cid, gate.evaluate(summary, policy), summary)
+        (out / f"gate_{cid}.txt").write_text(f"[{tag}] " + text + "\n", encoding="utf-8")
+    (out / "RC-001.json").write_text(json.dumps({"candidate_id": "RC-001", "model": model,
+                                                 "model_digest": "sha256:" + "ab" * 32}), encoding="utf-8")
+    log = out / "audit_log.jsonl"
+    _seed_log(log, 6)
+    lines = log.read_text(encoding="utf-8").splitlines()
+    _edit_line(lines, 2, decision="APPROVE")                       # the tampered copy: entry 3 edited
+    forged = out / "audit_log_tampered_demo.jsonl"
+    forged.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    real, copy = audit.verify_log(log), audit.verify_log(forged)
+    (out / "audit_verify.json").write_text(json.dumps({
+        "schema": "audit-verify/1", "ok": real.ok, "bad_seq": real.bad_seq, "kind": real.kind, "detail": real.detail,
+        "entries": real.entries, "last_hash": real.last_hash, "verified_at": "2026-10-18T06:00:00+00:00",
+        "mode": tag, "tamper_demo": {"ok": copy.ok, "bad_seq": copy.bad_seq, "kind": copy.kind,
+                                     "detail": copy.detail}}), encoding="utf-8")
+    if run_index:
+        (out / "run_index.json").write_text(json.dumps({"schema": "run-index/1", "mode": tag, "complete": True,
+                                                        "reps": size["reps"], "model": model}), encoding="utf-8")
+
+
+def expected_sheet(run=None, size=None) -> dict:
+    """What the sheet must say for write_live_folder(run, size), worked out from the inputs with the backend's maths."""
+    from lab import metrics
+
+    run, size = dict(run or LIVE_RUN), dict(size or LIVE_SIZE)
+    out = {}
+    for cid, (landed, attempted) in run.items():
+        pre, asr = cid.lower().replace("-", ""), metrics.wilson(landed, size["attack"])
+        out[f"{pre}.asr"] = f"{asr.rate:.1%}"
+        out[f"{pre}.asr_range"] = f"[{asr.lo:.1%}, {asr.hi:.1%}]"
+        out[f"{pre}.violations"] = str(landed)
+        out[f"{pre}.attack_runs"] = str(size["attack"])
+        out[f"{pre}.attempted"] = f"{metrics.wilson(attempted, size['attack']).rate:.1%}"
+    out["runs.attack"] = str(size["attack"])
+    out["runs.total"] = str(size["attack"] + size["benign"])
+    out["benign.rate"] = f"{metrics.wilson(size['benign'], size['benign']).rate:.1%}"
+    out["benign.n"] = str(size["benign"])
+    out["reps"] = str(size["reps"])
+    return out
+
+
+@pytest.fixture
+def live_repo(tmp_path, cli_mod):
+    write_live_folder(tmp_path, cli_mod)
+    (tmp_path / "lab" / "governance").mkdir(parents=True)
+    shutil.copy(ROOT / "lab" / "governance" / "policy.yaml", tmp_path / "lab" / "governance" / "policy.yaml")
+    return tmp_path
+
+
+def build_sheet(ex, repo: Path, allow_sample: bool = False, gov=None, batch=None):
+    ctx = make_ctx(ex, repo, dict(gov or LIVE_GOV), allow_sample=allow_sample)
+    batches = {"b": batch or _stub_batch_for(ex, repo)}
+    gate, audit_block, _assurance, _latest = ex.build_governance(ctx, batches)
+    policy = ex.build_policy(ctx)
+    return ctx, ex.build_numbers(ctx, batches, gate, audit_block, policy)
+
+
+def test_the_sheet_has_every_agreed_key_in_lowercase_dotted_form(ex, live_repo):
+    _ctx, sheet = build_sheet(ex, live_repo)
+    assert set(SHEET_KEYS_FOR_THE_SCRIPT + SHEET_KEYS_FOR_THE_PAGE) <= set(sheet)
+    rx = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")      # "reps" is a name with one part
+    assert all(rx.match(k) for k in sheet), [k for k in sheet if not rx.match(k)]
+
+
+def test_a_real_model_run_fills_the_sheet_from_its_files(ex, live_repo):
+    from lab.governance import audit, load_policy
+
+    ctx, sheet = build_sheet(ex, live_repo)
+    for key, text in expected_sheet().items():
+        assert (sheet[key]["status"], sheet[key]["text"], sheet[key]["value"]) == (ex.REAL, text, text), key
+        assert sheet[key]["mode"] == "LIVE", key
+    check = audit.verify_log(live_repo / "governance_out" / "audit_log.jsonl")
+    assert sheet["headline.model"]["text"] == "qwen2.5:7b-instruct"
+    assert sheet["audit.entries"]["text"] == str(check.entries)
+    assert sheet["chain.status"]["text"] == "intact"
+    assert sheet["tamper.entry"]["text"] == "3"                      # the entry the tampered copy names
+    limit = load_policy()["release_limits"]["max_attack_success_rate"]
+    assert sheet["policy.max_asr"]["text"] == f"{limit:.1%}" and sheet["policy.max_asr"]["mode"] is None
+    assert sheet["models.n"]["status"] == ex.PENDING                  # no models table yet
+    assert not [w for w in ctx.warnings if "sheet" in w["text"].lower()], ctx.warnings
+
+
+def test_every_entry_carries_a_source_or_is_pending_and_never_a_typed_number(ex, live_repo):
+    ctx, sheet = build_sheet(ex, live_repo)
+    for key, e in sheet.items():
+        assert {"value", "text", "status", "mode", "source", "prov"} <= set(e), key
+        assert e["status"] in ex.STATUSES, key
+        if e["status"] == ex.PENDING:
+            assert e["value"] is None and e["source"] is None and e["prov"] is None, key
+            assert e["text"] == "not available" and not re.search(r"\d", e["text"]), key
+            assert e["reason"], key
+        else:
+            assert isinstance(e["value"], str) and e["value"] == e["text"] != "", key   # fill_script.py reads "value"
+            assert e["source"] and ("governance_out" in e["source"] or "policy.yaml" in e["source"]), key
+            assert e["prov"] in ctx.prov, key
+    assert sum(1 for e in sheet.values() if e["status"] != ex.PENDING) >= 20
+
+
+def test_every_value_can_be_read_again_from_its_source_file(ex, live_repo):
+    ctx, sheet = build_sheet(ex, live_repo)
+    provs = [ctx.prov[e["prov"]] for e in sheet.values() if e["prov"]]
+    assert len(provs) >= 20
+    assert ex.self_check(ctx, provs) == []
+
+
+def test_the_sheet_follows_the_files_when_the_run_changes(ex, tmp_path, cli_mod):
+    """If any value were typed in the code, a different run would still print the old one."""
+    run = {"RC-001": (14, 18), "RC-002": (4, 18), "RC-003": (1, 18)}
+    size = {"attack": 52, "benign": 24, "reps": 2}
+    write_live_folder(tmp_path, cli_mod, run=run, size=size, model="granite3.3:8b")
+    (tmp_path / "lab" / "governance").mkdir(parents=True)
+    shutil.copy(ROOT / "lab" / "governance" / "policy.yaml", tmp_path / "lab" / "governance" / "policy.yaml")
+    _ctx, sheet = build_sheet(ex, tmp_path)
+    for key, text in expected_sheet(run, size).items():
+        assert sheet[key]["text"] == text, key
+    assert sheet["headline.model"]["text"] == "granite3.3:8b"
+    assert sheet["rc001.asr"]["text"] != expected_sheet()["rc001.asr"]
+
+
+def test_scripted_numbers_say_so_and_are_held_back_without_allow_sample(ex, repo):
+    ctx, sheet = build_sheet(ex, repo, allow_sample=True, gov=GOV_FILES)
+    gate_keys = [k for k in sheet if k.startswith(("rc00", "runs.", "benign."))]
+    shown = [k for k in gate_keys if sheet[k]["status"] != ex.PENDING]
+    assert "rc001.asr" in shown and "rc003.asr" in shown
+    for k in shown:
+        e = sheet[k]
+        assert (e["status"], e["mode"]) == (ex.SAMPLE, "SCRIPTED"), k
+        assert "SCRIPTED" in e["source"] and "not measured" in e["source"], k
+    _ctx, held = build_sheet(ex, repo, allow_sample=False, gov=GOV_FILES)
+    for k in gate_keys:
+        assert held[k]["status"] == ex.PENDING and "--allow-sample" in held[k]["reason"], k
+
+
+def test_candidates_whose_gate_files_read_alike_still_name_their_own_file(ex, tmp_path, cli_mod):
+    """The smoke run gave the same result for all three candidates: the same lines, three different files."""
+    write_live_folder(tmp_path, cli_mod, run={"RC-001": (4, 6), "RC-002": (4, 6), "RC-003": (4, 6)})
+    ctx, sheet = build_sheet(ex, tmp_path)
+    for cid in ("RC-001", "RC-002", "RC-003"):
+        pre = cid.lower().replace("-", "")
+        for part in ("asr", "asr_range", "violations", "attack_runs", "attempted"):
+            e = sheet[f"{pre}.{part}"]
+            assert e["status"] == ex.REAL and f"gate_{cid}.txt" in e["source"], (pre, part, e["source"])
+    assert len({sheet[f"rc00{i}.asr"]["prov"] for i in (1, 2, 3)}) == 3
+    assert ex.self_check(ctx, [ctx.prov[e["prov"]] for e in sheet.values() if e["prov"]]) == []
+
+
+def test_one_provenance_id_never_points_at_two_files(ex, tmp_path):
+    ctx = make_ctx(ex, tmp_path)
+    a = ctx.add_prov("x", ex.REAL, "1", "1", "as written", "a.txt", None, {"kind": "text", "line": 2})
+    assert ctx.add_prov("x", ex.REAL, "1", "1", "as written", "a.txt", None, {"kind": "text", "line": 2}) == a
+    b = ctx.add_prov("x", ex.REAL, "1", "1", "as written", "b.txt", None, {"kind": "text", "line": 2})
+    assert b != a and ctx.prov[b]["source_file"] == "b.txt" and ctx.prov[a]["source_file"] == "a.txt"
+    c = ctx.add_prov("x", ex.REAL, "1", "1", "as written", "a.txt", "d825341", {"kind": "text", "line": 2})
+    assert c not in (a, b)
+
+
+def test_saved_runs_are_real_and_carry_their_mode(ex, tmp_path, cli_mod):
+    write_live_folder(tmp_path, cli_mod, tag="SAVED")
+    _ctx, sheet = build_sheet(ex, tmp_path)
+    assert (sheet["rc001.asr"]["status"], sheet["rc001.asr"]["mode"]) == (ex.REAL, "SAVED")
+    assert "SCRIPTED" not in sheet["rc001.asr"]["source"]
+
+
+def test_a_missing_source_makes_its_keys_pending(ex, live_repo):
+    out = live_repo / "governance_out"
+    (out / "gate_RC-003.txt").unlink()
+    (out / "run_index.json").unlink()
+    (out / "audit_verify.json").unlink()
+    _ctx, sheet = build_sheet(ex, live_repo)
+    for k in ("rc003.asr", "rc003.asr_range", "rc003.violations", "rc003.attack_runs", "rc003.attempted"):
+        assert sheet[k]["status"] == ex.PENDING and "gate_RC-003.txt" in sheet[k]["reason"], k
+    for k in ("reps", "chain.status", "tamper.entry", "models.n"):
+        assert sheet[k]["status"] == ex.PENDING, k
+    assert sheet["rc001.asr"]["status"] == ex.REAL and sheet["rc002.asr"]["status"] == ex.REAL
+
+
+def test_a_gate_that_does_not_match_its_evidence_holds_back_its_numbers(ex, live_repo):
+    other = {"id": "b", "title": "stub", "summary": {"attack_success_rate": {"measured": True, "successes": 1, "n": 2}}}
+    _ctx, sheet = build_sheet(ex, live_repo, batch=other)
+    for k in ("rc001.asr", "rc002.asr", "rc003.asr", "runs.attack", "benign.rate", "headline.model", "reps"):
+        assert sheet[k]["status"] == ex.PENDING and sheet[k]["reason"], k
+    assert sheet["policy.max_asr"]["status"] == ex.REAL     # the policy is not part of that run
+
+
+def test_the_tamper_entry_comes_only_from_a_tamper_block_that_checks_out(ex, live_repo):
+    path = live_repo / "governance_out" / "audit_verify.json"
+    base = json.loads(path.read_text(encoding="utf-8"))
+    for block in ({"ok": True, "bad_seq": None, "detail": "6 entries, chain intact (head abcdef123456)"},
+                  {"ok": False, "bad_seq": 3, "detail": "nothing to see here"},
+                  {"ok": False, "bad_seq": "3", "detail": "entry #3 edited (contents changed after it was written)"},
+                  None):
+        path.write_text(json.dumps(dict(base, tamper_demo=block)), encoding="utf-8")
+        _ctx, sheet = build_sheet(ex, live_repo)
+        assert sheet["tamper.entry"]["status"] == ex.PENDING, block
+        assert sheet["chain.status"]["text"] == "intact", block      # the real log's result is not affected
+
+
+def test_a_broken_chain_is_reported_as_broken(ex, live_repo):
+    from lab.governance import audit
+
+    log = live_repo / "governance_out" / "audit_log.jsonl"
+    lines = log.read_text(encoding="utf-8").splitlines()
+    _edit_line(lines, 1, decision="APPROVE")
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    check = audit.verify_log(log)
+    verify = json.loads((live_repo / "governance_out" / "audit_verify.json").read_text(encoding="utf-8"))
+    verify.update(ok=check.ok, bad_seq=check.bad_seq, kind=check.kind, detail=check.detail)
+    (live_repo / "governance_out" / "audit_verify.json").write_text(json.dumps(verify), encoding="utf-8")
+    _ctx, sheet = build_sheet(ex, live_repo)
+    assert sheet["chain.status"]["text"] == "broken" and sheet["audit.entries"]["text"] == str(check.entries)
+
+
+def test_no_number_is_typed_in_the_code_that_builds_the_sheet(ex):
+    import ast
+
+    tree = ast.parse((ROOT / "ui" / "export.py").read_text(encoding="utf-8"))
+    names = {"build_numbers", "gate_numbers", "numbers_gate", "model_number", "reps_number", "audit_numbers",
+             "num_pending", "num_entry", "num_from_field", "num_part", "number_source", "to_numbers_json",
+             "numbers_problems"}
+    funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in names]
+    assert {f.name for f in funcs} == names
+    for f in funcs:
+        doc = f.body[0].value if f.body and isinstance(f.body[0], ast.Expr) else None
+        for node in ast.walk(f):
+            if node is doc or not isinstance(node, ast.Constant):
+                continue
+            if isinstance(node.value, float):
+                raise AssertionError(f"{f.name}: float literal {node.value!r}")
+            if isinstance(node.value, int) and not isinstance(node.value, bool) and node.value > 4:
+                raise AssertionError(f"{f.name}: number literal {node.value!r}")
+            if isinstance(node.value, str) and re.search(r"\d", node.value):
+                raise AssertionError(f"{f.name}: string with digits {node.value!r}")
+
+
+def test_validate_demo_refuses_a_number_without_a_source(ex, tmp_path):
+    ctx = make_ctx(ex, tmp_path)
+    good = {"value": "7", "text": "7", "status": ex.REAL, "mode": None, "source": "a.csv row 2", "prov": "p1"}
+    pend = {"value": None, "text": "not available", "status": ex.PENDING, "mode": None, "source": None, "prov": None,
+            "reason": "no source"}
+
+    def problems(sheet):
+        demo = _minimal_demo(ex, "x")
+        demo.update(numbers=sheet, provenance=[{"id": "p1"}])
+        return [p for p in ex.validate_demo(ctx, demo) if "numbers" in p]
+
+    assert problems({"a.b": good, "c.d": pend}) == []
+    assert problems({"a.b": dict(good, source=None)})                      # a value without a source
+    assert problems({"a.b": dict(good, prov="unknown")})                   # a source that is not in the provenance list
+    assert problems({"a.b": dict(good, value="8")})                        # value and text must agree
+    assert problems({"a.b": dict(pend, value="7")})                        # a pending key never has a value
+    assert problems({"reps": good, "rc001.asr": good}) == []               # one part or dotted parts
+    for bad in ("A.b", "a..b", "1a", "a b", "a.B", ".a", "a."):            # lowercase dotted names only
+        assert problems({bad: good}), bad
+    assert problems({})                                                    # an empty sheet is a bug
+
+
+def test_main_writes_numbers_json_beside_demo_js_and_embeds_the_same_object(ex, tmp_path):
+    from lab.governance import load_policy
+
+    out = tmp_path / "out" / "demo.js"
+    rc = ex.main(["--no-git", "--allow-sample", "--sources", str(ROOT / "ui" / "sources.json"), "--out", str(out)])
+    assert rc == 0
+    sheet = json.loads((tmp_path / "out" / "numbers.json").read_text(encoding="utf-8"))
+    assert sheet == ex.read_demo_js(out)["numbers"]                          # the same object, twice
+    assert set(SHEET_KEYS_FOR_THE_SCRIPT + SHEET_KEYS_FOR_THE_PAGE) <= set(sheet)
+    limit = load_policy()["release_limits"]["max_attack_success_rate"]
+    assert sheet["policy.max_asr"]["text"] == f"{limit:.1%}"
+    text = (tmp_path / "out" / "numbers.json").read_text(encoding="utf-8")
+    assert "/Users/" not in text and str(Path.home()) not in text

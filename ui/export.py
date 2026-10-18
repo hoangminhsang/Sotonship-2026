@@ -266,8 +266,10 @@ class Ctx:
     def add_prov(self, pid: str, status: str, display: str, raw: str, fmt: str,
                  source_file, rev, locator: dict) -> str:
         if pid in self.prov:
-            # identical re-registration is fine (shared provenance)
-            if self.prov[pid]["raw"] == raw and self.prov[pid]["locator"] == locator:
+            # identical re-registration is fine (shared provenance); the same line in another file is not
+            old = self.prov[pid]
+            if (old["raw"] == raw and old["locator"] == locator and old["source_file"] == source_file
+                    and old["rev"] == rev):
                 return pid
             n = 2
             while f"{pid}#{n}" in self.prov:
@@ -317,6 +319,8 @@ def describe(source_file, rev, loc: dict) -> str:
             return f"{src}{at} row {loc['row']} cols {','.join(loc.get('columns', []))}"
         return f"{src}{at} {loc.get('key', '')} (cols {','.join(loc.get('columns', []))})"
     if k == "jsonl":
+        if loc.get("key") == "entries":
+            return f"{src}{at} entry count"
         return f"{src}{at} line {loc.get('line')} {loc.get('json_path', '')}"
     if k == "yaml":
         return f"{src}{at} line {loc.get('line')} {loc.get('key', '')}"
@@ -327,6 +331,8 @@ def describe(source_file, rev, loc: dict) -> str:
     if k == "git":
         return f"git {loc.get('cmd', '')}"
     if k == "fixture":
+        if loc.get("key") == "entries":
+            return f"{src} {loc.get('json_path', '')} entry count"
         inner = loc.get("key") or ",".join(loc.get("columns", []))
         return f"{src} {loc.get('json_path', '')} line {loc.get('line')} {inner}".rstrip()
     return src
@@ -1366,6 +1372,8 @@ def resolve_raw(ctx: Ctx, p: dict) -> str:
         text, _ = read_text(ctx, src, None)
         content = get_path(json.loads(text), loc["json_path"])
         lines = [str(x) for x in content] if isinstance(content, list) else text_lines(str(content))
+        if loc.get("key") == "entries":
+            return str(sum(1 for ln in lines if ln.strip()))
         return extract_line(lines, loc)
     text, _ = read_text(ctx, src, rev)
     if kind == "csv":
@@ -1384,6 +1392,8 @@ def resolve_raw(ctx: Ctx, p: dict) -> str:
         check_csv_key(cells, key)
         return ", ".join(cells[c] for c in loc["columns"])
     if kind == "jsonl":
+        if loc.get("key") == "entries":
+            return str(len(parse_jsonl(text)))
         lines = text_lines(text)
         no = loc["line"]
         if no < 1 or no > len(lines):
@@ -2203,8 +2213,12 @@ def detect_mode(ctx: Ctx, gov: dict, batch, tags=None):
     return None
 
 
-def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dict) -> dict:
-    """Build a Gate from report text. loc_base: {'kind':'text'} or fixture locator base."""
+def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dict, pid_base: str = "gate") -> dict:
+    """Build a Gate from report text. loc_base: {'kind':'text'} or fixture locator base.
+
+    pid_base starts the provenance ids; the gate output of another candidate needs its own, so that two
+    gate files never share an id (and with it a source file) just because a line reads the same.
+    """
     text = "\n".join(lines_or_text) if isinstance(lines_or_text, list) else lines_or_text
     g = parse_gate_report(text)
 
@@ -2221,9 +2235,10 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
         n = c["name"]
         checks.append({
             "name": n, "label": label(CHECK_LABELS, n), "ok": c["mark"] == "OK", "mark": c["mark"],
-            "value": gf(f"gate.check.{n}.value", c["value"], c["value"], c["line"], "gate.value"),
-            "limit": gf(f"gate.check.{n}.limit", c["limit"], c["limit"], c["line"], "gate.limit"),
-            "note": gf(f"gate.check.{n}.note", c["note"], c["note"], c["line"], "gate.note") if c["note"] else None,
+            "value": gf(f"{pid_base}.check.{n}.value", c["value"], c["value"], c["line"], "gate.value"),
+            "limit": gf(f"{pid_base}.check.{n}.limit", c["limit"], c["limit"], c["line"], "gate.limit"),
+            "note": gf(f"{pid_base}.check.{n}.note", c["note"], c["note"], c["line"], "gate.note")
+            if c["note"] else None,
             "line": c["line"],
         })
     # Figures the gate prints "not a limit": shown beside the checks, never part of them.
@@ -2232,19 +2247,20 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
         n = c["name"]
         info.append({
             "name": n, "label": label(CHECK_LABELS, n),
-            "value": gf(f"gate.info.{n}.value", c["value"], c["value"], c["line"], "gate.info.value"),
-            "note": gf(f"gate.info.{n}.note", c["note"], c["note"], c["line"], "gate.info.note"),
+            "value": gf(f"{pid_base}.info.{n}.value", c["value"], c["value"], c["line"], "gate.info.value"),
+            "note": gf(f"{pid_base}.info.{n}.note", c["note"], c["note"], c["line"], "gate.info.note"),
             "line": c["line"],
         })
     reasons = None
     if g["reasons"] is not None:
         rn = g["reasons"]
-        reasons = gf("gate.reasons", f"{rn} reason{'s' if rn != 1 else ''}", str(rn), g["verdict_line"],
+        reasons = gf(f"{pid_base}.reasons", f"{rn} reason{'s' if rn != 1 else ''}", str(rn), g["verdict_line"],
                      "gate.reasons", '"{n} reason(s)"')
     fails = sum(1 for c in g["checks"] if c["mark"] == "FAIL")
     return {
-        "candidate_id": gf("gate.candidate", g["candidate"], g["candidate"], g["candidate_line"], "gate.candidate"),
-        "verdict": gf("gate.verdict", g["verdict"], g["verdict"], g["verdict_line"], "gate.verdict"),
+        "candidate_id": gf(f"{pid_base}.candidate", g["candidate"], g["candidate"], g["candidate_line"],
+                           "gate.candidate"),
+        "verdict": gf(f"{pid_base}.verdict", g["verdict"], g["verdict"], g["verdict_line"], "gate.verdict"),
         "reasons_count": reasons,
         "checks": checks,
         "info": info,
@@ -2663,6 +2679,294 @@ def produced_of(x: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Numbers sheet: one flat table with every number that the page and the script say.
+# --------------------------------------------------------------------------- #
+NUMBER_CANDIDATES = ("RC-001", "RC-002", "RC-003")
+NUMBER_PARTS = ("asr", "asr_range", "violations", "attack_runs", "attempted")
+NUMBER_UNAVAILABLE = "not available"
+NUMBER_KEYS = (
+    ("headline.model", "policy.max_asr")
+    + tuple(f"{c.lower().replace('-', '')}.{p}" for c in NUMBER_CANDIDATES for p in NUMBER_PARTS)
+    + ("runs.attack", "runs.total", "reps", "benign.rate", "benign.n",
+       "audit.entries", "chain.status", "tamper.entry", "models.n")
+)
+RE_NUMBER_KEY = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")   # "reps" or "rc001.asr"
+RE_CI_RANGE = re.compile(r"95% CI (\[[^\]]*\])")
+RE_X_OF_N = re.compile(r"^(\d+)/(\d+)(?:\s|$)")
+RE_SHAPE_REPS = re.compile(r"attack_reps=\[(\d+)\]")
+
+
+def num_pending(reason: str) -> dict:
+    """A key with no source: no value, no source, a reason. Never a guess."""
+    return {"value": None, "text": NUMBER_UNAVAILABLE, "status": PENDING, "mode": None,
+            "source": None, "prov": None, "reason": reason}
+
+
+def number_source(p: dict, mode) -> str:
+    """Where a number comes from, in words: file, revision, place. A scripted value says so."""
+    loc = p.get("locator") or {}
+    at = f" @{p['rev']}" if p.get("rev") else ""
+    if "line" in loc:
+        where = f" line {loc['line']}"
+    elif "row" in loc:
+        where = f" row {loc['row']}"
+    elif str(loc.get("key", "")).startswith(("count:", "shape")):
+        where = " (counted from the rows)"
+    elif loc.get("json_path"):
+        where = f" {loc['json_path']}"
+    else:
+        where = f" {loc['key']}" if loc.get("key") else ""
+    s = f"{p.get('source_file') or ''}{at}{where}"
+    if loc.get("kind") == "fixture":
+        s += " (hand-written SAMPLE fixture)"
+    if mode == MODE_SCRIPTED:
+        s += " (SCRIPTED: backend DEMO values, not measured)"
+    return s
+
+
+def num_entry(ctx: Ctx, text: str, status: str, mode, pid: str) -> dict:
+    """A sourced number. "value" repeats "text": scripts/fill_script.py reads "value" as the words to say."""
+    return {"value": text, "text": text, "status": status, "mode": mode,
+            "source": number_source(ctx.prov[pid], mode), "prov": pid}
+
+
+def num_from_field(ctx: Ctx, f, mode, why: str) -> dict:
+    """The number is the text of a Field that already has its provenance."""
+    if not f or f.get("status") not in (REAL, SAMPLE) or f.get("prov") not in ctx.prov or f.get("text") in ("", "n/a"):
+        return num_pending(why)
+    return num_entry(ctx, f["text"], f["status"], mode, f["prov"])
+
+
+def num_part(ctx: Ctx, key: str, f, rx, group: int, mode, fmt: str, why: str) -> dict:
+    """The number is a part of a Field's text (the n of "x/n ..."). Its provenance re-reads the whole line."""
+    if not f or f.get("status") not in (REAL, SAMPLE) or f.get("prov") not in ctx.prov:
+        return num_pending(why)
+    m = rx.search(f["text"])
+    if not m:
+        return num_pending(why)
+    base = ctx.prov[f["prov"]]
+    text = m.group(group)
+    pid = ctx.add_prov(f"numbers.{key}", f["status"], text, base["raw"], fmt, base["source_file"], base["rev"],
+                       base["locator"])
+    return num_entry(ctx, text, f["status"], mode, pid)
+
+
+def gate_numbers(ctx: Ctx, gate: dict, cid: str, mode, got: dict, headline: bool = False) -> None:
+    """The keys of one candidate, read from its gate output. The headline candidate also gives the run facts."""
+    pre = cid.lower().replace("-", "")
+    checks = {c["name"]: c for c in gate.get("checks") or []}
+    info = {i["name"]: i for i in gate.get("info") or []}
+    asr = checks.get("attack_success_rate") or {}
+    miss = f"{cid}: the gate output has no attack success line"
+    got[f"{pre}.asr"] = num_from_field(ctx, asr.get("value"), mode, miss)
+    for part, rx, group, fmt in (
+            ("asr_range", RE_CI_RANGE, 1, "the [low, high] range inside the gate note"),
+            ("violations", RE_X_OF_N, 1, "the first number of the x/n that starts the gate note"),
+            ("attack_runs", RE_X_OF_N, 2, "the second number of the x/n that starts the gate note")):
+        got[f"{pre}.{part}"] = num_part(ctx, f"{pre}.{part}", asr.get("note"), rx, group, mode, fmt, miss)
+    att = info.get("attempted_incl_blocked") or {}
+    got[f"{pre}.attempted"] = num_from_field(ctx, att.get("value"), mode,
+                                             f"{cid}: the gate output has no attempted figure")
+    if headline:
+        ben = checks.get("min_benign_task_success") or {}
+        err = checks.get("max_error_rate") or {}
+        unmeasured = "normal-task success was not measured in this run"
+        got["benign.rate"] = num_from_field(ctx, ben.get("value"), mode, unmeasured)
+        got["benign.n"] = num_part(ctx, "benign.n", ben.get("note"), RE_X_OF_N, 2, mode,
+                                   "the second number of the x/n in the normal-task note", unmeasured)
+        got["runs.total"] = num_part(ctx, "runs.total", err.get("note"), RE_X_OF_N, 2, mode,
+                                     "the second number of the errors/runs note of the error-rate line",
+                                     "the gate output has no error-rate line")
+        got["runs.attack"] = dict(got[f"{pre}.attack_runs"])
+
+
+def numbers_gate(ctx: Ctx, gov: dict, cid: str, tags: dict, folder_mode):
+    """(gate, mode, reason) for gate_<cid>.txt in the governance folder, read like the main gate."""
+    name = f"gate_{cid}.txt"
+    try:
+        folder = governance_dir(gov)
+        rel = name if folder in ("", ".") else f"{folder}/{name}"
+        text, _meta = read_text(ctx, rel)
+    except SourceError as exc:
+        return None, None, f"{cid}: {err_text(exc)}"
+    mode = tags.get(name) or folder_mode
+    try:
+        gb = gate_from_text(ctx, text, SAMPLE if mode == MODE_SCRIPTED else REAL, rel, {"kind": "text"},
+                            pid_base=f"gate.{cid}")
+    except SourceError as exc:
+        return None, None, f"{cid}: {err_text(exc)}"
+    if gb["candidate_id"]["text"] != cid:
+        return None, None, f"{rel} is the gate output of {gb['candidate_id']['text']}, not of {cid}"
+    if gb["_fails"] != gb["_reasons"] or (gb["_verdict"] == "PASS") != (gb["_fails"] == 0):
+        ctx.warn("integrity", f"{cid} gate: its verdict does not match its check lines.")
+        return None, None, f"{cid}: gate output is inconsistent (verdict and checks differ)"
+    return gb, mode, ""
+
+
+def model_number(ctx: Ctx, gov: dict, mode):
+    """The model named by the candidate file of the headline run, or None."""
+    for fp in gov.get("fingerprint") or []:
+        try:
+            rel = rel_path(fp)
+            obj = json.loads(read_text(ctx, rel)[0])
+        except Exception:  # noqa: BLE001
+            continue
+        model = obj.get("model") if isinstance(obj, dict) else None
+        if isinstance(model, str) and model.strip():
+            status = SAMPLE if mode == MODE_SCRIPTED else REAL
+            pid = ctx.add_prov("numbers.headline.model", status, model, model, "as written", rel, None,
+                               {"kind": "text", "json_path": "model"})
+            return num_entry(ctx, model, status, mode, pid)
+    return None
+
+
+def reps_number(ctx: Ctx, gov: dict, ev_batch, tags: dict, folder_mode):
+    """Repetitions per test: run_index.json first, else the evidence batch that the gate was checked against."""
+    try:
+        folder = governance_dir(gov)
+        rel = "run_index.json" if folder in ("", ".") else f"{folder}/run_index.json"
+        reps = json.loads(read_text(ctx, rel)[0]).get("reps")
+    except Exception:  # noqa: BLE001
+        reps = None
+    if isinstance(reps, int) and not isinstance(reps, bool) and reps > 0:
+        mode = tags.get("run_index.json") or folder_mode
+        status = SAMPLE if mode == MODE_SCRIPTED else REAL
+        pid = ctx.add_prov("numbers.reps", status, str(reps), str(reps), "as written", rel, None,
+                           {"kind": "text", "json_path": "reps"})
+        return num_entry(ctx, str(reps), status, mode, pid)
+    shape = (ev_batch or {}).get("shape") or {}
+    if (ev_batch or {}).get("status") == REAL and shape.get("prov") in ctx.prov:
+        base = ctx.prov[shape["prov"]]
+        m = RE_SHAPE_REPS.search(base["raw"])
+        if m:
+            pid = ctx.add_prov("numbers.reps", REAL, m.group(1), base["raw"],
+                               "the repeat count that every attack test has in the evidence batch",
+                               base["source_file"], base["rev"], base["locator"])
+            return num_entry(ctx, m.group(1), REAL, None, pid)
+    return None
+
+
+def audit_numbers(ctx: Ctx, audit: dict, mode, got: dict) -> None:
+    """audit.entries, chain.status and tamper.entry, from the audit log and its verify file."""
+    why = (audit or {}).get("reason") or NOT_CONNECTED
+    if not audit or audit.get("status") not in (REAL, SAMPLE) or not audit.get("entries"):
+        for k in ("audit.entries", "chain.status", "tamper.entry"):
+            got[k] = num_pending(why)
+        return
+    status, src = audit["status"], audit.get("source_file")
+    n = str(len(audit["entries"]))
+    loc = ({"kind": "fixture", "json_path": "content_lines", "key": "entries"} if audit.get("stands_in_for")
+           else {"kind": "jsonl", "key": "entries"})
+    pid = ctx.add_prov("numbers.audit.entries", status, n, n, "number of entries in the log", src, None, loc)
+    got["audit.entries"] = num_entry(ctx, n, status, mode, pid)
+
+    chain = audit.get("chain") or {}
+    f = chain.get("text") or {}
+    no_verify = chain.get("reason") or "the chain was not verified in a file"
+    got["chain.status"] = got["tamper.entry"] = num_pending(no_verify)
+    if chain.get("ok") is None or f.get("prov") not in ctx.prov:
+        return
+    detail = f["text"]
+    word = "intact" if "chain intact" in detail else ("empty log" if detail.startswith("no entries") else "broken")
+    base = ctx.prov[f["prov"]]
+    pid = ctx.add_prov("numbers.chain.status", chain["status"], word, base["raw"],
+                       "intact when the detail says chain intact, empty log when it says no entries, broken otherwise",
+                       base["source_file"], base["rev"], base["locator"])
+    got["chain.status"] = num_entry(ctx, word, chain["status"], mode, pid)
+    # The entry that the verify check names in the tampered copy of the log.
+    got["tamper.entry"] = num_pending("audit_verify.json has no tamper_demo result")
+    try:
+        td = json.loads(read_text(ctx, chain["source_file"])[0]).get("tamper_demo")
+        bad = td.get("bad_seq")
+        parse_verify(json.dumps({"ok": td.get("ok"), "bad_seq": bad, "detail": td.get("detail")}))
+        if td["ok"] is not False or isinstance(bad, bool) or not isinstance(bad, int):
+            raise SourceError("the tampered copy was not caught")
+    except Exception:  # noqa: BLE001
+        return
+    pid = ctx.add_prov("numbers.tamper.entry", chain["status"], str(bad), str(bad),
+                       "bad_seq of the tampered copy", chain["source_file"], None,
+                       {"kind": "text", "json_path": "tamper_demo.bad_seq"})
+    got["tamper.entry"] = num_entry(ctx, str(bad), chain["status"], mode, pid)
+
+
+def build_numbers(ctx: Ctx, batches: dict, gate: dict, audit: dict, policy: dict) -> dict:
+    """Every number that the page and the script say, as one flat table: key -> entry.
+
+    An entry is {value, text, status, mode, source, prov}. Nothing is typed here: each text is the text of a
+    Field or a part of one (the n of "x/n ..."), read from a file and registered in the provenance list, so
+    --check can read it again. "value" repeats "text" because scripts/fill_script.py reads "value" as the words
+    to say; "prov" lets the page link the text to its provenance. A key with no source is PENDING with a reason.
+    """
+    gov = ctx.sources.get("governance") or {}
+    connected = gov.get("connected") is True
+    ev_batch = batches.get(gov.get("evidence_batch") or ctx.sources.get("current_batch"))
+    tags = folder_mode_tags(ctx, gov) if connected else {}
+    folder_mode = detect_mode(ctx, gov, ev_batch, tags) if connected else None
+    gate_ok = bool(gate) and gate.get("status") in (REAL, SAMPLE)
+    why_gate = (gate or {}).get("reason") or NOT_CONNECTED
+    got: dict = {}
+
+    def mode_of(path):
+        return (tags.get(Path(str(path)).name) or folder_mode) if connected else None
+
+    headline = NUMBER_CANDIDATES[0]
+    for cid in NUMBER_CANDIDATES:
+        g, g_mode, why = None, None, why_gate
+        if gate_ok and (gate.get("candidate_id") or {}).get("text") == cid:
+            g, g_mode = gate, mode_of(gate.get("source_file"))
+        elif gate_ok and connected:
+            g, g_mode, why = numbers_gate(ctx, gov, cid, tags, folder_mode)
+        elif gate_ok:
+            why = f"{cid}: there is no sample gate output for this candidate"
+        if g:
+            gate_numbers(ctx, g, cid, g_mode, got, headline=(cid == headline))
+            continue
+        pre = cid.lower().replace("-", "")
+        for part in NUMBER_PARTS:
+            got[f"{pre}.{part}"] = num_pending(why)
+        if cid == headline:
+            for k in ("runs.attack", "runs.total", "benign.rate", "benign.n"):
+                got[k] = num_pending(why)
+
+    got["headline.model"] = (model_number(ctx, gov, folder_mode) if gate_ok and connected else None) \
+        or num_pending(why_gate if not gate_ok else "no candidate file names the model")
+    got["reps"] = (reps_number(ctx, gov, ev_batch, tags, folder_mode) if gate_ok else None) \
+        or num_pending(why_gate if not gate_ok else "no run_index.json and no evidence batch behind the gate")
+    got["policy.max_asr"] = num_pending("the policy file has no highest-attack-success limit")
+    for lim in (policy or {}).get("limits") or []:
+        f = lim.get("text") or {}
+        if lim.get("key") == "max_attack_success_rate" and f.get("status") == REAL and f.get("prov") in ctx.prov:
+            got["policy.max_asr"] = num_entry(ctx, f["text"], REAL, None, f["prov"])
+    audit_numbers(ctx, audit, mode_of((audit or {}).get("source_file")), got)
+    got["models.n"] = num_pending("there is no models table yet: it needs results/governance/*/run_index.json")
+    return {k: got.get(k) or num_pending("no source for this key") for k in NUMBER_KEYS}
+
+
+def to_numbers_json(numbers: dict) -> str:
+    """numbers.json: the same flat object that demo.js carries as DEMO.numbers."""
+    return json.dumps(numbers, ensure_ascii=True, allow_nan=False, indent=1) + "\n"
+
+
+def numbers_problems(nums, pids: set) -> list:
+    """Fatal problems of the numbers sheet: a value without a source, a bad key, a pending key with a value."""
+    if not isinstance(nums, dict) or not nums:
+        return ["the numbers sheet is missing or empty"]
+    probs = []
+    for k, e in nums.items():
+        if not RE_NUMBER_KEY.match(str(k)):
+            probs.append(f"numbers key {k!r} is not a lowercase dotted name")
+        elif not isinstance(e, dict) or e.get("status") not in STATUSES:
+            probs.append(f"numbers.{k} has no valid status")
+        elif e["status"] == PENDING:
+            if e.get("value") is not None or e.get("source") is not None or e.get("prov") is not None:
+                probs.append(f"numbers.{k} is PENDING but carries a value or a source")
+        elif not (isinstance(e.get("value"), str) and e["value"] == e.get("text") and e.get("source")
+                  and e.get("prov") in pids):
+            probs.append(f"numbers.{k} has a value without a source")
+    return probs[:4]
+
+
+# --------------------------------------------------------------------------- #
 # Assemble, validate, write.
 # --------------------------------------------------------------------------- #
 def build_demo(ctx: Ctx) -> dict:
@@ -2730,6 +3034,8 @@ def build_demo(ctx: Ctx) -> dict:
 
     compare = build_compare(ctx, batches, policy)
     console = build_console(ctx, cur, gate, latest)
+    numbers = safe(ctx, "Numbers sheet", build_numbers, ctx, batches, gate, audit, policy) or {
+        k: num_pending("the numbers sheet could not be built") for k in NUMBER_KEYS}
 
     results_status = cur["status"] if cur else PENDING
     datasets = [
@@ -2773,6 +3079,7 @@ def build_demo(ctx: Ctx) -> dict:
         "controls": controls,
         "audit": audit,
         "assurance": assurance,
+        "numbers": numbers,
         "labels": {
             "states": STATE_LABELS, "techniques": TECHNIQUE_LABELS, "places": PLACE_LABELS,
             "goals": GOAL_LABELS, "classes": CLASS_LABELS, "checks": CHECK_LABELS, "events": EVENT_LABELS,
@@ -2783,6 +3090,7 @@ def build_demo(ctx: Ctx) -> dict:
     used = set()
     walk_fields(demo, lambda f: used.add(f["prov"]) if f.get("prov") else None)
     walk_produced(demo, used)
+    used.update(e["prov"] for e in numbers.values() if e.get("prov"))   # a number entry is not a Field
     demo["provenance"] = [p for pid, p in ctx.prov.items() if pid in used]
     demo["sample_present"] = has_sample(demo)
     demo["sample_banner"] = SAMPLE_BANNER if demo["sample_present"] else None
@@ -2882,12 +3190,15 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
     """Return a list of fatal problems (empty when the export is valid)."""
     probs = []
     for k in ("schema", "exported_at", "allow_sample", "sample_present", "warnings", "provenance", "datasets",
-              "batches", "current_batch", "console", "policy", "audit", "assurance", "controls", "compare", "labels"):
+              "batches", "current_batch", "console", "policy", "audit", "assurance", "controls", "compare", "labels",
+              "numbers"):
         if k not in demo:
             probs.append(f"missing key {k}")
     if demo.get("schema") != SCHEMA:
         probs.append("wrong schema")
     pids = {p["id"] for p in demo.get("provenance", [])}
+    if "numbers" in demo:
+        probs += numbers_problems(demo["numbers"], pids)
     bad_fields = []
 
     def fchk(f):
@@ -3081,6 +3392,7 @@ def main(argv=None) -> int:
             return 1
 
         write_demo_js(out, to_js(demo))
+        write_demo_js(out.with_name("numbers.json"), to_numbers_json(demo["numbers"]))   # same object as DEMO.numbers
         print_report(demo, args.quiet, out_desc)
         if args.final:
             print("final: no SAMPLE data; demo.js written.")
