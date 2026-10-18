@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -1020,6 +1021,45 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _stop(signum, frame):
+    """SIGTERM / SIGBREAK handler: stop exactly like Ctrl-C, so a partial run folder is still locked."""
+    raise KeyboardInterrupt
+
+
+def _stop_on_sigterm() -> list[tuple[int, object]]:
+    """Make SIGTERM (and SIGBREAK, which only Windows has) raise KeyboardInterrupt; returns what to put back."""
+    saved: list[tuple[int, object]] = []
+    for name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            saved.append((sig, signal.signal(sig, _stop)))
+        except (ValueError, OSError):  # not the main thread, or no such signal here
+            pass
+    return saved
+
+
+def _line_buffer_stdout():
+    """Flush stdout at every newline, so a viewer reading the pipe sees each line at once. Returns the undo."""
+    stream = sys.stdout
+    if not hasattr(stream, "reconfigure"):  # a notebook's stream, a StringIO ...
+        return lambda: None
+    was = getattr(stream, "line_buffering", False)
+    try:
+        stream.reconfigure(line_buffering=True)
+    except (OSError, ValueError):  # closed or detached
+        return lambda: None
+
+    def undo() -> None:
+        try:
+            stream.reconfigure(line_buffering=was)
+        except (OSError, ValueError):
+            pass
+
+    return undo
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not hasattr(args, "tamper_demo"):  # SUPPRESS default: the flag's absence means "run it"
@@ -1049,7 +1089,19 @@ def main(argv: list[str] | None = None) -> int:
     if (args.run_after or args.run_after_d3) and not args.run:
         print("error: --run-after / --run-after-d3 need --run", file=sys.stderr)
         return 2
-    return run(args, list(sys.argv[1:] if argv is None else argv))
+
+    undo_buffering = _line_buffer_stdout()
+    saved_handlers = _stop_on_sigterm()
+    try:
+        return run(args, list(sys.argv[1:] if argv is None else argv))
+    finally:  # an in-process caller (a test, a notebook) gets its stream and signal handlers back
+        for sig, previous in saved_handlers:
+            if previous is not None:
+                try:
+                    signal.signal(sig, previous)
+                except (ValueError, OSError, TypeError):
+                    pass
+        undo_buffering()
 
 
 if __name__ == "__main__":

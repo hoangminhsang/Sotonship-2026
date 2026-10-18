@@ -993,3 +993,82 @@ def test_a_live_saved_run_can_be_gated_again_and_skips_the_corpus_check(gov, liv
     n = of_type(ev, "meta")[0]["candidates"][0]["expected_runs"]
     assert n == 2 and Counter(e["cand"] for e in of_type(ev, "run_done")) == {c: n for c in CANDS}
     assert of_type(ev, "run_start") == []                                  # nothing ran: SAVED has no run_start
+
+
+# --------------------------------------------------------------------------- #
+# A real process: stdout is line-buffered on a pipe, and SIGTERM stops a run like Ctrl-C.
+# --------------------------------------------------------------------------- #
+DRIVER = '''
+import importlib.util, sys, time
+from pathlib import Path
+from types import SimpleNamespace
+
+root, out, runs, ready = (Path(a) for a in sys.argv[1:5])
+sys.path.insert(0, str(root))
+from lab import run_folder, runner
+
+run_folder.RUNS_ROOT = runs
+runner.model_digest = lambda *a, **k: "sha256:" + "ab" * 32
+runner._default_make_agent = lambda world_dir, temperature, defences=(): (object(), [])
+calls = [0]
+
+
+def slow_agent(ag, task):
+    calls[0] += 1
+    if calls[0] == 2:                   # the second run is in flight: tell the parent, then wait to be stopped
+        ready.write_text("ready")
+        time.sleep(60)
+    return SimpleNamespace(final_text="ok", tool_calls=[], error=None)
+
+
+runner.agent.run_task = slow_agent
+spec = importlib.util.spec_from_file_location("rg_child", root / "scripts" / "run_governance.py")
+mod = importlib.util.module_from_spec(spec)
+sys.modules["rg_child"] = mod
+spec.loader.exec_module(mod)
+sys.exit(mod.main(["--live", "--sample", "1", "--reps", "2", "--out", str(out), "--no-tamper-demo"]))
+'''
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot handle SIGTERM; the SIGBREAK handler is unit-tested")
+def test_sigterm_stops_a_live_run_like_ctrl_c_and_stdout_is_not_held_back(tmp_path):
+    import select
+    import signal
+    import subprocess
+    import time
+
+    driver = tmp_path / "driver.py"
+    driver.write_text(DRIVER, encoding="utf-8")
+    out, runs, ready = tmp_path / "gov", tmp_path / "runs", tmp_path / "ready"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}   # stdout is a pipe: block-buffered by default
+    proc = subprocess.Popen(
+        [sys.executable, str(driver), str(ROOT), str(out), str(runs), str(ready)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=str(tmp_path),
+    )
+    try:
+        deadline = time.monotonic() + 90
+        while not ready.exists():
+            assert proc.poll() is None, proc.communicate()
+            assert time.monotonic() < deadline, "the child never reached its second run"
+            time.sleep(0.05)
+        # The run is still going, yet its first lines are already in the pipe.
+        assert select.select([proc.stdout], [], [], 10)[0], "stdout was held back in a buffer"
+        first = os.read(proc.stdout.fileno(), 1 << 16).decode("utf-8", "replace")
+        assert "RC-001" in first and "Mode     : [LIVE]" in first
+
+        proc.send_signal(signal.SIGTERM)
+        _, err = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert proc.returncode != 0 and "KeyboardInterrupt" in err.decode("utf-8", "replace")
+
+    (folder,) = [p for p in runs.iterdir() if p.is_dir()]                  # the partial folder was locked
+    manifest = json.loads((folder / "manifest.json").read_text())
+    assert manifest["locked"] is True and manifest["complete"] is False and manifest["n_runs"] == 1
+
+    ev = read_events(out / "progress.jsonl")
+    assert [e["type"] for e in ev if e["type"] in ("run_start", "run_done")] == ["run_start", "run_done", "run_start"]
+    assert ev[-1]["type"] == "pipeline_done" and ev[-1]["status"] == "interrupted" and ev[-1]["exit_code"] == 130
+    assert not (out / "audit_log.jsonl").exists() or audit.verify_log(out / "audit_log.jsonl").ok

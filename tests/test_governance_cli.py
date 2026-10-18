@@ -257,3 +257,66 @@ def test_corpus_mismatch_exits_2_with_one_line_and_writes_nothing(gov, tmp_path,
     assert not (out / "audit_log.jsonl").exists()      # stopped before any artifact
     assert _corpus_state() == before
 
+
+# --------------------------------------------------------------------------- #
+# main(): line-buffered stdout, and SIGTERM / SIGBREAK stop the run like Ctrl-C.
+# --------------------------------------------------------------------------- #
+def test_main_line_buffers_stdout_while_it_runs_and_puts_it_back(gov, monkeypatch):
+    import io
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    assert stream.line_buffering is False
+    seen = {}
+
+    def fake_run(args, argv=None):
+        seen["during"] = sys.stdout.line_buffering
+        return 0
+
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(gov, "run", fake_run)
+    assert gov.main(["--no-tamper-demo"]) == 0
+    assert seen["during"] is True          # a viewer reading the pipe sees each line at once
+    assert stream.line_buffering is False  # an in-process caller's stream is left as it was
+
+
+def test_main_copes_with_a_stdout_that_cannot_be_reconfigured(gov, monkeypatch):
+    import io
+
+    monkeypatch.setattr(sys, "stdout", io.StringIO())            # no reconfigure()
+    monkeypatch.setattr(gov, "run", lambda args, argv=None: 0)
+    assert gov.main(["--no-tamper-demo"]) == 0
+
+
+def test_sigterm_and_sigbreak_raise_keyboard_interrupt_only_while_main_runs(gov, monkeypatch):
+    import signal
+
+    names = [n for n in ("SIGTERM", "SIGBREAK") if hasattr(signal, n)]    # SIGBREAK: Windows only
+    assert "SIGTERM" in names
+    before = {n: signal.getsignal(getattr(signal, n)) for n in names}
+    seen = {}
+
+    def fake_run(args, argv=None):
+        seen.update({n: signal.getsignal(getattr(signal, n)) for n in names})
+        return 0
+
+    monkeypatch.setattr(gov, "run", fake_run)
+    assert gov.main(["--no-tamper-demo"]) == 0
+    for n in names:
+        handler = seen[n]
+        assert callable(handler) and handler != before[n], n
+        with pytest.raises(KeyboardInterrupt):                    # what Ctrl-C raises, so the folder gets locked
+            handler(getattr(signal, n), None)
+        assert signal.getsignal(getattr(signal, n)) == before[n], n   # put back after the run
+
+
+def test_main_off_the_main_thread_still_runs(gov, monkeypatch):
+    """signal.signal only works on the main thread; a caller on another thread must not crash."""
+    import threading
+
+    monkeypatch.setattr(gov, "run", lambda args, argv=None: 7)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(code=gov.main(["--no-tamper-demo"])))
+    thread.start()
+    thread.join(10)
+    assert result == {"code": 7}
+
