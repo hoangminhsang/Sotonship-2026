@@ -473,6 +473,9 @@ body[data-screen="6"] #banner{display:none!important}
    coordinates, so #screen-6 stays unpositioned and the stage is the positioned ancestor. Without them the
    screen shows its title and one status line. */
 #p-status{font:400 24px/1.4 var(--sans);color:var(--ink)}
+/* without pipeline.js the screen is a title and one line, stacked */
+#screen-6{grid-template-columns:minmax(0,1fr);grid-template-areas:none;align-content:start;row-gap:14px}
+#screen-6 > .screen-title{grid-area:auto}
 #p-rail,#p-nodes{list-style:none}
 #p-wires{display:block;width:0;height:0;overflow:visible}
 #screen-7{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(auto,1fr) auto auto;
