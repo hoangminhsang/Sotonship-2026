@@ -752,7 +752,9 @@ SHEET_KEYS_FOR_THE_PAGE = ["rc001.attack_runs", "rc001.violations", "benign.rate
 
 
 def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, model: str = "qwen2.5:7b-instruct",
-                      run_index: bool = True) -> None:
+                      run_index: bool = True, folder: str = "governance_out", run_ids=None,
+                      started_at: str = "2026-10-18T06:00:00+00:00", complete: bool = True,
+                      digest: str = "sha256:" + "ab" * 32) -> None:
     """governance_out/ of a real-model run in the layout of the CLI output, with synthetic numbers.
 
     The gate text comes from the CLI's own gate_report(), the log and its verify result from the real
@@ -762,7 +764,7 @@ def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, m
     from lab.governance import audit, gate, load_policy
 
     run, size = dict(run or LIVE_RUN), dict(size or LIVE_SIZE)
-    out = root / "governance_out"
+    out = root / folder
     out.mkdir(parents=True, exist_ok=True)
     policy = load_policy()
     for cid, (landed, attempted) in run.items():
@@ -775,7 +777,7 @@ def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, m
         text = cli.gate_report(cid, gate.evaluate(summary, policy), summary)
         (out / f"gate_{cid}.txt").write_text(f"[{tag}] " + text + "\n", encoding="utf-8")
     (out / "RC-001.json").write_text(json.dumps({"candidate_id": "RC-001", "model": model,
-                                                 "model_digest": "sha256:" + "ab" * 32}), encoding="utf-8")
+                                                 "model_digest": digest}), encoding="utf-8")
     log = out / "audit_log.jsonl"
     _seed_log(log, 6)
     lines = log.read_text(encoding="utf-8").splitlines()
@@ -789,8 +791,11 @@ def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, m
         "mode": tag, "tamper_demo": {"ok": copy.ok, "bad_seq": copy.bad_seq, "kind": copy.kind,
                                      "detail": copy.detail}}), encoding="utf-8")
     if run_index:
-        (out / "run_index.json").write_text(json.dumps({"schema": "run-index/1", "mode": tag, "complete": True,
-                                                        "reps": size["reps"], "model": model}), encoding="utf-8")
+        cands = [dict({"id": cid}, **({"run_id": run_ids[cid]} if run_ids and cid in run_ids else {}))
+                 for cid in run]
+        (out / "run_index.json").write_text(json.dumps({
+            "schema": "run-index/1", "mode": tag, "complete": complete, "started_at": started_at,
+            "reps": size["reps"], "model": model, "candidates": cands}), encoding="utf-8")
 
 
 def expected_sheet(run=None, size=None) -> dict:
@@ -1081,10 +1086,12 @@ def run_repo(tmp_path, monkeypatch):
     tests = corpus.read_jsonl(corpus.TEST_PATH)
     records = [t for t in tests if t["kind"] == "attack"][:2] + [t for t in tests if t["kind"] == "benign"][:2]
 
-    def make(candidate="RC-001", defences=()):
+    def make(candidate="RC-001", defences=(), run_id=None):
         list(runner.run_split(records, reps=2, digest="sha256:" + "cd" * 32, make_agent=lambda w, t: (object(), []),
                               runs_root=tmp_path / "results" / "runs", candidate=candidate, split="test",
-                              defences=defences))
+                              defences=defences, run_id=run_id))
+        if run_id:
+            return tmp_path / "results" / "runs" / run_id
         return sorted((tmp_path / "results" / "runs").glob(f"*_{candidate}"))[-1]
 
     return SimpleNamespace(root=tmp_path, make=make, records=records)
@@ -1263,6 +1270,174 @@ def test_evidence_rows_never_carry_an_absolute_path(ex, tmp_path):
     assert [r["proof_file_exists"] for r in rows] == [True, False]
     assert rows[0]["proof_file_note"] is None and rows[1]["proof_file_note"] == "file not found"
     assert "/Users/" not in json.dumps(body)
+
+
+# --------------------------------------------------------------------------- #
+# A5.7: several candidates in one governance folder; --gov DIR and governance.pick choose the folder.
+# --------------------------------------------------------------------------- #
+GOV_DIR = "results/governance/20261018T060000Z_stub"
+
+
+def make_multi(run_repo, cli, folder=GOV_DIR, tag="LIVE", cands=("RC-001", "RC-002", "RC-003"), run_index=True,
+               started_at="2026-10-18T06:00:00+00:00", complete=True, digest="sha256:" + "cd" * 32):
+    """Run folders from the real runner (stub agent) and a governance folder whose gate numbers match them."""
+    import csv
+
+    dirs = {cid: run_repo.make(cid) for cid in cands}
+    rows = list(csv.DictReader((dirs[cands[0]] / "runs.csv").open(encoding="utf-8")))
+    n_attack = sum(1 for r in rows if r["kind"] == "attack")
+    hits = sum(1 for r in rows if r["kind"] == "attack" and r["violated"] == "True")
+    size = {"attack": n_attack, "benign": sum(1 for r in rows if r["kind"] == "benign"), "reps": 2}
+    write_live_folder(run_repo.root, cli, tag=tag, run={cid: (hits, hits) for cid in cands}, size=size, folder=folder,
+                      run_ids={cid: d.name for cid, d in dirs.items()} if run_index else None, run_index=run_index,
+                      started_at=started_at, complete=complete, digest=digest)
+    return dirs
+
+
+def multi_demo(ex, root, argv=(), governance=None, allow_sample=False, max_batches=1):
+    sources = {"schema": ex.SOURCES_SCHEMA, "repo_root": ".", "current_batch": "newest-run", "batches": [],
+               "run_folders": {"enabled": True, "glob": "results/runs/*/manifest.json", "max_batches": max_batches},
+               "governance": governance if governance is not None else {"pick": "newest-real"}}
+    args = ex.parse_args(["--no-git"] + (["--allow-sample"] if allow_sample else []) + list(argv))
+    ctx = ex.Ctx(args, root / "sources.json", sources, root)
+    ex.init_git(ctx)
+    return ctx, ex.build_demo(ctx)
+
+
+def batch_id_of(ex, run_dir):
+    return "run_" + re.sub(r"[^A-Za-z0-9_-]", "-", run_dir.name)
+
+
+def test_gov_dir_shows_every_candidate_and_selects_the_last(ex, run_repo, cli_mod):
+    dirs = make_multi(run_repo, cli_mod)
+    ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    g = demo["governance"]
+    assert (g["dir"], g["pick"], g["mode"], g["selected"]) == (GOV_DIR, "--gov", "LIVE", "RC-003")
+    assert [c["id"] for c in g["candidates"]] == ["RC-001", "RC-002", "RC-003"]
+    gate = demo["console"]["gate"]
+    assert gate["status"] == ex.REAL and gate["candidate_id"]["text"] == "RC-003"
+    assert demo["console"]["evidence_batch"] == demo["current_batch"] == batch_id_of(ex, dirs["RC-003"])
+    assert demo["compare"]["a"]["batch"] == batch_id_of(ex, dirs["RC-001"])
+    assert demo["compare"]["b"]["batch"] == batch_id_of(ex, dirs["RC-003"])
+    for c in g["candidates"]:      # every candidate has its own gate and evidence, even beyond max_batches
+        assert c["gate"]["status"] == ex.REAL and c["gate"]["candidate_id"]["text"] == c["id"], c["id"]
+        assert c["run_id"] == dirs[c["id"]].name and c["evidence_batch"] == batch_id_of(ex, dirs[c["id"]]), c["id"]
+    assert {b["id"] for b in demo["batches"]} >= {batch_id_of(ex, d) for d in dirs.values()}
+    assert not [w for w in demo["warnings"] if w["level"] == "integrity" and ("Gate" in w["text"])], demo["warnings"]
+    assert ex.self_check(ctx, demo["provenance"]) == []
+
+
+def test_gov_dir_may_be_given_as_a_path_inside_the_repo(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod)
+    for given in (str(run_repo.root / GOV_DIR), GOV_DIR + "/", "./" + GOV_DIR):
+        _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", given])
+        assert demo["governance"]["dir"] == GOV_DIR, given
+    ctx, _demo = multi_demo(ex, run_repo.root)
+    ctx.args.gov = "/etc"
+    with pytest.raises(ex.FatalError):
+        ex.governance_folder(ctx)
+    ctx.args.gov = "../elsewhere"
+    with pytest.raises(ex.FatalError):
+        ex.governance_folder(ctx)
+
+
+def test_governance_pick_fixed_uses_the_folder_of_sources_json(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod)
+    _ctx, demo = multi_demo(ex, run_repo.root, governance={"pick": "fixed", "dir": GOV_DIR, "selected": "RC-001"})
+    g = demo["governance"]
+    assert (g["dir"], g["pick"], g["selected"]) == (GOV_DIR, "fixed", "RC-001")
+    assert demo["console"]["gate"]["candidate_id"]["text"] == "RC-001"
+
+
+def test_gov_flag_wins_over_the_pick_of_sources_json(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod)
+    other = "results/governance/20261018T050000Z_other"
+    write_live_folder(run_repo.root, cli_mod, folder=other, started_at="2026-10-18T09:00:00+00:00")
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR], governance={"pick": "fixed", "dir": other})
+    assert (demo["governance"]["dir"], demo["governance"]["pick"]) == (GOV_DIR, "--gov")
+
+
+def test_newest_real_takes_the_latest_complete_real_run_by_its_content_time(ex, run_repo, cli_mod):
+    def put(name, **kw):
+        write_live_folder(run_repo.root, cli_mod, folder=f"results/governance/{name}", **kw)
+
+    put("a_old_live", started_at="2026-10-18T06:00:00+00:00")
+    put("b_newest_saved", tag="SAVED", started_at="2026-10-18T07:00:00+00:00")
+    put("c_unfinished", started_at="2026-10-18T08:00:00+00:00", complete=False)
+    put("d_scripted", tag="SCRIPTED", started_at="2026-10-18T09:00:00+00:00")
+    for name in ("a_old_live", "b_newest_saved", "c_unfinished", "d_scripted"):      # file times say nothing
+        for p in (run_repo.root / "results" / "governance" / name).iterdir():
+            import os
+
+            os.utime(p, (1, 1) if name == "b_newest_saved" else (4_000_000_000, 4_000_000_000))
+    _ctx, demo = multi_demo(ex, run_repo.root, governance={"pick": "newest-real"})
+    assert (demo["governance"]["dir"], demo["governance"]["pick"], demo["governance"]["mode"]) == \
+        ("results/governance/b_newest_saved", "newest-real", "SAVED")
+
+
+def test_without_run_index_the_candidates_come_from_the_gate_files_and_the_run_folders_from_their_manifests(
+        ex, run_repo, cli_mod):
+    dirs = make_multi(run_repo, cli_mod, run_index=False)
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    g = demo["governance"]
+    assert [c["id"] for c in g["candidates"]] == ["RC-001", "RC-002", "RC-003"] and g["selected"] == "RC-003"
+    assert [c["run_id"] for c in g["candidates"]] == [dirs[c].name for c in ("RC-001", "RC-002", "RC-003")]
+    assert demo["console"]["gate"]["status"] == ex.REAL
+
+
+def test_a_candidate_whose_run_is_unusable_is_pending_and_the_others_still_show(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod, run_index=False)
+    for p in (run_repo.root / "results" / "runs").glob("*_RC-002"):
+        _rewrite_manifest(p, complete=False)                 # RC-002's run did not finish
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    by_id = {c["id"]: c for c in demo["governance"]["candidates"]}
+    assert by_id["RC-001"]["gate"]["status"] == ex.REAL and by_id["RC-003"]["gate"]["status"] == ex.REAL
+    assert by_id["RC-002"]["gate"]["status"] == ex.PENDING
+    batch = next(b for b in demo["batches"] if b["id"] == by_id["RC-002"]["evidence_batch"])
+    assert batch["status"] == ex.PENDING and "not complete" in batch["reason"]
+    assert demo["compare"]["a"]["batch"] and demo["compare"]["b"]["batch"]       # first vs last still compare
+
+
+def test_a_finished_run_is_preferred_over_an_unfinished_newer_one(ex, run_repo, cli_mod):
+    dirs = make_multi(run_repo, cli_mod, run_index=False)
+    newer = run_repo.make("RC-002", run_id="20991231T000000Z_another_RC-002")   # a second run of RC-002 ...
+    _rewrite_manifest(newer, started_at="2099-01-01T00:00:00+00:00", complete=False)   # ... newer, but unfinished
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    by_id = {c["id"]: c for c in demo["governance"]["candidates"]}
+    assert by_id["RC-002"]["run_id"] == dirs["RC-002"].name and by_id["RC-002"]["gate"]["status"] == ex.REAL
+
+
+def test_a_run_of_another_model_is_not_taken_for_the_candidate(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod, run_index=False, digest="sha256:" + "ee" * 32)   # the candidate file names another model
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    first = demo["governance"]["candidates"][0]
+    assert first["evidence_batch"] is None and first["run_id"] is None
+    assert first["gate"]["status"] == ex.PENDING
+    assert any("RC-001" in w["text"] and "run folder" in w["text"] for w in demo["warnings"]), demo["warnings"]
+
+
+def test_scripted_folders_need_allow_sample_and_need_no_evidence_batch(ex, repo):
+    folder = "governance_out"
+    _ctx, held = multi_demo(ex, repo, ["--gov", folder])
+    assert held["console"]["gate"]["status"] == ex.PENDING
+    assert "--allow-sample" in held["console"]["gate"]["reason"]
+    _ctx, shown = multi_demo(ex, repo, ["--gov", folder], allow_sample=True)
+    gate = shown["console"]["gate"]
+    assert gate["status"] == ex.SAMPLE and gate["candidate_id"]["text"] == "RC-003"
+    assert (shown["governance"]["mode"], shown["governance"]["selected"]) == ("SCRIPTED", "RC-003")
+    assert [c["gate"]["status"] for c in shown["governance"]["candidates"]] == [ex.SAMPLE] * 3
+
+
+def test_assurance_has_the_risks_of_every_candidate(ex, repo):
+    _ctx, demo = multi_demo(ex, repo, ["--gov", "governance_out"], allow_sample=True)
+    by = demo["assurance"]["by_candidate"]
+    assert list(by) == ["RC-001", "RC-002", "RC-003"]
+    for cid, name in (("RC-001", "risk_register_before.md"), ("RC-002", "risk_register_RC-002.md"),
+                      ("RC-003", "risk_register_RC-003.md")):
+        text = (repo / "governance_out" / name).read_text(encoding="utf-8")
+        rows = [ln for ln in text.splitlines() if ln.startswith("| R-")]
+        assert [r["id"] for r in by[cid]["risks"]] == [ln.split("|")[1].strip() for ln in rows], cid
+    assert demo["assurance"]["risks"] and demo["assurance"]["source_files"][0].endswith("risk_register_after.md")
 
 
 def test_the_screens_can_show_the_newest_run_folder_instead_of_the_rehearsal(ex, run_repo):

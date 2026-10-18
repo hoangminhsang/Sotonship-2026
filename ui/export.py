@@ -1676,30 +1676,162 @@ def build_run_folder_batch(ctx: Ctx, cfg: dict, kind: str) -> dict:
     return batch
 
 
+RUN_GLOB = "results/runs/*/manifest.json"
+
+
+def scan_run_folders(ctx: Ctx, pattern: str) -> list:
+    """Every run folder that matches the glob, newest first by the started_at in its manifest.
+
+    Content time, never the file time. {run_dir, name, manifest (None if unreadable), started (sort key)}.
+    """
+    found = []
+    for mp in sorted(ctx.repo_root.glob(rel_path(pattern))):
+        try:
+            m = json.loads(mp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            m = None
+        m = m if isinstance(m, dict) else None
+        started = parse_iso(m.get("started_at")) if m else None
+        found.append({"run_dir": mp.parent.relative_to(ctx.repo_root).as_posix(), "name": mp.parent.name,
+                      "manifest": m, "started": started.timestamp() if started else 0.0})
+    found.sort(key=lambda r: (r["started"], r["name"]), reverse=True)
+    return found
+
+
+def run_batch_id(name: str) -> str:
+    return "run_" + re.sub(r"[^A-Za-z0-9_-]", "-", name)
+
+
+def run_folder_config(run: dict) -> dict:
+    cand = str((run["manifest"] or {}).get("candidate") or "run")
+    return {"id": run_batch_id(run["name"]), "title": f"Run {cand} ({run['name']})", "adapter": "run-folder",
+            "run_dir": run["run_dir"]}
+
+
 def run_folder_configs(ctx: Ctx, rf: dict) -> list:
     """Batch configs for the run folders that sources.json run_folders asks for, newest run first.
 
-    Order is by the started_at in each manifest (content time, never the file time), at most max_batches.
-    A folder with an unreadable manifest is listed last: its batch shows the reason.
+    At most max_batches. A folder with an unreadable manifest is listed last: its batch shows the reason.
     """
-    pattern = rel_path(rf.get("glob") or "results/runs/*/manifest.json")
-    found = []
-    for mp in sorted(ctx.repo_root.glob(pattern)):
-        run_dir = mp.parent.relative_to(ctx.repo_root).as_posix()
-        try:
-            m = json.loads(mp.read_text(encoding="utf-8"))
-            started = parse_iso(m.get("started_at")) if isinstance(m, dict) else None
-            cand = str(m.get("candidate") or "run") if isinstance(m, dict) else "run"
-        except (OSError, ValueError):
-            started, cand = None, "run"
-        found.append((started.isoformat() if started else "", mp.parent.name, run_dir, cand))
-    found.sort(reverse=True)
     cap = rf.get("max_batches") if isinstance(rf.get("max_batches"), int) and rf["max_batches"] > 0 else 4
+    return [run_folder_config(r) for r in scan_run_folders(ctx, rf.get("glob") or RUN_GLOB)[:cap]]
+
+
+def gov_arg_to_rel(ctx: Ctx, arg: str) -> str:
+    """--gov DIR as a folder path relative to the repo root; the folder must exist inside the repo."""
+    root = ctx.repo_root.resolve()
+    p = Path(str(arg))
+    for cand in ([p] if p.is_absolute() else [root / p, Path.cwd() / p]):
+        try:
+            rel = cand.resolve().relative_to(root)
+        except ValueError:
+            continue
+        if rel.as_posix() not in ("", ".") and (root / rel).is_dir():
+            return rel.as_posix()
+    raise FatalError("--gov must name a governance output folder inside the repo")
+
+
+def newest_real_governance(ctx: Ctx, cfg: dict):
+    """The governance folder of the latest complete real-model run (a real-model mode or SAVED), or None.
+
+    Chosen by run_index.json: its started_at is the time (never a file time), complete must be true.
+    """
+    best = None
+    for p in sorted(ctx.repo_root.glob(rel_path(cfg.get("glob") or "results/governance/*/run_index.json"))):
+        try:
+            ri = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        started = parse_iso(ri.get("started_at") or ri.get("started")) if isinstance(ri, dict) else None
+        if started is None or ri.get("complete") is not True or ri.get("mode") not in (MODE_REAL, MODE_SAVED):
+            continue
+        key = (started.timestamp(), p.parent.name)
+        if best is None or key > best[0]:
+            best = (key, p.parent.relative_to(ctx.repo_root).as_posix())
+    return best[1] if best else None
+
+
+def governance_folder(ctx: Ctx):
+    """(folder, how): which governance folder the screens show. (None, None) when sources.json names files.
+
+    Order: --gov DIR; governance.pick "fixed" with governance.dir; governance.pick "newest-real".
+    """
+    cfg = ctx.sources.get("governance") or {}
+    if getattr(ctx.args, "gov", None):
+        return gov_arg_to_rel(ctx, ctx.args.gov), "--gov"
+    pick = cfg.get("pick")
+    if pick == "fixed" and cfg.get("dir"):
+        return rel_path(cfg["dir"]), "fixed"
+    if pick == "newest-real":
+        folder = newest_real_governance(ctx, cfg)
+        if folder:
+            return folder, "newest-real"
+        ctx.warn("info", "governance.pick is newest-real, but no complete real-model run was found.")
+    return None, None
+
+
+def candidate_digest(ctx: Ctx, folder: str, cid: str):
+    """The model digest that the candidate file of the governance folder records, or None."""
+    try:
+        return json.loads(read_text(ctx, f"{folder}/{cid}.json")[0]).get("model_digest")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def governance_candidates(ctx: Ctx, folder: str) -> list:
+    """The candidates of a governance folder in run order: from run_index.json, else from gate_*.txt."""
     out = []
-    for _started, name, run_dir, cand in found[:cap]:
-        out.append({"id": "run_" + re.sub(r"[^A-Za-z0-9_-]", "-", name), "title": f"Run {cand} ({name})",
-                    "adapter": "run-folder", "run_dir": run_dir})
+    try:
+        ri = json.loads(read_text(ctx, f"{folder}/run_index.json")[0])
+    except Exception:  # noqa: BLE001
+        ri = None
+    for c in (ri.get("candidates") if isinstance(ri, dict) and isinstance(ri.get("candidates"), list) else []):
+        if isinstance(c, dict) and isinstance(c.get("id"), str) and RE_SAFE_ID.match(c["id"]):
+            out.append(dict(c))
+    if not out:
+        for p in sorted((ctx.repo_root / folder).glob("gate_*.txt")):
+            cid = p.stem[len("gate_"):]
+            if RE_SAFE_ID.match(cid):
+                out.append({"id": cid})
     return out
+
+
+def candidate_run_dir(ctx: Ctx, entry: dict, runs: list, digest):
+    """The run folder of one candidate: run_index.json names it, else the newest locked run of that candidate
+    (with the candidate file's model digest, when that is a full one)."""
+    rid = entry.get("run_id")
+    if isinstance(rid, str) and RE_RUN_ID.match(rid) and ".." not in rid:
+        for r in runs:
+            if r["name"] == rid:
+                return r["run_dir"]
+        if (ctx.repo_root / "results" / "runs" / rid / "manifest.json").is_file():
+            return f"results/runs/{rid}"
+    pool = [r for r in runs if r["manifest"] and r["manifest"].get("candidate") == entry["id"]
+            and r["manifest"].get("locked") is True]
+    if isinstance(digest, str) and RE_SHA256.match(digest):
+        pool = [r for r in pool if r["manifest"].get("model_digest") == digest]
+    pool.sort(key=lambda r: r["manifest"].get("complete") is True, reverse=True)   # a finished run first, then newest
+    return pool[0]["run_dir"] if pool else None
+
+
+def effective_governance(ctx: Ctx, folder: str, how: str):
+    """The governance settings for a folder: file names derived from it, the candidates and the selected one."""
+    cfg = ctx.sources.get("governance") or {}
+    cands = governance_candidates(ctx, folder)
+    if not cands:
+        ctx.warn("integrity", f"Governance folder {folder} has no gate_*.txt and no run_index.json candidates.")
+        return None
+    ids = [c["id"] for c in cands]
+    sel = cfg.get("selected") if cfg.get("selected") in ids else ids[-1]
+    risk = f"{folder}/risk_register_after.md"
+    if not (ctx.repo_root / risk).is_file():
+        risk = f"{folder}/risk_register_before.md"
+    return {"connected": True, "dir": folder, "pick": how, "selected": sel, "candidate_id": sel,
+            "gate_report": f"{folder}/gate_{sel}.txt",
+            "fingerprint": [f"{folder}/{sel}.json"] + [f"{folder}/{i}.json" for i in ids if i != sel],
+            "audit_log": f"{folder}/audit_log.jsonl", "audit_verify": f"{folder}/audit_verify.json",
+            "risk_register_md": risk, "evidence_md": f"{folder}/evidence_register.md",
+            "fix_tickets_md": f"{folder}/fix_tickets.md", "candidates": cands}
 
 
 def build_batch(ctx: Ctx, cfg: dict, kind: str):
@@ -2433,8 +2565,11 @@ def gate_pending(reason: str, src) -> dict:
     return out
 
 
-def gate_consistency(ctx: Ctx, gate: dict, batch) -> str:
-    """Return a PENDING reason, or '' if the gate is consistent."""
+def gate_consistency(ctx: Ctx, gate: dict, batch, relaxed: bool = False) -> str:
+    """Return a PENDING reason, or '' if the gate is consistent.
+
+    relaxed: scripted output has no evidence batch to compare with; only the gate's own lines are checked.
+    """
     if gate["_fails"] != gate["_reasons"]:
         ctx.warn("integrity", "Gate: the number of FAIL lines does not match the reasons count.")
         return "gate output is inconsistent (FAIL lines and reasons count differ)"
@@ -2448,7 +2583,7 @@ def gate_consistency(ctx: Ctx, gate: dict, batch) -> str:
         if not xm or (int(xm.group(1)), int(xm.group(2))) != (m.get("successes"), m.get("n")):
             ctx.warn("integrity", f"Gate: its attack count does not match the evidence batch ({batch['title']}).")
             return DIFFERENT_BATCH
-    elif asr_check:
+    elif asr_check and not (relaxed and not batch):
         ctx.warn("integrity", "Gate: cannot compare its attack count with the evidence batch.")
         return DIFFERENT_BATCH
     return ""
@@ -2612,6 +2747,78 @@ def assurance_from_md(ctx: Ctx, risk_md, ev_md, fix_md, status: str, srcs: dict,
     return {"risks": risks, "evidence": evidence, "tickets": tickets}
 
 
+def read_gate_output(ctx: Ctx, gate_src, ev_batch, g_status: str, scripted: bool, pid_base: str = "gate",
+                     relaxed: bool = False) -> dict:
+    """One candidate's gate output as a Gate, or a PENDING gate with the reason."""
+    try:
+        p = rel_path(gate_src)
+        text, meta = read_text(ctx, p)
+        gb = gate_from_text(ctx, text, g_status, p, {"kind": "text"}, pid_base=pid_base)
+        why = gate_consistency(ctx, gb, ev_batch, relaxed=relaxed)
+        if why:
+            return gate_pending(why, p)
+        return {"status": g_status, "source_file": p, "produced": file_produced(ctx, p, meta, "written"),
+                "reason": SCRIPTED_REASON if scripted else None, "sample_tag": SCRIPTED_TAG if scripted else None,
+                **gb}
+    except Exception as exc:  # noqa: BLE001
+        ctx.warn("integrity", f"Gate: {err_text(exc)}")
+        return gate_pending(f"No usable gate output: {err_text(exc)}", gate_src)
+
+
+def candidate_assurance(ctx: Ctx, gov: dict, cands: list, status: str) -> dict:
+    """{candidate id: {risks, evidence, source_files}} from risk_register_<id>.md and evidence_register_<id>.md.
+
+    The first candidate (the baseline) has risk_register_before.md; the last one's evidence register has no suffix.
+    """
+    folder, out = gov["dir"], {}
+    for i, c in enumerate(cands):
+        cid = c["id"]
+        risk = next((f"{folder}/{n}" for n in ([f"risk_register_{cid}.md"] + (["risk_register_before.md"] if i == 0 else []))
+                     if (ctx.repo_root / folder / n).is_file()), None)
+        evid = next((f"{folder}/{n}" for n in ([f"evidence_register_{cid}.md"] + (["evidence_register.md"] if i == len(cands) - 1 else []))
+                     if (ctx.repo_root / folder / n).is_file()), None)
+        if not risk:
+            continue
+        try:
+            rtext = read_text(ctx, risk)[0]
+            etext = read_text(ctx, evid)[0] if evid else None
+            body = assurance_from_md(ctx, rtext, etext, None, status, {"risk": risk}, {"risk": {"kind": "text"}})
+            out[cid] = {"status": status, "risks": body["risks"], "evidence": body["evidence"],
+                        "source_files": [risk] + ([evid] if evid else [])}
+        except Exception as exc:  # noqa: BLE001
+            ctx.warn("integrity", f"Assurance {cid}: {err_text(exc)}")
+    return out
+
+
+def build_candidates(ctx: Ctx, gov: dict, batches: dict, gate: dict, assurance: dict) -> dict:
+    """The governance block of the demo: folder, mode, every candidate with its gate, and the selected one.
+
+    Also adds assurance["by_candidate"]. The selected candidate's gate is the one build_governance made.
+    """
+    folder = gov.get("dir")
+    if not folder or gov.get("connected") is not True:
+        return {"dir": None, "pick": None, "mode": None, "selected": None, "candidates": []}
+    tags = folder_mode_tags(ctx, gov)
+    sel_batch = batches.get(gov.get("evidence_batch"))
+    mode = detect_mode(ctx, gov, sel_batch, tags)
+    scripted = mode == MODE_SCRIPTED
+    status = SAMPLE if scripted else REAL
+    out = []
+    for c in gov["candidates"]:
+        cid = c["id"]
+        if cid == gov["selected"]:
+            g = gate
+        elif scripted and not ctx.args.allow_sample:
+            g = gate_pending(gate.get("reason") or NOT_CONNECTED, f"{folder}/gate_{cid}.txt")
+        else:
+            g = read_gate_output(ctx, f"{folder}/gate_{cid}.txt", batches.get(c.get("batch")), status, scripted,
+                                 pid_base=f"gate.{cid}", relaxed=scripted)
+        out.append({"id": cid, "run_id": c.get("run_name"), "evidence_batch": c.get("batch"), "gate": g})
+    if assurance and assurance.get("status") in (REAL, SAMPLE):
+        assurance["by_candidate"] = candidate_assurance(ctx, gov, gov["candidates"], assurance["status"])
+    return {"dir": folder, "pick": gov.get("pick"), "mode": mode, "selected": gov["selected"], "candidates": out}
+
+
 def build_governance(ctx: Ctx, batches: dict):
     gov = ctx.sources.get("governance") or {}
     connected = gov.get("connected") is True
@@ -2640,20 +2847,7 @@ def build_governance(ctx: Ctx, batches: dict):
             assurance = None
         else:
             tag = SCRIPTED_TAG if scripted else None
-            # gate
-            try:
-                p = rel_path(gate_src)
-                text, meta = read_text(ctx, p)
-                gb = gate_from_text(ctx, text, g_status, p, {"kind": "text"})
-                why = gate_consistency(ctx, gb, ev_batch)
-                if why:
-                    gate = gate_pending(why, p)
-                else:
-                    gate = {"status": g_status, "source_file": p, "produced": file_produced(ctx, p, meta, "written"),
-                            "reason": SCRIPTED_REASON if scripted else None, "sample_tag": tag, **gb}
-            except Exception as exc:  # noqa: BLE001
-                ctx.warn("integrity", f"Gate: {err_text(exc)}")
-                gate = gate_pending(f"No usable gate output: {err_text(exc)}", gate_src)
+            gate = read_gate_output(ctx, gate_src, ev_batch, g_status, scripted, relaxed=scripted)
             # audit
             try:
                 p = rel_path(audit_src)
@@ -3191,11 +3385,42 @@ def build_demo(ctx: Ctx) -> dict:
                 order.append(b["id"])
                 run_ids.append(b["id"])
 
+    # Which governance folder do the screens show (--gov, governance.pick), and which run folder backs each
+    # of its candidates? The selected candidate's run is the evidence batch; compare is first vs last candidate.
+    gov_eff, gov_batch = None, None
+    folder, how = governance_folder(ctx)
+    if folder:
+        gov_eff = effective_governance(ctx, folder, how)
+    if gov_eff:
+        runs = scan_run_folders(ctx, rf.get("glob") or RUN_GLOB)
+        for c in gov_eff["candidates"]:
+            rd = candidate_run_dir(ctx, c, runs, candidate_digest(ctx, folder, c["id"]))
+            if rd is None:
+                ctx.warn("info", f"No usable run folder found for {c['id']}; its gate is not compared with run data.")
+                continue
+            run = next((r for r in runs if r["run_dir"] == rd), {"name": Path(rd).name, "run_dir": rd, "manifest": None})
+            cfg = run_folder_config(run)
+            c["run_name"], c["batch"] = run["name"], cfg["id"]
+            if cfg["id"] not in batches:
+                b = safe(ctx, f"Run folder {cfg['id']}", build_batch, ctx, cfg, "local") or pending_batch(
+                    ctx, cfg["id"], cfg["title"], "The run folder could not be read.")
+                batches[b["id"]] = b
+                order.append(b["id"])
+        by_id = {c["id"]: c for c in gov_eff["candidates"]}
+        gov_batch = by_id[gov_eff["selected"]].get("batch")
+        gov_eff["evidence_batch"] = gov_batch or "-"
+        usable = [c["batch"] for c in gov_eff["candidates"] if c.get("batch") and batches[c["batch"]]["status"] == REAL]
+        if len(usable) >= 2 and usable[0] != usable[-1]:
+            ctx.sources["compare"] = {"a": usable[0], "b": usable[-1]}
+        ctx.sources["governance"] = gov_eff
+
     for bid in order:
         safe(ctx, f"Batch {bid} checks", consistency_checks_batch, ctx, batches[bid])
 
     current = src.get("current_batch")
-    if current == "newest-run":   # the newest run folder, if there is one; else the first batch
+    if gov_batch:
+        current = gov_batch
+    elif current == "newest-run":   # the newest run folder, if there is one; else the first batch
         current = run_ids[0] if run_ids else (order[0] if order else None)
         if not run_ids:
             ctx.warn("info", "current_batch is newest-run, but there is no run folder; showing the first batch.")
@@ -3219,6 +3444,9 @@ def build_demo(ctx: Ctx) -> dict:
         latest = None
     else:
         gate, audit, assurance, latest = gres
+    governance = safe(ctx, "Governance candidates", build_candidates, ctx, ctx.sources.get("governance") or {},
+                      batches, gate, assurance) or {"dir": None, "pick": None, "mode": None, "selected": None,
+                                                    "candidates": []}
 
     compare = build_compare(ctx, batches, policy)
     console = build_console(ctx, cur, gate, latest)
@@ -3267,6 +3495,7 @@ def build_demo(ctx: Ctx) -> dict:
         "controls": controls,
         "audit": audit,
         "assurance": assurance,
+        "governance": governance,
         "numbers": numbers,
         "labels": {
             "states": STATE_LABELS, "techniques": TECHNIQUE_LABELS, "places": PLACE_LABELS,
@@ -3379,7 +3608,7 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
     probs = []
     for k in ("schema", "exported_at", "allow_sample", "sample_present", "warnings", "provenance", "datasets",
               "batches", "current_batch", "console", "policy", "audit", "assurance", "controls", "compare", "labels",
-              "numbers"):
+              "numbers", "governance"):
         if k not in demo:
             probs.append(f"missing key {k}")
     if demo.get("schema") != SCHEMA:
@@ -3531,6 +3760,8 @@ def parse_args(argv):
     ap.add_argument("--no-git", action="store_true", help="do not use git; read working-tree files")
     ap.add_argument("--sources", default=None, help="path to a sources.json (default ui/sources.json)")
     ap.add_argument("--out", default=None, help="output path (default ui/data/demo.js)")
+    ap.add_argument("--gov", default=None, metavar="DIR",
+                    help="governance output folder to show (inside the repo); wins over governance.pick")
     return ap.parse_args(argv)
 
 
