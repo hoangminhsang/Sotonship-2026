@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="connect-src 'none'; font-src data:; img-src data:; object-src 'none'">
+<title>Agent Release Gate</title>
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="stage">
+
+  <header id="top">
+    <div class="brand" data-static>Agent Release Gate</div>
+    <nav id="nav" aria-label="Screens">
+      <button type="button" class="nav-item" data-screen="1" data-static>1 Console</button>
+      <button type="button" class="nav-item" data-screen="2" data-static>2 Attacks</button>
+      <button type="button" class="nav-item" data-screen="3" data-static>3 Compare</button>
+      <button type="button" class="nav-item" data-screen="4" data-static>4 Decisions</button>
+      <button type="button" class="nav-item" data-screen="5" data-static>5 Assurance</button>
+    </nav>
+    <div id="chips" aria-label="Data status"></div>
+    <div id="replay" role="status"></div>
+    <div id="deck" aria-hidden="true"></div>
+  </header>
+
+  <div id="banner" hidden></div>
+
+  <section class="screen" id="screen-1" data-screen="1" aria-labelledby="title-1" hidden>
+    <h1 class="screen-title" id="title-1" tabindex="-1" data-static>Can this update ship today?</h1>
+    <div id="c-candidate"></div>
+    <div id="c-evidence"></div>
+    <div id="c-verdict"></div>
+    <div id="c-limits"></div>
+    <div id="c-src"></div>
+  </section>
+
+  <section class="screen" id="screen-2" data-screen="2" aria-labelledby="title-2" hidden>
+    <h1 class="screen-title" id="title-2" tabindex="-1" data-static>Attack board</h1>
+    <div id="b-batches"></div>
+    <div id="b-filter" role="group" aria-label="Filter by technique"></div>
+    <div id="b-legend"></div>
+    <div id="b-attack" class="band" data-band="attack"></div>
+    <div id="b-benign" class="band" data-band="benign"></div>
+    <div id="b-src"></div>
+  </section>
+
+  <section class="screen" id="screen-3" data-screen="3" aria-labelledby="title-3" hidden>
+    <h1 class="screen-title" id="title-3" tabindex="-1" data-static>Compare</h1>
+    <div id="k-a"></div>
+    <div id="k-b"></div>
+    <div id="k-note"></div>
+    <div id="k-tech"></div>
+    <div id="k-src"></div>
+  </section>
+
+  <section class="screen" id="screen-4" data-screen="4" aria-labelledby="title-4" hidden>
+    <h1 class="screen-title" id="title-4" tabindex="-1" data-static>Decisions and audit log</h1>
+    <div id="a-chain"></div>
+    <div id="a-entries" data-scroll tabindex="0" aria-label="Audit log entries"></div>
+    <div id="a-src"></div>
+  </section>
+
+  <section class="screen" id="screen-5" data-screen="5" aria-labelledby="title-5" hidden>
+    <h1 class="screen-title" id="title-5" tabindex="-1" data-static>Are the risks under control?</h1>
+    <div id="r-risks"></div>
+    <div id="r-controls"></div>
+    <div id="r-evidence"></div>
+    <div id="r-tickets"></div>
+    <div id="r-src"></div>
+  </section>
+
+  <aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title" hidden>
+    <div class="d-head">
+      <h2 id="d-title"></h2>
+      <button type="button" id="d-close" aria-label="Close run details" data-static>Close</button>
+    </div>
+    <div id="d-body" data-scroll></div>
+  </aside>
+
+  <footer id="foot">
+    <div id="stamp"></div>
+    <div id="hints"></div>
+    <div id="warn"></div>
+  </footer>
+
+</div>
+<noscript><p class="noscript" data-static>This page needs JavaScript to show the data. It runs offline from this folder and uses no network.</p></noscript>
+<script src="data/demo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

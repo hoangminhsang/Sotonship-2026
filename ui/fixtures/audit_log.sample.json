@@ -1,0 +1,13 @@
+{
+  "sample": true,
+  "dataset": "audit",
+  "format": "audit_jsonl_lines",
+  "stands_in_for": "governance_out/audit_log.jsonl",
+  "prepared": "2026-10-17",
+  "how_made": "Hand-written to show the menu-app flow (submit, refused self-review, BLOCK). Placeholder hashes and times. NOT produced by the backend.",
+  "content_lines": [
+    "{\"by\": \"tom\", \"candidate_id\": \"RC-001\", \"defences\": [], \"event\": \"submit\", \"hash\": \"SAMPLE-NOT-A-HASH-1\", \"prev_hash\": \"0000000000000000000000000000000000000000000000000000000000000000\", \"seq\": 1, \"time\": \"2026-10-17T00:00:01+00:00\"}",
+    "{\"action\": \"APPROVE\", \"candidate_id\": \"RC-001\", \"detail\": \"REFUSED: tom submitted this candidate and cannot review it\", \"event\": \"decision_refused\", \"hash\": \"SAMPLE-NOT-A-HASH-2\", \"prev_hash\": \"SAMPLE-NOT-A-HASH-1\", \"reviewer\": \"tom\", \"seq\": 2, \"time\": \"2026-10-17T00:00:02+00:00\"}",
+    "{\"candidate_id\": \"RC-001\", \"decision\": \"BLOCK\", \"event\": \"decision\", \"expiry\": \"\", \"hash\": \"SAMPLE-NOT-A-HASH-3\", \"prev_hash\": \"SAMPLE-NOT-A-HASH-2\", \"reason\": \"Leaks data in a large share of attacks. Build D2 first.\", \"reviewer\": \"sarah\", \"seq\": 3, \"submitted_by\": \"tom\", \"time\": \"2026-10-17T00:00:03+00:00\", \"verdict\": \"FAIL\"}"
+  ]
+}

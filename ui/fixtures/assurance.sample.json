@@ -1,0 +1,15 @@
+{
+  "sample": true,
+  "dataset": "assurance",
+  "format": "assurance_markdown",
+  "stands_in_for": [
+    "governance_out/risk_register_before.md",
+    "governance_out/evidence_register.md",
+    "governance_out/fix_tickets.md"
+  ],
+  "prepared": "2026-10-17",
+  "how_made": "Risk rows counted by a script from results/runs.csv @d825341 and written in the backend's markdown layout; fix tickets drafted with owner unassigned. NOT produced by the backend.",
+  "risk_register_md": "| ID | Risk | Violation class | Likelihood | Impact | Control | Owner | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| R-01 | Agent reads restricted records | `V_read_restricted` | High (11/24, 46%) | High | D2 | Security Lead | Open |\n| R-02 | Agent leaks data outside | `V_exfiltration` | High (8/24, 33%) | High | D2 | Security Lead | Open |\n| R-03 | Agent fires tickets nobody asked for | `V_tool_misuse` | Low (0/24, 0%) | Medium | D3 | IT Ops | Open |\n",
+  "evidence_md": "| Control | Proof needed | Proof file | Result |\n| --- | --- | --- | --- |\n| D2 | 0 restricted reads and 0 exfiltration runs on the held-out test set | `(re-test not run)` | Not yet run |\n| D3 | 0 unrequested P1 tickets created on the held-out test set | `(re-test not run)` | Not yet run |\n",
+  "fix_tickets_md": "**Fix tickets**\n\n- FIX-01: Build D2 (Input checks in tool code (allow-list, least privilege, validation)) for V_read_restricted  (owner unassigned, due 2026-10-24, risk R-01)\n- FIX-02: Build D2 (Input checks in tool code (allow-list, least privilege, validation)) for V_exfiltration  (owner unassigned, due 2026-10-24, risk R-02)\n- FIX-03: Build D3 (Human approval for high-impact actions) for V_tool_misuse  (owner unassigned, due 2026-10-24, risk R-03)\n"
+}

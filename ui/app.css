@@ -1,0 +1,449 @@
+/* Agent Release Gate: app.css
+   All sizes are px on the fixed 1920x1080 stage; app.js scales the stage to the window.
+   Sections: 1 tokens, 2 base, 3 stage and screens, 4 header and footer, 5 type scale,
+   6 status tags and chips, 7 panels and banner, 8 console, 9 attack board, 10 drawer,
+   11 meters, 12 decisions and audit log, 13 compare and assurance, 14 presenter,
+   15 focus, 16 reduced motion.
+   Palette rules:
+   - --paper is the only background. --ink carries text, rules and REAL fills.
+   - Alarm (--tc-bg / --tc-fg) only for REAL "rule broken" tiles and a REAL FAIL verdict.
+   - Ok (--fo-bg / --fo-fg) only for a REAL PASS verdict and REAL "handled" marks.
+   - SAMPLE = dashed outline + hatch. PENDING = dotted outline. Never a solid alarm or ok fill.
+   - A stroke that carries state is at least 3px (about 2px after scaling to 1366 wide).
+   Expected board nesting (other nestings degrade gracefully):
+   .band > h2 + .group > (.group-head, .tiles.roomy|.dense > .test-col > (span test id, button.tile > .tile-label + .badge)) */
+
+/* ---------- 1 tokens ---------- */
+:root{
+  --paper:#f2f2f0; --ink:#111111;
+  --tc-bg:#1e0f09; --tc-fg:#f2ddd3;
+  --fo-bg:#0e1810; --fo-fg:#ddeadf;
+  --label:#555; --lede:#333; --sec:#666;
+  --fg:var(--ink);
+  --white:#ffffff;
+  --serif:"Cormorant Garamond",Garamond,"Iowan Old Style","Palatino Linotype",Georgia,serif;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --glide:cubic-bezier(.65,0,.35,1);
+
+  /* layout */
+  --pad:120px;          /* stage side margin */
+  --head-h:136px;       /* header, incl. room for the deck line under the nav */
+  --foot-h:52px;
+  --row:26px;           /* vertical gap between blocks on a screen */
+
+  /* strokes */
+  --hair:rgba(17,17,17,.16);   /* structural rules only, never state */
+  --st:3px;                    /* minimum state-carrying stroke */
+  --hollow:4px;                /* hollow "blocked" tile */
+  --hatch:repeating-linear-gradient(45deg,#111111 0 2.5px,transparent 3.5px 9px,#111111 10px);
+
+  /* board: tile size, gap inside a group, gap between groups, mark size, mark stroke, mark inset */
+  --ts:112px; --tg:12px; --gg:40px;
+  --mk:30px; --mw:5px; --mx:12px;
+}
+
+/* ---------- 2 base ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--paper)}
+body{color:var(--ink);font:400 24px/1.4 var(--sans);-webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;font-synthesis:none;font-kerning:normal}
+[hidden]{display:none!important}
+strong,b{font-weight:500}
+em,i{font-style:normal}                 /* never Inter italic; serif italic only via .quote */
+h1,h2,h3,h4,p,ul,ol,dl,dd,figure,blockquote,pre{margin:0}
+ul,ol{padding:0;list-style:none}
+h1,h2,h3,h4{font-weight:400}
+th{font-weight:500;text-align:left}
+table{border-collapse:collapse;border-spacing:0}
+button{font:inherit;color:inherit;background:none;border:0;border-radius:0;padding:0;margin:0;
+  cursor:pointer;-webkit-appearance:none;appearance:none;text-align:inherit}
+code,kbd,samp,pre{font-family:var(--mono);font-size:.92em}
+::selection{background:var(--ink);color:var(--paper)}
+.sr-only{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+.noscript{position:fixed;left:120px;top:420px;max-width:1200px;font:400 30px/1.5 var(--sans);color:var(--lede)}
+
+/* ---------- 3 stage and screens ---------- */
+/* #stage is the only positioned ancestor of the header, so #deck uses stage coordinates.
+   app.js places it with offsetLeft/offsetTop summed up to #stage. */
+#stage{position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0;overflow:hidden;
+  background:var(--paper);display:flex;flex-direction:column}
+/* A screen scrolls only as a last resort (content taller than the stage); it never clips silently. */
+.screen{flex:1 1 auto;min-height:0;display:grid;align-content:stretch;column-gap:112px;row-gap:var(--row);
+  padding:14px var(--pad) 12px;font:400 26px/1.45 var(--sans);color:var(--lede);
+  overflow:hidden auto;scrollbar-width:thin;scrollbar-color:var(--ink) transparent}
+.screen > .screen-title{grid-area:title}
+/* when the SAMPLE banner takes a row, titles and gaps give the space back */
+#stage:has(> #banner:not([hidden])){--row:18px}
+#stage:has(> #banner:not([hidden])) .screen-title{font-size:64px}
+
+/* ---------- 4 header, nav, chips, REPLAY, deck, footer ---------- */
+#top{flex:0 0 var(--head-h);display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:44px 40px;
+  grid-template-areas:"brand chips" "nav replay";column-gap:56px;row-gap:10px;align-items:center;
+  padding:22px var(--pad) 0}
+.brand{grid-area:brand;font:400 38px/1 var(--serif);font-variant-numeric:lining-nums;letter-spacing:-.005em;
+  color:var(--ink);white-space:nowrap}
+#nav{grid-area:nav;display:flex;align-items:center;gap:40px}
+.nav-item{font:400 24px/1 var(--sans);color:var(--label);padding:8px 0;white-space:nowrap}
+.nav-item:hover{color:var(--ink)}
+.nav-item[aria-current="page"],.nav-item[aria-current="true"]{color:var(--ink);font-weight:500}
+#chips{grid-area:chips;justify-self:end;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;min-width:0}
+#replay{grid-area:replay;justify-self:end}
+#replay:empty{display:none}
+/* REPLAY is a data token: 3px solid outline, words kept exactly as exported */
+#replay,.replay{display:inline-flex;align-items:center;font:500 22px/1.2 var(--sans);letter-spacing:.02em;color:var(--ink);
+  padding:7px 14px;border:var(--st) solid var(--ink);white-space:nowrap;background:var(--paper)}
+
+/* the deck: one line that travels between screens (carousel spec) */
+#deck{position:absolute;left:0;top:0;width:0;height:2px;background:var(--fg);z-index:5;pointer-events:none;
+  transition:left 1.1s var(--glide),top 1.1s var(--glide),width 1.1s var(--glide)}
+#deck::before,#deck::after{content:"";position:absolute;top:-9px;width:2px;height:20px;background:inherit}
+#deck::before{left:0}
+#deck::after{right:0}
+#deck.draw{transition:width 1.8s var(--glide) .25s}
+
+#foot{flex:0 0 var(--foot-h);display:flex;align-items:center;gap:44px;padding:0 var(--pad);
+  font:400 22px/1.3 var(--sans);color:var(--sec);min-width:0}
+#stamp,#hints{white-space:nowrap}
+#warn{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:2px;text-align:right;min-width:0}
+#warn:empty{display:none}
+#warn > *{max-width:1000px}
+#warn [data-level="integrity"],#warn .integrity{color:var(--ink);font-weight:500}
+#warn [data-level="integrity"]::before,#warn .integrity::before{content:"";display:inline-block;width:14px;height:14px;
+  margin-right:12px;background:var(--ink);vertical-align:0}
+
+/* ---------- 5 type scale ---------- */
+.screen-title{font:300 84px/1.04 var(--serif);letter-spacing:-.012em;color:var(--ink);margin:0}
+.display{font:300 132px/1.04 var(--serif);letter-spacing:-.012em;color:var(--ink)}
+.display-m{font:300 96px/1.08 var(--serif);letter-spacing:-.01em;color:var(--ink)}
+.num-hero{font:300 168px/.9 var(--serif);letter-spacing:-.02em;color:var(--ink)}
+.num-big{font:300 120px/.92 var(--serif);letter-spacing:-.015em;color:var(--ink)}
+.num-mid{font:300 72px/1 var(--serif);letter-spacing:-.01em;color:var(--ink)}
+.screen-title,.display,.display-m,.num-hero,.num-big,.num-mid,.quote,#d-title{font-variant-numeric:lining-nums}
+.num-hero,.num-big,.num-mid{white-space:nowrap}
+.x-of-n{white-space:nowrap}
+.label,.screen h2,.d-label{font:500 22px/1.3 var(--sans);color:var(--label);letter-spacing:.005em}
+.screen h3{font:500 24px/1.3 var(--sans);color:var(--ink)}
+.body,.lede{font:400 30px/1.5 var(--sans);color:var(--lede)}
+.quote{font:italic 300 36px/1.25 var(--serif);color:var(--lede)}
+.quote em,.quote i{font-style:italic}
+.src{font:400 22px/1.45 var(--sans);color:var(--sec)}
+#c-src,#b-src,#k-src,#a-src,#r-src{font:400 22px/1.45 var(--sans);color:var(--sec);min-width:0;align-self:end}
+.src code,#c-src code,#b-src code,#k-src code,#a-src code,#r-src code{font-size:21px;color:var(--label)}
+table,.calls,.entry,dd{font-variant-numeric:tabular-nums}
+/* key/value lists */
+.screen dl,#drawer dl{display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:28px;row-gap:8px;align-items:baseline}
+.screen dt,#drawer dt{font:500 22px/1.4 var(--sans);color:var(--label)}
+.screen dd,#drawer dd{font:400 24px/1.4 var(--sans);color:var(--ink);min-width:0;overflow-wrap:anywhere}
+
+/* ---------- 6 status tags and chips (the word is always present) ---------- */
+.tag,.chip{position:relative;display:inline-flex;align-items:center;gap:10px;font:500 22px/1 var(--sans);letter-spacing:.03em;
+  white-space:nowrap;color:var(--ink);background:var(--paper);border:var(--st) solid var(--ink);vertical-align:middle}
+.tag{padding:6px 12px}
+.chip{padding:7px 13px}
+.chip b,.chip strong{letter-spacing:.06em}
+.tag[data-status="REAL"],.chip[data-status="REAL"]{background:var(--ink);color:var(--white)}
+.tag[data-status="SAMPLE"],.chip[data-status="SAMPLE"]{border-style:dashed;padding-left:0}
+.tag[data-status="SAMPLE"]::before,.chip[data-status="SAMPLE"]::before{content:"";align-self:stretch;width:20px;flex:0 0 20px;
+  background:var(--hatch);border-right:var(--st) solid var(--ink)}
+.tag[data-status="SAMPLE"]::before{margin:-6px 2px -6px 0}
+.chip[data-status="SAMPLE"]::before{margin:-7px 2px -7px 0}
+.tag[data-status="PENDING"],.chip[data-status="PENDING"]{border-style:dotted}
+.tag span,.chip span{text-decoration:none!important}
+/* a value carries its own status cue, so a SAMPLE or PENDING value never passes for REAL;
+   inside a panel that already says SAMPLE or PENDING the cue would be noise, so it is dropped */
+span[data-prov][data-status="SAMPLE"]{text-decoration:underline dashed var(--st);text-underline-offset:.22em;text-decoration-skip-ink:none}
+span[data-prov][data-status="PENDING"]{text-decoration:underline dotted var(--st);text-underline-offset:.22em;text-decoration-skip-ink:none}
+:is(.is-sample,.is-pending,.verdict[data-status="SAMPLE"],.verdict[data-status="PENDING"],.chain) span[data-prov]{text-decoration:none}
+
+/* ---------- 7 panels, pending blocks, banner ---------- */
+.panel{position:relative;min-width:0}
+.panel > h2,.panel > .label{margin-bottom:12px}
+.panel > h2 .tag{margin-left:14px;vertical-align:-2px}
+.panel + .panel{margin-top:var(--row)}
+.panel > .tag{margin-bottom:12px}
+.panel.is-sample{padding-left:42px}
+.panel.is-sample::before{content:"";position:absolute;left:0;top:0;bottom:0;width:18px;background:var(--hatch)}
+.panel.is-pending{border:var(--st) dotted var(--ink);padding:22px 28px}
+.panel.is-pending > :not(h2):not(.tag) + *{margin-top:8px}
+.pending-block{display:grid;gap:10px;justify-items:start;border:var(--st) dotted var(--ink);padding:22px 28px;
+  font:400 26px/1.45 var(--sans);color:var(--lede)}
+.is-pending .pending-block{border:0;padding:0}
+.pending-block .src,.pending-block small,.is-pending .src{font:400 22px/1.45 var(--sans);color:var(--sec)}
+#banner{flex:0 0 auto;position:relative;margin:0 var(--pad) 2px;padding:9px 24px 9px 62px;border:var(--st) dashed var(--ink);
+  font:500 24px/1.3 var(--sans);color:var(--ink);background:var(--paper)}
+#banner::before{content:"";position:absolute;left:0;top:0;bottom:0;width:38px;background:var(--hatch);border-right:var(--st) solid var(--ink)}
+
+/* ---------- 8 console: facts row (candidate | limits), result row (evidence | verdict) ---------- */
+#screen-1{grid-template-columns:minmax(0,1fr) 640px;grid-template-rows:auto auto minmax(auto,1fr) auto;
+  grid-template-areas:"title title" "cand lim" "evid verd" "src src";column-gap:120px}
+#c-candidate{grid-area:cand;min-width:0}
+#c-limits{grid-area:lim;min-width:0}
+#c-evidence{grid-area:evid;min-width:0}
+#c-verdict{grid-area:verd;min-width:0;align-self:start}
+#c-src{grid-area:src}
+/* candidate: label-over-value pairs, two per row */
+#c-candidate dl{grid-template-columns:max-content minmax(0,1fr);column-gap:56px;row-gap:14px}
+#c-candidate dl > div{display:grid;gap:2px;align-content:start;min-width:0}
+#c-candidate dl:not(:has(> div)){grid-template-columns:max-content minmax(0,.6fr) max-content minmax(0,1fr);column-gap:20px;row-gap:10px}
+/* limits: a compact table; the panel heading names it, so the column heads are for screen readers only */
+#c-limits thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+#c-limits table.grid td{padding:5px 16px 5px 0}
+#c-limits table.grid tr:first-child td{border-top:2px solid var(--ink)}
+/* hero: "12 of 24 attack runs broke a rule" reads as one line */
+#c-evidence .num-hero{display:inline-block;margin:2px 26px 14px 0;vertical-align:baseline}
+#c-evidence .num-hero + :is(p,span,.body,.lede){display:inline-block;vertical-align:baseline;margin:0 0 14px;
+  font:400 30px/1.3 var(--sans);color:var(--lede)}
+.rate-line{display:flex;align-items:baseline;gap:28px;flex-wrap:wrap}
+.rate-line > :not(.num-mid):not(.num-big){font:400 26px/1.3 var(--sans);color:var(--lede)}
+/* the verdict block: solid fill only for REAL backend output */
+.verdict,#c-verdict[data-verdict]{position:relative;display:grid;gap:10px;justify-items:start;padding:26px 32px 28px;
+  border:var(--st) solid var(--ink);color:var(--ink);background:var(--paper)}
+.verdict .num-big{font-size:104px;color:inherit}
+.verdict .num-mid{color:inherit}
+.verdict h2,.verdict .label,.verdict .d-label{color:inherit;opacity:.82;margin:0}
+.verdict p{color:inherit}
+:is(.verdict,#c-verdict)[data-status="REAL"][data-verdict="FAIL"]{background:var(--tc-bg);border-color:var(--tc-bg);color:var(--tc-fg)}
+:is(.verdict,#c-verdict)[data-status="REAL"][data-verdict="PASS"]{background:var(--fo-bg);border-color:var(--fo-bg);color:var(--fo-fg)}
+:is(.verdict,#c-verdict)[data-status="SAMPLE"]{border-style:dashed;padding-left:68px}
+:is(.verdict,#c-verdict)[data-status="SAMPLE"]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:36px;
+  background:var(--hatch);border-right:var(--st) solid var(--ink)}
+:is(.verdict,#c-verdict)[data-status="PENDING"]{border-style:dotted}
+.verdict[data-status="REAL"] .tag{background:transparent;color:inherit;border-color:currentColor}
+.checks{display:grid;gap:8px;width:100%;margin-top:4px}
+.checks li{display:grid;grid-template-columns:72px minmax(0,1fr);column-gap:14px;font:400 24px/1.3 var(--sans)}
+.checks .mark{font-weight:500;letter-spacing:.04em}
+.checks .note{grid-column:2;font-size:22px;opacity:.85}
+.verdict pre,.raw{font:400 21px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.verdict table.grid th{color:inherit;opacity:.85;border-bottom-color:currentColor}
+.verdict table.grid td{border-bottom-color:rgba(242,221,211,.28)}
+#c-verdict .quote{margin-top:20px}
+
+/* ---------- 9 attack board ---------- */
+#screen-2{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto auto auto minmax(auto,1fr) auto;
+  grid-template-areas:"title batches" "filter filter" "legend legend" "attack attack" "benign benign" "src src";row-gap:22px}
+#b-batches{grid-area:batches;align-self:end;justify-self:end;text-align:right;font:400 24px/1.4 var(--sans);color:var(--lede);
+  display:flex;flex-direction:column;align-items:flex-end;gap:4px;padding-bottom:8px}
+#b-batches strong,#b-batches h2{font:500 24px/1.3 var(--sans);color:var(--ink)}
+#b-filter{grid-area:filter;display:flex;flex-wrap:wrap;gap:12px}
+#b-legend{grid-area:legend;display:flex;flex-wrap:wrap;align-items:center;column-gap:40px;row-gap:12px}
+#b-attack{grid-area:attack;min-width:0}
+#b-benign{grid-area:benign;min-width:0;align-self:start}
+#b-src{grid-area:src}
+#b-filter button,#b-batches button{font:400 22px/1 var(--sans);padding:11px 16px;border:2px solid var(--ink);
+  color:var(--ink);background:var(--paper);white-space:nowrap}
+#b-filter button:hover,#b-batches button:hover{background:rgba(17,17,17,.06)}
+#b-filter button[aria-pressed="true"],#b-batches button[aria-pressed="true"]{background:var(--ink);color:var(--white);font-weight:500}
+
+/* band: groups side by side, bottoms aligned so tiles line up even when a head wraps */
+.band{display:flex;flex-wrap:wrap;align-items:flex-end;column-gap:var(--gg);row-gap:20px;min-width:0}
+.band > :not(.group){flex:0 0 100%;min-width:0}
+.band > p,.band > .pending-block{font:400 26px/1.45 var(--sans);color:var(--lede)}
+/* group: a table whose caption is the head, so a long technique name wraps to the tile width */
+.group{display:table;flex:0 0 auto;border-collapse:separate;border-spacing:0}
+.group > .group-head{display:table-caption;caption-side:top;position:relative;padding-bottom:22px;
+  font:500 24px/1.2 var(--sans);color:var(--ink);text-align:left}
+.group-head > *{display:block}
+.group-head > * + *{font:400 22px/1.3 var(--sans);color:var(--label);margin-top:2px}
+/* bracket under each technique head (the deck look): marks which tiles belong together */
+.group > .group-head::after{content:"";position:absolute;left:0;right:0;bottom:7px;height:9px;
+  border:2px solid var(--ink);border-bottom:0}
+.group > .tiles{display:flex}
+.group > .test-col{display:table-cell;vertical-align:top;padding-right:var(--tg)}
+.group > .test-col:last-child{padding-right:0}
+.tiles{display:flex;flex-wrap:wrap;align-items:flex-start;gap:var(--tg);min-width:0}
+.tiles:has(> .group){column-gap:var(--gg);row-gap:22px;align-items:flex-end}
+.test-col{display:flex;flex-direction:column;align-items:flex-start;gap:var(--tg)}
+.test-col > :not(.tile){font:400 22px/1 var(--mono);color:var(--label);white-space:nowrap;letter-spacing:-.01em}
+/* dense: more than 30 tiles in a band */
+.tiles.dense,.group:has(> .tiles.dense),.band:has(.tiles.dense),.band.dense{--ts:48px;--tg:8px;--gg:28px;--mk:20px;--mw:4px;--mx:11px}
+.group:has(> .tiles.dense) > .group-head{font-size:22px;padding-bottom:20px}
+.tiles.dense .test-col > :not(.tile),.tiles.dense .tile-label{position:absolute;width:1px;height:1px;overflow:hidden;
+  clip-path:inset(50%);white-space:nowrap}
+.band [inert],.band .is-dim{opacity:.18}
+
+/* tile: shape + pattern + text label carry the state; colour never carries it alone */
+.tile{position:relative;flex:0 0 auto;display:block;width:var(--ts);height:var(--ts);padding:0;
+  border:var(--st) solid var(--ink);background:var(--paper);color:var(--ink);text-align:left;overflow:visible}
+.tile::before{content:"";position:absolute;left:var(--mx);top:var(--mx);width:var(--mk);height:var(--mk)}
+.tile:hover{outline:2px solid var(--ink);outline-offset:3px}
+.tile[aria-expanded="true"],.tile[aria-current="true"],.tile.is-open{outline:4px solid var(--ink);outline-offset:5px}
+.tile-label{position:absolute;left:9px;right:3px;bottom:8px;font:500 22px/1.08 var(--sans);letter-spacing:-.01em;
+  color:inherit;overflow-wrap:normal;word-break:normal;hyphens:none}
+.tile .badge{position:absolute;right:-10px;top:-14px;z-index:1;font:500 22px/1 var(--sans);padding:3px 7px;
+  color:var(--ink);background:var(--paper);border:var(--st) solid var(--ink);white-space:nowrap}
+.tile:has(> .badge)::before{top:calc(var(--mx) + 16px);--mk:22px}
+.tiles.dense .badge{width:16px;height:16px;padding:0;font-size:0;right:-6px;top:-6px;background:var(--ink);border-color:var(--paper)}
+.tiles.dense .tile:has(> .badge)::before{top:var(--mx);--mk:20px}
+
+/* rule broken: solid alarm fill + cross */
+.tile[data-state="broke"]{background:var(--tc-bg);border-color:var(--tc-bg);color:var(--tc-fg)}
+.tile[data-state="broke"]::before,.legend-item[data-state="broke"]::after{
+  background:
+    linear-gradient(45deg,transparent calc(50% - var(--mw) / 2 - .7px),currentColor calc(50% - var(--mw) / 2 + .3px),
+      currentColor calc(50% + var(--mw) / 2 - .3px),transparent calc(50% + var(--mw) / 2 + .7px)),
+    linear-gradient(-45deg,transparent calc(50% - var(--mw) / 2 - .7px),currentColor calc(50% - var(--mw) / 2 + .3px),
+      currentColor calc(50% + var(--mw) / 2 - .3px),transparent calc(50% + var(--mw) / 2 + .7px))}
+/* a rule-broken tile inside a SAMPLE panel never gets the alarm fill */
+.is-sample .tile[data-state="broke"]{background:var(--hatch),var(--paper);border-color:var(--ink);border-style:dashed;color:var(--ink)}
+/* attempted but blocked: 4px hollow + diagonal stroke */
+.tile[data-state="blocked"]{border-width:var(--hollow)}
+.tile[data-state="blocked"]::before,.legend-item[data-state="blocked"]::after{
+  background:linear-gradient(-45deg,transparent calc(50% - var(--mw) / 2 - .7px),currentColor calc(50% - var(--mw) / 2 + .3px),
+    currentColor calc(50% + var(--mw) / 2 - .3px),transparent calc(50% + var(--mw) / 2 + .7px))}
+/* clean: plain 3px outline, no mark */
+/* error: hatch, label on a paper chip so it stays readable */
+.tile[data-state="error"],.legend-item[data-state="error"]::before{
+  background:repeating-linear-gradient(45deg,var(--ink) 0 3.5px,transparent 4.5px 12.5px,var(--ink) 13.5px),var(--paper)}
+.tile[data-state="error"] .tile-label{left:5px;right:auto;bottom:5px;max-width:calc(100% - 10px);padding:3px 6px 4px;background:var(--paper)}
+/* normal request handled: outline + check (ok colour, REAL only) */
+.tile[data-state="handled"]::before,.legend-item[data-state="handled"]::after{
+  height:calc(var(--mk) * .52);border-left:var(--mw) solid var(--fo-bg);border-bottom:var(--mw) solid var(--fo-bg);
+  transform:translate(4%,22%) rotate(-45deg)}
+/* normal request not handled: dashed outline */
+.tile[data-state="not_handled"],.legend-item[data-state="not_handled"]::before{border-style:dashed}
+
+/* legend: swatch (::before) + mark (::after) + text */
+.legend-item{position:relative;display:inline-flex;align-items:center;min-height:44px;padding-left:58px;
+  font:400 24px/1.25 var(--sans);color:var(--ink);--mk:22px;--mw:4px}
+.legend-item::before{content:"";position:absolute;left:0;top:50%;width:44px;height:44px;margin-top:-22px;
+  border:var(--st) solid var(--ink);background:var(--paper)}
+.legend-item::after{content:"";position:absolute;left:11px;top:50%;width:var(--mk);height:var(--mk);margin-top:calc(var(--mk) / -2)}
+.legend-item[data-state="broke"]::before{background:var(--tc-bg);border-color:var(--tc-bg)}
+.legend-item[data-state="broke"]::after{color:var(--tc-fg)}
+.legend-item[data-state="blocked"]::before{border-width:var(--hollow)}
+
+/* ---------- 10 drawer (880px, right, below the header so chips and REPLAY stay visible; no animation) ---------- */
+#drawer{position:absolute;top:var(--head-h);right:0;bottom:var(--foot-h);width:880px;z-index:20;display:flex;flex-direction:column;
+  background:var(--paper);border-left:var(--st) solid var(--ink);border-top:var(--st) solid var(--ink);padding:26px 56px 0 56px}
+.d-head{flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:32px;padding-bottom:14px}
+#d-title{font:300 60px/1.02 var(--serif);letter-spacing:-.01em;color:var(--ink);margin:0;min-width:0}
+#d-close{flex:0 0 auto;font:500 22px/1 var(--sans);padding:12px 18px;border:var(--st) solid var(--ink);color:var(--ink);background:var(--paper)}
+#d-close:hover{background:var(--ink);color:var(--white)}
+#d-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 10px 28px 0;
+  scrollbar-width:thin;scrollbar-color:var(--ink) transparent;font:400 24px/1.45 var(--sans);color:var(--ink)}
+.d-section{padding:14px 0 16px;border-top:1px solid var(--hair)}
+.d-section:first-child{border-top:0;padding-top:2px}
+.d-label{display:block;margin-bottom:6px}
+.d-text{font:400 26px/1.42 var(--sans);color:var(--ink);overflow-wrap:anywhere}
+.d-code{font:400 24px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink);
+  padding:12px 18px;border:2px solid var(--ink);background:var(--paper)}
+.d-text + .d-code,.d-code + .d-text,.d-code + .caveat,.d-text + .caveat,.d-text + .d-text{margin-top:8px}
+.calls{display:grid;gap:8px}
+.calls li{display:flex;align-items:baseline;gap:16px;padding:9px 16px;border:2px solid var(--hair);
+  font:400 24px/1.4 var(--mono);color:var(--ink);overflow-wrap:anywhere}
+.calls li > :first-child:not(:only-child){font:500 22px/1.4 var(--sans);color:var(--label);flex:0 0 auto;min-width:22px}
+/* the call the checker flagged: solid ink, the REAL fill */
+.calls li[data-flagged="true"]{background:var(--ink);border-color:var(--ink);color:var(--white)}
+.calls li[data-flagged="true"] > :first-child:not(:only-child){color:var(--white)}
+/* a refused call: dashed outline */
+.calls li[data-blocked="true"]{border:var(--st) dashed var(--ink);color:var(--label)}
+.caveat{display:block;font:400 22px/1.45 var(--sans);color:var(--label);padding-left:16px;border-left:var(--st) dotted var(--ink)}
+.caveat + .caveat{margin-top:8px}
+#d-body dl{row-gap:4px}
+
+/* ---------- 11 meters (axis looks like the deck: 2px + end caps) ---------- */
+.meter{display:block;width:100%;max-width:100%;height:auto;overflow:visible;margin-top:14px}
+.meter svg{display:block;width:100%;height:auto;overflow:visible}
+.m-axis,.m-axis line,.m-axis path{stroke:var(--ink);stroke-width:2;fill:none}
+rect.m-ci,path.m-ci{fill:var(--ink);fill-opacity:.2;stroke:var(--ink);stroke-width:3}
+line.m-ci{stroke:var(--ink);stroke-opacity:.35;stroke-width:16}
+line.m-rate,path.m-rate{stroke:var(--ink);stroke-width:6;fill:none}
+circle.m-rate,rect.m-rate{fill:var(--ink);stroke:var(--paper);stroke-width:3}
+.m-limit,line.m-limit{stroke:var(--ink);stroke-width:3;stroke-dasharray:7 6;fill:none}
+.meter text{font:400 22px var(--sans);fill:var(--label);stroke:none}
+.meter text.m-strong,.meter .m-rate-label{fill:var(--ink);font-weight:500}
+
+/* ---------- 12 decisions and audit log ---------- */
+#screen-4{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto;
+  grid-template-areas:"title" "chain" "entries" "src"}
+#a-chain{grid-area:chain}
+#a-entries{grid-area:entries;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:4px 8px 8px 4px;margin:-4px -8px 0 -4px;
+  scrollbar-width:thin;scrollbar-color:var(--ink) transparent}
+#a-src{grid-area:src}
+.chain,#a-chain[data-ok]{display:flex;align-items:center;flex-wrap:wrap;gap:10px 22px;padding:16px 24px;
+  border:var(--st) solid var(--ink);font:400 26px/1.4 var(--sans);color:var(--ink)}
+.chain[data-ok="true"]{border-style:solid}
+.chain[data-ok="false"]{background:var(--ink);color:var(--white)}
+.chain[data-ok="false"] .tag{background:transparent;color:inherit;border-color:currentColor}
+.chain[data-ok="pending"]{border-style:dotted}
+.chain .src{color:inherit;opacity:.8}
+/* entry row: bar | seq | time | event | who | what */
+.entry{position:relative;display:grid;grid-template-columns:52px 332px 236px 120px minmax(0,1fr);column-gap:22px;
+  align-items:baseline;padding:14px 0 14px 30px;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
+.entry:last-child{border-bottom:1px solid var(--hair)}
+.entry .seq{font-weight:500}
+.entry .time{font:400 21px/1.5 var(--mono);color:var(--sec);white-space:nowrap;letter-spacing:-.01em}
+.entry .event{font-weight:500}
+.entry .who{overflow-wrap:anywhere}
+.entry .what{color:var(--lede);min-width:0;overflow-wrap:anywhere}
+.entry .hash{display:block;margin-top:2px}
+.entry .hash,.entry code{font:400 21px/1.5 var(--mono);color:var(--sec)}
+/* a decision: solid 8px bar. A refusal: dashed bar. An unreadable line: dotted bar. */
+.entry[data-event="decision"]::before,.entry[data-event="decision_refused"]::before,.entry[data-readable="false"]::before{
+  content:"";position:absolute;left:0;top:14px;bottom:14px;width:8px}
+.entry[data-event="decision"]::before{background:var(--ink)}
+.entry[data-event="decision_refused"]::before{border-left:var(--st) dashed var(--ink);border-right:var(--st) dashed var(--ink)}
+.entry[data-readable="false"]::before{border-left:var(--st) dotted var(--ink)}
+.entry[data-readable="false"]{color:var(--label)}
+.entry.head,.entry[data-event="head"]{font:500 22px/1.3 var(--sans);color:var(--label);border-top:0;padding-top:4px;padding-bottom:10px}
+#a-entries .quote{margin-top:24px}
+
+/* ---------- 13 compare and assurance ---------- */
+#screen-3{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 520px;grid-template-rows:auto auto auto minmax(auto,1fr) auto;
+  grid-template-areas:"title title title" "a b tech" "note note tech" ". . tech" "src src src";column-gap:64px}
+#k-a{grid-area:a;min-width:0}
+#k-b{grid-area:b;min-width:0}
+#k-note{grid-area:note;min-width:0}
+#k-tech{grid-area:tech;min-width:0}
+#k-src{grid-area:src}
+#k-a .replay,#k-b .replay{white-space:normal;margin:0 0 16px}
+#k-a .num-big,#k-b .num-big{margin:10px 0 8px}
+#k-a dl,#k-b dl{margin-bottom:6px}
+#k-note:not(:empty){font:400 24px/1.4 var(--sans);color:var(--ink);padding-left:18px;border-left:var(--st) solid var(--ink)}
+
+table.grid{width:100%;font:400 24px/1.35 var(--sans);color:var(--ink)}
+table.grid th{font:500 22px/1.3 var(--sans);color:var(--label);padding:0 20px 8px 0;border-bottom:2px solid var(--ink);vertical-align:bottom}
+table.grid td{padding:9px 20px 9px 0;border-bottom:1px solid var(--hair);vertical-align:top;overflow-wrap:anywhere}
+table.grid th:last-child,table.grid td:last-child{padding-right:0}
+table.grid .num{text-align:right;white-space:nowrap}
+table.grid code{font-size:21px}
+
+/* today: risks, evidence and tickets are short blocks on the left, controls on the right.
+   once the risk register is a table it takes the full width and controls move under it. */
+#screen-5{grid-template-columns:600px minmax(0,1fr);grid-template-rows:auto auto auto minmax(auto,1fr) auto;
+  grid-template-areas:"title title" "risks controls" "evidence controls" "tickets controls" "src src";column-gap:88px}
+#screen-5:has(#r-risks table){grid-template-columns:minmax(0,1fr) 560px;
+  grid-template-areas:"title title" "risks risks" "controls evidence" "controls tickets" "src src"}
+#r-risks{grid-area:risks;min-width:0}
+#r-controls{grid-area:controls;min-width:0}
+#r-evidence{grid-area:evidence;min-width:0}
+#r-tickets{grid-area:tickets;min-width:0;align-self:start}
+#r-src{grid-area:src}
+#r-controls table.grid td:nth-child(n+3){font-size:22px}
+#r-controls table.grid td:first-child{font-weight:500}
+#r-controls .caveat,#r-controls .note{margin-top:12px}
+#r-tickets ul,#r-tickets ol{display:grid}
+#r-tickets li{padding:10px 0;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
+#r-tickets li > * + *{display:block;font-size:22px;color:var(--label)}
+
+/* ---------- 14 presenter ---------- */
+body.presenter #hints{display:none}
+body.presenter #warn [data-level="info"],body.presenter #warn .info{display:none}
+body.idle,body.idle *{cursor:none!important}
+body.no-data #chips,body.no-data #replay{display:none}
+
+/* ---------- 15 focus (4px ink ring, 3px paper gap; visible on dark fills) ---------- */
+:focus{outline:none}
+:focus-visible{outline:4px solid var(--ink);outline-offset:3px;box-shadow:0 0 0 3px var(--paper)}
+.screen-title:focus,.screen-title:focus-visible{outline:none;box-shadow:none}
+.tile:focus-visible{outline:4px solid var(--ink);outline-offset:3px;box-shadow:0 0 0 3px var(--paper)}
+:is(.chain[data-ok="false"],.verdict[data-status="REAL"]) :focus-visible{outline-color:var(--paper);box-shadow:0 0 0 3px var(--ink)}
+
+/* ---------- 16 reduced motion ---------- */
+@media (prefers-reduced-motion:reduce){
+  #deck,#deck.draw{transition:none}
+  *{scroll-behavior:auto!important}
+}
