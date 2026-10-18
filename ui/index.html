@@ -1,137 +1,156 @@
 <!doctype html>
-<html lang="en-GB">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="connect-src 'none'; font-src data:; img-src data:; object-src 'none'">
 <title>Redline</title>
 <link rel="stylesheet" href="fonts.css">
-<link rel="stylesheet" href="app.css">
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --line:#e6e6e1; --ink:#1b1b1b; --soft:#6b6b66;
+          --bad:#b42318; --bad-bg:#fdeeec; --good:#067647; --good-bg:#e8f6ee; --run:#1d4ed8; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:Inter, system-ui, sans-serif; font-size:22px; }
+  main { max-width:1500px; margin:0 auto; padding:56px 64px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; gap:24px; flex-wrap:wrap; }
+  .brand { font-size:24px; font-weight:600; color:var(--soft); }
+  h1 { font-size:40px; font-weight:600; margin:8px 0 0; }
+  .badge { font-size:20px; color:var(--soft); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:8px 16px; }
+  .cards { display:grid; grid-template-columns:repeat(3, 1fr); gap:24px; margin-top:48px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:28px; }
+  .cid { font-size:20px; color:var(--soft); }
+  .def { font-size:24px; margin:6px 0 20px; min-height:58px; }
+  .verdict { display:inline-block; font-size:24px; font-weight:600; border-radius:999px; padding:6px 16px; }
+  .verdict.FAIL { color:var(--bad); background:var(--bad-bg); }
+  .verdict.PASS { color:var(--good); background:var(--good-bg); }
+  .big { font-size:48px; font-weight:600; margin-top:20px; }
+  .muted { color:var(--soft); font-size:22px; }
+  .normal { margin-top:24px; font-size:24px; }
+  .why { margin-top:16px; font-size:22px; color:var(--bad); }
+  .def { min-height:0; }
+  h2 { font-size:26px; font-weight:600; margin:56px 0 20px; }
+  .steps { display:grid; grid-template-columns:repeat(5, 1fr); gap:16px; }
+  .step { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; text-align:center; transition:border-color .4s, box-shadow .4s; }
+  .step svg { width:80px; height:60px; fill:none; stroke:var(--ink); stroke-width:2.5; stroke-linecap:square; }
+  .step .lbl { font-size:22px; margin-top:8px; }
+  .step .st { font-size:20px; color:var(--soft); margin-top:4px; }
+  .step.running { border-color:var(--run); box-shadow:0 0 0 3px #dbe5ff; }
+  .step.running .st { color:var(--run); }
+  .step.done .st { color:var(--good); }
+  .decision { margin-top:40px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px 28px; font-size:24px; }
+  .decision b { font-weight:600; }
+  @media (prefers-reduced-motion: reduce) { .step { transition:none; } }
+</style>
 </head>
 <body>
-<div id="stage">
-
-  <header id="top">
-    <div class="brand" data-static><span class="brand-name">Redline</span> <span class="brand-team">Team Gatekeepers</span></div>
-    <nav id="nav" aria-label="Screens">
-      <button type="button" class="nav-item" data-screen="1" data-static>1 Console</button>
-      <button type="button" class="nav-item" data-screen="2" data-static>2 Attacks</button>
-      <button type="button" class="nav-item" data-screen="3" data-static>3 Compare</button>
-      <button type="button" class="nav-item" data-screen="4" data-static>4 Decisions</button>
-      <button type="button" class="nav-item" data-screen="5" data-static>5 Assurance</button>
-      <button type="button" class="nav-item" data-screen="6" data-static>6 Pipeline</button>
-      <button type="button" class="nav-item" data-screen="7" data-static>7 Models</button>
-    </nav>
-    <div id="chips" aria-label="Data status"></div>
-    <div id="replay" role="status"></div>
-    <div id="deck" aria-hidden="true"></div>
+<main>
+  <header>
+    <div><div class="brand" id="brand"></div><h1 id="title"></h1></div>
+    <div class="badge" id="badge"></div>
   </header>
-
-  <div id="banner" hidden></div>
-
-  <section class="screen" id="screen-1" data-screen="1" aria-labelledby="title-1" hidden>
-    <h1 class="screen-title" id="title-1" tabindex="-1" data-static>Can this update ship today?</h1>
-    <div id="c-left">
-      <div id="c-candidate"></div>
-      <div id="c-evidence"></div>
-    </div>
-    <div id="c-right">
-      <div id="c-verdict"></div>
-      <div id="c-limits"></div>
-    </div>
-    <div id="c-src"></div>
-  </section>
-
-  <section class="screen" id="screen-2" data-screen="2" aria-labelledby="title-2" hidden>
-    <h1 class="screen-title" id="title-2" tabindex="-1" data-static>Attack board</h1>
-    <div id="b-batches"></div>
-    <div id="b-filter" role="group" aria-label="Filter by technique"></div>
-    <div id="b-legend"></div>
-    <div id="b-attack" class="band" data-band="attack"></div>
-    <div id="b-benign" class="band" data-band="benign"></div>
-    <div id="b-src"></div>
-  </section>
-
-  <section class="screen" id="screen-3" data-screen="3" aria-labelledby="title-3" hidden>
-    <h1 class="screen-title" id="title-3" tabindex="-1" data-static>Compare</h1>
-    <div id="k-a"></div>
-    <div id="k-b"></div>
-    <div id="k-note"></div>
-    <div id="k-tech"></div>
-    <div id="k-src"></div>
-  </section>
-
-  <section class="screen" id="screen-4" data-screen="4" aria-labelledby="title-4" hidden>
-    <h1 class="screen-title" id="title-4" tabindex="-1" data-static>Decisions and audit log</h1>
-    <div id="a-chain"></div>
-    <div id="a-entries" data-scroll tabindex="0" aria-label="Audit log entries"></div>
-    <div id="a-src"></div>
-  </section>
-
-  <section class="screen" id="screen-5" data-screen="5" aria-labelledby="title-5" hidden>
-    <h1 class="screen-title" id="title-5" tabindex="-1" data-static>Are the risks under control?</h1>
-    <div id="r-risks"></div>
-    <div id="r-controls"></div>
-    <div id="r-evidence"></div>
-    <div id="r-tickets"></div>
-    <div id="r-src"></div>
-  </section>
-
-  <!-- Screen 6: the pipeline view. pipeline.js fills the mode chip, the rail, the status line, the
-       wires, the nodes, the tiles and the source line. app.js fills #p-decision, the release-decision card. -->
-  <section class="screen" id="screen-6" data-screen="6" aria-labelledby="title-6" hidden>
-    <h1 class="screen-title" id="title-6" tabindex="-1" data-static>From attack to decision</h1>
-    <div id="p-mode"></div>
-    <ol id="p-rail"></ol>
-    <p id="p-status" role="status"></p>
-    <div id="p-board">
-      <svg id="p-wires" aria-hidden="true" focusable="false"></svg>
-      <ol id="p-nodes"></ol>
-    </div>
-    <div id="p-tiles"></div>
-    <div id="p-src"></div>
-    <div id="p-decision" hidden></div>
-  </section>
-
-  <section class="screen" id="screen-7" data-screen="7" aria-labelledby="title-7" hidden>
-    <h1 class="screen-title" id="title-7" tabindex="-1" data-static>Models we tested</h1>
-    <div id="m-table"></div>
-    <div id="m-note"></div>
-    <div id="m-src"></div>
-  </section>
-
-  <aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title" hidden>
-    <div class="d-head">
-      <h2 id="d-title"></h2>
-      <button type="button" id="d-close" aria-label="Close run details" data-static>Close</button>
-    </div>
-    <div id="d-body" data-scroll></div>
-  </aside>
-
-  <footer id="foot">
-    <div id="stamp"></div>
-    <div id="hints"></div>
-    <div id="warn"></div>
-  </footer>
-
-  <!-- The cover: the first thing shown when the page opens with no screen in the address. Any key or a click starts. -->
-  <section id="cover" aria-labelledby="cover-name" tabindex="-1" hidden>
-    <h1 id="cover-name" data-static>Redline</h1>
-    <p id="cover-what"></p>
-    <div id="cover-rule" aria-hidden="true"></div>
-    <p id="cover-tagline"></p>
-    <p id="cover-team"></p>
-    <p id="cover-track"></p>
-    <p id="cover-hint"></p>
-  </section>
-
-</div>
-<noscript><p class="noscript" data-static>This page needs JavaScript to show the data. It runs offline from this folder and uses no network.</p></noscript>
+  <section class="cards" id="cards"></section>
+  <div class="normal" id="normal"></div>
+  <h2 id="steps-title"></h2>
+  <section class="steps" id="steps"></section>
+  <div class="decision" id="decision"></div>
+</main>
 <script src="data/demo.js"></script>
-<script src="data/replay.js"></script>
 <script src="copy.js"></script>
 <script src="pipeline-glyphs.js"></script>
-<script src="pipeline.js"></script>
-<script src="app.js"></script>
+<script>
+(function () {
+  var D = window.DEMO || {}, C = (window.COPY || {}).page || {}, P = (window.COPY || {}).product || {};
+  var N = D.numbers || {}, G = D.governance || {};
+  var NS = ['ht', 'tp:', '//www.w3.org/2000/svg'].join('');  /* built so the page holds no network URL */
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function num(k) { var v = N[k]; return v && v.status !== 'PENDING' ? v.text : null; }
+  function key(id) { return id.toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+  $('brand').textContent = (P.name || 'Redline') + (P.team ? ' · ' + P.team : '');
+  $('title').textContent = C.title || '';
+
+  /* One honesty badge: real run or scripted demo, the model and the run date. */
+  var cands = G.candidates || [], mode = G.mode || '';
+  var badge = C.badge_none;
+  if (cands.length) {
+    var date = (cands[0].run_id || '').slice(0, 8);
+    date = date.length === 8 ? date.slice(0, 4) + '-' + date.slice(4, 6) + '-' + date.slice(6) : '';
+    badge = (mode === 'LIVE' || mode === 'SAVED' ? C.badge_real : C.badge_scripted) +
+            [num('headline.model'), date].filter(Boolean).map(function (s) { return ' · ' + s; }).join('');
+  }
+  $('badge').textContent = badge;
+
+  /* One card per release candidate. */
+  var batches = D.batches || [];
+  if (!Array.isArray(batches)) batches = Object.keys(batches).map(function (k) { return batches[k]; });
+  function defences(c) {
+    var b = batches.filter(function (x) { return x.id === c.evidence_batch; })[0];
+    var t = b && b.defences && b.defences.status !== 'PENDING' ? b.defences.text : '';
+    var parts = [];
+    if (/D2/.test(t)) parts.push(C.defences.code);
+    if (/D3/.test(t)) parts.push(C.defences.human);
+    return parts.length ? parts.join(' + ') : (t ? C.defences.none : '');
+  }
+  cands.forEach(function (c) {
+    var k = key(c.id), v = (c.gate && c.gate.verdict && c.gate.verdict.text) || '';
+    var card = el('article', 'card');
+    card.appendChild(el('div', 'cid', c.id));
+    card.appendChild(el('div', 'def', defences(c)));
+    if (v) card.appendChild(el('span', 'verdict ' + v, (C.verdict || {})[v] || v));
+    var hit = num(k + '.violations'), runs = num(k + '.attack_runs');
+    if (hit != null && runs != null) {
+      card.appendChild(el('div', 'big', hit + ' ' + C.of + ' ' + runs));
+      card.appendChild(el('div', 'muted', C.attacks));
+    }
+    var fail = ((c.gate && c.gate.checks) || []).filter(function (x) { return x.ok === false; })[0];
+    if (v === 'FAIL' && fail) {
+      card.appendChild(el('div', 'why', C.why + ': ' + fail.label + ' ' + fail.value.text + ', ' +
+        ((window.COPY || {}).page || {}).limit_word + ' ' + fail.limit.text));
+    }
+    $('cards').appendChild(card);
+  });
+  var br = num('benign.rate'), bn = num('benign.n');
+  if (br) $('normal').textContent = C.normal + ': ' + br + (bn ? ' (' + bn + ')' : '');
+
+  /* The decision steps: icons from pipeline-glyphs.js, state from the bridge feed (data/live.js). */
+  $('steps-title').textContent = C.steps_title || '';
+  (C.steps || []).forEach(function (s) {
+    var box = el('div', 'step'); box.id = 'step-' + s.id.replace('.', '-');
+    var svg = document.createElementNS(NS, 'svg'); svg.setAttribute('viewBox', '0 0 120 90');
+    svg.innerHTML = (window.GLYPHS || {})[s.id] || '';
+    box.appendChild(svg);
+    box.appendChild(el('div', 'lbl', s.label));
+    box.appendChild(el('div', 'st', ''));
+    $('steps').appendChild(box);
+  });
+  function paint() {
+    var L = window.LIVE, nodes = (L && L.nodes) || null;
+    (C.steps || []).forEach(function (s) {
+      var box = $('step-' + s.id.replace('.', '-')), st = nodes && nodes[s.id] ? nodes[s.id].state : (cands.length ? 'done' : 'idle');
+      st = st === 'running' || st === 'done' ? st : 'idle';
+      box.className = 'step ' + st;
+      box.lastChild.textContent = (C.state || {})[st] || '';
+    });
+  }
+  paint();
+  /* Re-read data/live.js once a second (classic script tag; no network calls). */
+  setInterval(function () {
+    var s = document.createElement('script');
+    s.src = 'data/live.js?r=' + Date.now();
+    s.onload = s.onerror = function () { s.remove(); paint(); };
+    document.body.appendChild(s);
+  }, 1000);
+
+  /* One decision line. */
+  var d = $('decision'), latest = ((D.console || {}).latest_decision || {}).text;
+  var bits = [];
+  if (latest) bits.push(latest + ' (' + C.scripted_reviewer + ')');
+  var t = num('time.to_decision'); if (t) bits.push(C.decided_in + ' ' + t);
+  var a = num('audit.entries'); if (a) bits.push(a + ' ' + C.log_entries);
+  d.appendChild(el('b', null, C.decision + ': '));
+  d.appendChild(document.createTextNode(bits.length ? bits.join(' · ') : C.pending));
+})();
+</script>
 </body>
 </html>

@@ -171,11 +171,11 @@ def test_claims_the_plan_corrected_stay_corrected():
 
 
 # ---------------------------------------------------------------------------------------------
-# The page shell (ui/index.html): script order, the seven screens, the skeletons other lanes fill.
+# The detail page shell (ui/details.html; the old seven screens): script order, the seven screens, the skeletons other lanes fill.
 # ---------------------------------------------------------------------------------------------
 from html.parser import HTMLParser
 
-INDEX_HTML = UI / "index.html"
+INDEX_HTML = UI / "details.html"
 APP_JS = UI / "app.js"
 APP_CSS = UI / "app.css"
 REPLAY_JS = UI / "data" / "replay.js"
@@ -288,7 +288,7 @@ def test_every_beat_focus_is_an_element_on_its_own_screen():
         focus = beat["focus"]
         if focus is None:
             continue
-        assert focus in ids, f"beat {beat['id']}: no element with id {focus} in index.html"
+        assert focus in ids, f"beat {beat['id']}: no element with id {focus} in details.html"
         if focus in ("cover", "drawer"):
             continue
         screen_id = f"screen-{SCREEN_NAMES.index(beat['screen']) + 1}"

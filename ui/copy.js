@@ -214,5 +214,32 @@ window.COPY = {
     "no_headline": "No headline model chosen yet.",
     "empty": "No model results yet. Run the models, export, then press R.",
     "note": "Sorted by model tag. Nothing here ranks a model as best. A model without tool calls is not measured: a zero there is not a pass."
+  },
+  "page": {
+    "title": "Can this AI agent ship?",
+    "badge_real": "Real model run",
+    "badge_scripted": "Scripted demo",
+    "badge_none": "No run exported yet",
+    "verdict": { "PASS": "Ready to ship", "FAIL": "Blocked" },
+    "defences": { "none": "No defences", "code": "Code checks", "human": "Human approval" },
+    "attacks": "attacks broke a rule",
+    "of": "of",
+    "why": "Why",
+    "limit_word": "limit",
+    "normal": "Normal tasks completed",
+    "steps_title": "How the decision is made",
+    "steps": [
+      { "id": "rt.attack", "label": "Attack the agent" },
+      { "id": "rt.check", "label": "Check every action" },
+      { "id": "sl.gate", "label": "Gate against the rules" },
+      { "id": "sl.review", "label": "A person decides" },
+      { "id": "sl.log", "label": "Record it in a tamper-evident log" }
+    ],
+    "state": { "idle": "Waiting", "running": "Running", "done": "Done" },
+    "decision": "Decision",
+    "scripted_reviewer": "scripted reviewer",
+    "decided_in": "Decided in",
+    "log_entries": "audit-log entries",
+    "pending": "not available yet"
   }
 };
