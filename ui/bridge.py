@@ -89,15 +89,29 @@ LABELS AND PACING
 
 COMMANDS: see --help. Exit codes: 0 fine or stopped by you, 2 refused or bad arguments, 130 run stopped by
 Ctrl-C, otherwise the run's own exit code. Not verified on Windows: CREATE_NEW_PROCESS_GROUP + CTRL_BREAK_EVENT.
+
+PAGE-STARTED RUNS (--serve alone, or --serve --run KEY): the page may start the same fixed runs through a small
+JSON API on 127.0.0.1. One run at a time. The page never sends a command: it names a "kind" from a fixed list
+and a model tag from config/models.txt, and the bridge maps that to the fixed argument list (shell=False).
+    GET  /api/session  -> {"token": "<32 hex>"}   (same-origin only: no CORS headers)
+    GET  /api/status   -> {running, kind, model, started, last, models, kinds}
+    POST /api/run      -> 202 {"ok": true} | 400 | 403 | 409   headers: Content-Type: application/json,
+                          X-Redline-Token; body {"kind", "model", "parallel"}
+    POST /api/stop     -> 202 {"ok": true} | 403 | 409          header:  X-Redline-Token
+Refused: a wrong or missing token (403), a Host or Origin that is not this server (403), a body that is not
+JSON or is over 4096 bytes (400), an unknown kind or a model not in config/models.txt (400), a second run (409).
+The token is compared in constant time. OPTIONS and every other method are 405 with no CORS headers.
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -1757,10 +1771,12 @@ def bake(src, out_path, speed: float = DEFAULT_SPEED, scale: float = 1.0, limit:
 
 # --------------------------------------------------------------------------- #
 # --serve: the ui/ folder on http://127.0.0.1:<port>/ (this computer only).
-#   GET and HEAD only; files under ui/ only (the resolved path is checked, so a
+#   GET and HEAD only for files; files under ui/ only (the resolved path is checked, so a
 #   symbolic link out of ui/ is refused); no directory listing; every answer says
 #   Cache-Control: no-store and X-Content-Type-Options: nosniff; no CORS headers;
 #   a Host header that is not this server is refused (DNS rebinding).
+#   The only POSTs are /api/run and /api/stop (see "PAGE-STARTED RUNS" above), and only
+#   when the server was made with a RunController.
 # --------------------------------------------------------------------------- #
 SERVE_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -1784,10 +1800,16 @@ CONTENT_TYPES = {
 }   # a fixed table: the Windows registry can map .js to text/plain
 
 
+# The page's JSON API: path -> the one method it answers.
+API_ROUTES = {"/api/session": "GET", "/api/status": "GET", "/api/run": "POST", "/api/stop": "POST"}
+API_BODY_LIMIT = 4096          # bytes of a POST body
+
+
 class UiHandler(BaseHTTPRequestHandler):
     server_version = "RedlineBridge"
     sys_version = ""
     ui_root: Path = UI_DIR.resolve()
+    timeout = 15                # a client that sends less body than it promised cannot hold a thread for ever
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -1856,11 +1878,149 @@ class UiHandler(BaseHTTPRequestHandler):
             return
         self._reply(200, data, CONTENT_TYPES[target.suffix.lower()])
 
+    # ---- the JSON API (only when the server has a RunController) ----
+    def _api_route(self) -> Optional[str]:
+        """The path if it is in the /api namespace of a server that has a controller, else None."""
+        if getattr(self.server, "controller", None) is None:
+            return None
+        raw = self.path.split("?", 1)[0].split("#", 1)[0]
+        return raw if raw == "/api" or raw.startswith("/api/") else None
+
+    def _json(self, code: int, obj) -> None:
+        body = (json.dumps(obj, separators=(",", ":")) + "\n").encode("ascii")
+        self._reply(code, body, "application/json; charset=utf-8")
+
+    def _drain(self) -> None:
+        """Read and drop a request body we will not use (up to 1 MB), so the client sees our answer and not a reset."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > 1_000_000:
+            self.close_connection = True
+            return
+        try:
+            while length > 0:                       # read and drop it, a piece at a time
+                piece = self.rfile.read(min(length, 65536))
+                if not piece:
+                    break
+                length -= len(piece)
+        except OSError:
+            self.close_connection = True
+
+    def _origin_ok(self) -> bool:
+        """No Origin header is fine (a same-origin GET has none). A present one must be this server."""
+        origins = self.headers.get_all("Origin") or []
+        if not origins:
+            return True
+        port = self.server.server_address[1]
+        return len(origins) == 1 and origins[0].strip() in (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
+
+    def _api_guard(self) -> bool:
+        if self._host_ok() and self._origin_ok():
+            return True
+        self._drain()
+        self._json(403, {"error": "forbidden: this request does not come from the page"})
+        return False
+
+    def _read_json_body(self) -> Optional[dict]:
+        """The JSON object of a POST body, or None after answering 400."""
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            self._drain()
+            self._json(400, {"error": "Content-Type must be application/json"})
+            return None
+        try:
+            length = int(self.headers.get("Content-Length") or "")
+        except ValueError:
+            length = -1
+        if length < 0:
+            self.close_connection = True
+            self._json(400, {"error": "Content-Length is required"})
+            return None
+        if length > API_BODY_LIMIT:
+            self._drain()
+            self._json(400, {"error": f"the request body is over {API_BODY_LIMIT} bytes"})
+            return None
+        try:
+            raw = self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
+            return None
+        try:
+            if len(raw) != length:
+                raise ValueError("short body")
+            obj = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+        except (ValueError, RecursionError):        # UnicodeDecodeError is a ValueError
+            self._json(400, {"error": "the body is not valid JSON"})
+            return None
+        if not isinstance(obj, dict):
+            self._json(400, {"error": "the body must be a JSON object"})
+            return None
+        return obj
+
+    def _api_post(self, route: str) -> None:
+        controller = self.server.controller
+        if not controller.token_ok(self.headers.get("X-Redline-Token")):
+            self._drain()
+            self._json(403, {"error": "missing or wrong token"})
+            return
+        try:
+            if route == "/api/stop":
+                self._drain()
+                controller.stop()
+            else:
+                payload = self._read_json_body()
+                if payload is None:
+                    return
+                controller.start(payload)
+        except ApiError as exc:
+            self._json(exc.status, {"error": exc.message})
+            return
+        self._json(202, {"ok": True})
+
+    def _allow(self) -> str:
+        route = self._api_route()
+        return API_ROUTES.get(route, "GET, HEAD") if route is not None else "GET, HEAD"
+
     def do_GET(self) -> None:  # noqa: N802
-        self._serve()
+        route = self._api_route()
+        if route is None:
+            self._serve()
+            return
+        if not self._api_guard():
+            return
+        want = API_ROUTES.get(route)
+        if want is None:
+            self._json(404, {"error": "not found"})
+        elif want != "GET":
+            self._not_allowed()
+        elif route == "/api/session":
+            self._json(200, {"token": self.server.controller.token})
+        else:
+            self._json(200, self.server.controller.status())
 
     def do_HEAD(self) -> None:  # noqa: N802
-        self._serve()
+        if self._api_route() is not None:
+            self._not_allowed()
+        else:
+            self._serve()
+
+    def do_POST(self) -> None:  # noqa: N802
+        route = self._api_route()
+        if route is None:
+            self._not_allowed()
+            return
+        if not self._api_guard():
+            return
+        want = API_ROUTES.get(route)
+        if want is None:
+            self._drain()
+            self._json(404, {"error": "not found"})
+        elif want != "POST":
+            self._not_allowed()
+        else:
+            self._api_post(route)
 
     def _not_allowed(self) -> None:
         try:
@@ -1869,27 +2029,32 @@ class UiHandler(BaseHTTPRequestHandler):
             length = 0
         if 0 < length <= 1_000_000:
             self.rfile.read(length)         # read the body so the client sees the answer, not a reset
-        self._reply(405, b"method not allowed\n", extra={"Allow": "GET, HEAD"})
+        self._reply(405, b"method not allowed\n", extra={"Allow": self._allow()})
 
     def __getattr__(self, name: str):
         if name.startswith("do_"):
-            return self._not_allowed          # POST, PUT, DELETE, OPTIONS, anything else
+            return self._not_allowed          # PUT, DELETE, OPTIONS, anything else
         raise AttributeError(name)
 
 
 class UiServer(ThreadingHTTPServer):
     allow_reuse_address = not IS_WINDOWS     # on Windows, reuse would let another program share the port
     daemon_threads = True
+    controller = None                        # a RunController, or None: then there is no /api
 
 
-def make_server(port: int = DEFAULT_PORT, root=UI_DIR) -> UiServer:
-    """A web server for the ui/ folder on 127.0.0.1 (never any other address)."""
+def make_server(port: int = DEFAULT_PORT, root=UI_DIR, controller=None) -> UiServer:
+    """A web server for the ui/ folder on 127.0.0.1 (never any other address).
+
+    With a RunController the page also gets the /api routes (and may start runs); without one there is no /api."""
     handler = type("BoundUiHandler", (UiHandler,), {"ui_root": Path(root).resolve()})
     try:
-        return UiServer((SERVE_HOST, port), handler)
+        server = UiServer((SERVE_HOST, port), handler)
     except OSError as exc:
         raise BridgeError(f"port {port} is already in use or not allowed ({exc.strerror or exc}); "
                           f"try another with --port") from exc
+    server.controller = controller
+    return server
 
 
 def serve_in_thread(server: UiServer) -> threading.Thread:
@@ -1908,8 +2073,8 @@ def serve_in_thread(server: UiServer) -> threading.Thread:
 #   * Windows: the child gets its own process group and is stopped with CTRL_BREAK_EVENT
 #     (NOT VERIFIED ON WINDOWS)
 # --------------------------------------------------------------------------- #
-RUN_KEYS = ("demo", "live-short", "live-smoke", "models")
-LIVE_KEYS = ("live-short", "live-smoke")
+RUN_KEYS = ("demo", "live-short", "live-smoke", "live-full", "models")
+LIVE_KEYS = ("live-short", "live-smoke", "live-full")
 RE_SLUG = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 PREFLIGHT_TIMEOUT_S = 90
 EXPORT_TIMEOUT_S = 180
@@ -1923,8 +2088,23 @@ def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def run_argv(key: str, py: str, stamp: str, parallel: int = 2) -> Tuple[List[str], Optional[str]]:
-    """The fixed argument list for a run key, and the run folder it writes (None for `models`)."""
+def model_slug(tag: str) -> str:
+    """A model tag as a folder-name part: letters, digits and . _ - only ("qwen2.5:7b-instruct" -> "qwen2.5-7b-instruct").
+    Made here; it is not read from scripts/run_models.py."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", tag).strip("-._")[:60].strip("-._")
+    return slug or "model"
+
+
+def run_argv(key: str, py: str, stamp: str, parallel: int = 2,
+             model: Optional[str] = None) -> Tuple[List[str], Optional[str]]:
+    """The fixed argument list for a run key, and the run folder it writes (None for `models`).
+
+    `model` is used only to name the folder of `live-full`; it reaches the run as LAB_MODEL, not as an argument."""
+    if key == "live-full":
+        if not model:
+            raise BridgeError("live-full needs a model: pass --model TAG")
+        out = f"results/governance/{stamp}_{model_slug(model)}"
+        return [py, "scripts/run_governance.py", "--live", "--sample", "26", "--reps", "3", "--out", out], out
     if key == "demo":
         out = f"governance_out/bridge/demo_{stamp}"
         return [py, "scripts/run_governance.py", "--out", out], out
@@ -2269,12 +2449,317 @@ class BatchFollower:
         return self.follower.step(now, force=force)
 
 
+class _StopRequested(Exception):
+    """The page asked to stop the run (on the command line, Ctrl-C does this)."""
+
+
+class RunOutcome:
+    """What a run came to. `refused` is why it never started; `interrupted` is a stop (Ctrl-C or the page)."""
+
+    def __init__(self, code: int, interrupted: bool = False, refused: Optional[str] = None,
+                 out: Optional[str] = None, export: Optional[dict] = None, text: str = "") -> None:
+        self.code = code
+        self.interrupted = interrupted
+        self.refused = refused
+        self.out = out
+        self.export = export
+        self.text = text
+
+
+def execute_run(root, py: str, key: str, model: Optional[str], parallel: int, no_export: bool, data_dir, scale: float,
+                follow_model: Optional[str] = None, stop: Optional[threading.Event] = None,
+                fresh_screen: bool = False, on_child=None, stop_hint: str = "Ctrl-C stops the run.") -> RunOutcome:
+    """One run, start to finish: (preflight), start the child, follow it, export. Shared by --run and the page.
+
+    `stop` is an Event the page sets to stop the run; the command line stops with Ctrl-C (KeyboardInterrupt) instead.
+    `fresh_screen` rewrites live.js to "waiting" first, so the page does not show the previous run during the preflight.
+    Raises BridgeError for a run that cannot start (a missing script, a child that will not launch)."""
+    root = Path(root)
+    env = child_env(model)
+    stamp = utc_stamp()
+    argv, out_rel = run_argv(key, py, stamp, parallel, model)
+    if not (root / argv[1]).is_file():
+        raise BridgeError(f"{argv[1]} not found")
+    if key == "models" and not read_models(root):
+        raise BridgeError("config/models.txt lists no models")
+    writer = LiveWriter(Path(data_dir) / "live.js")
+    session = Session(writer, kind="run", scale=scale, gov=out_rel)
+    if fresh_screen:
+        session.tick(time.monotonic(), force=True)
+    if key in LIVE_KEYS:
+        _say("bridge: running the preflight checks first ...")
+        ok, why = run_preflight(py, root, env, model)
+        if not ok:
+            session.refusal = f"preflight failed. {why}"
+            session.forced_state = "error"
+            session.tick(time.monotonic(), force=True)
+            return RunOutcome(2, refused=session.refusal, out=None)
+    if stop is not None and stop.is_set():           # stopped during the preflight: nothing was started
+        session.forced_state = "stopped"
+        session.notes.append("stopped by you")
+        session.export = {"status": "skipped", "text": "The run was stopped, so the evidence screens were not updated."}
+        session.tick(time.monotonic(), force=True)
+        return RunOutcome(130, interrupted=True, out=None, export=session.export, text="stopped before it started")
+    if key == "models":
+        follower: Any = BatchFollower(session, root, follow_model=follow_model, not_before=stamp)
+    else:
+        follower = Follower(session, root / out_rel / LOG_NAME, root=root)
+    child = Child(argv, root, env)
+    child.start()
+    if on_child is not None:
+        on_child(child)
+    session.child_alive = True
+    _say(f"bridge: started {key}" + (f" (model {model})" if model else "")
+         + (f", writing {out_rel}" if out_rel else "") + f". {stop_hint}")
+    interrupted = False
+    exporter: Optional[threading.Thread] = None
+    try:
+        while True:
+            if stop is not None and stop.is_set():
+                raise _StopRequested()
+            alive = child.alive()
+            session.child_alive = alive
+            follower.step(time.monotonic())
+            if not alive:
+                break
+            time.sleep(POLL_S)
+        if isinstance(follower, BatchFollower):
+            follower.refresh()
+        follower.step(time.monotonic())
+        code = child.returncode()
+        if code != 0:
+            session.export = {"status": "skipped", "text": "The run did not finish, so the evidence screens were not updated."}
+        elif no_export:
+            session.export = None           # the default text is the command to run
+        else:
+            session.export = {"status": "running", "text": "Updating the evidence screens ..."}
+
+            def work() -> None:
+                session.export = run_export(py, root, env, out_rel)
+
+            exporter = threading.Thread(target=work, daemon=True)
+            exporter.start()
+        while session.pacer.pending() or (exporter is not None and exporter.is_alive()):
+            follower.step(time.monotonic())
+            time.sleep(POLL_S)
+        follower.step(time.monotonic())
+    except (KeyboardInterrupt, _StopRequested):
+        interrupted = True
+        _say("bridge: stopping the run; it keeps its folder")
+    finally:
+        if child.alive():
+            child.stop()
+    code = child.returncode()
+    if interrupted:
+        session.pacer.kind = "instant"
+        session.child_alive = False
+        follower.step(time.monotonic())
+        session.forced_state = session.forced_state or ("stopped" if session.model.run_state == "running" else None)
+        session.notes.append("stopped by you")
+        session.export = {"status": "skipped", "text": "The run was stopped, so the evidence screens were not updated."}
+    elif code not in (0, None) and session.model.run_state == "running":
+        session.forced_state = "error"
+        session.notes.append(f"the run ended with exit code {code} before it finished")
+    session.child_alive = False
+    follower.step(time.monotonic(), force=True)
+    done = session.snapshot(time.monotonic())["done"]
+    text = done["text"] if done else f"the run ended with exit code {code if code is not None else 'unknown'}"
+    _say("bridge: " + text)
+    export = (done or {}).get("export") or session.export or {"status": "not_run", "text": ""}
+    return RunOutcome(130 if interrupted else (code if code is not None else 0), interrupted=interrupted,
+                      out=out_rel, export=export, text=text)
+
+
+# --------------------------------------------------------------------------- #
+# Page-started runs: one at a time, only from the fixed list (see "PAGE-STARTED RUNS" above).
+# --------------------------------------------------------------------------- #
+API_KINDS = ("demo", "live-short", "live-full", "models")      # the page's runs; live-smoke stays command-line only
+API_PARALLEL = (1, 2)
+SHUTDOWN_WAIT_S = STOP_GRACE_S + STOP_TERM_S + 10.0
+
+
+class ApiError(Exception):
+    """A refused API request: an HTTP status and one line for the page."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+class RunController:
+    """Starts, tracks and stops the page's runs. The server holds one; the token is made once per server."""
+
+    def __init__(self, root=REPO_ROOT, data_dir=DATA_DIR, python: Optional[str] = None, no_export: bool = False,
+                 scale: float = 1.0) -> None:
+        self.root = Path(root)
+        self.data_dir = Path(data_dir)
+        self.python = python
+        self.no_export = no_export
+        self.scale = scale
+        self.token = secrets.token_hex(16)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._running = False
+        self._external = False              # the run belongs to --run on the command line, not to the page
+        self._current: Optional[dict] = None
+        self._last: Optional[dict] = None
+        self._thread: Optional[threading.Thread] = None
+        self._child: Optional[Child] = None
+        self._scrub = Scrubber([self.root])
+
+    # ---- what the page reads ----
+    def token_ok(self, supplied) -> bool:
+        """Constant-time comparison; anything that is not text counts as empty."""
+        text = supplied if isinstance(supplied, str) else ""
+        return hmac.compare_digest(text.encode("utf-8", "replace"), self.token.encode("ascii"))
+
+    def status(self) -> dict:
+        with self._lock:
+            cur = dict(self._current) if self._current else {}
+            last = dict(self._last) if self._last else None
+            running = self._running
+        try:
+            models = read_models(self.root)
+        except BridgeError:
+            models = []
+        return {"running": running, "kind": cur.get("kind"), "model": cur.get("model"),
+                "started": cur.get("started"), "last": last, "models": models, "kinds": list(API_KINDS)}
+
+    # ---- what the page asks ----
+    def start(self, payload: dict) -> None:
+        """Validate the request and start the run in a thread; raise ApiError (400 or 409) if it cannot."""
+        kind = payload.get("kind")
+        if not isinstance(kind, str) or kind not in API_KINDS:
+            raise ApiError(400, "kind must be one of: " + ", ".join(API_KINDS))
+        model = payload.get("model")
+        if model is not None and (not isinstance(model, str) or not model):
+            raise ApiError(400, "model must be a model tag (text)")
+        if kind == "models" and model is not None:
+            raise ApiError(400, "model does not apply to the models run")
+        if kind in LIVE_KEYS and model is None:
+            raise ApiError(400, f"{kind} needs a model")
+        parallel = 2
+        if payload.get("parallel") is not None:
+            value = payload["parallel"]
+            if isinstance(value, bool) or not isinstance(value, int) or value not in API_PARALLEL:
+                raise ApiError(400, "parallel must be 1 or 2")
+            parallel = value
+        try:
+            if model is not None:
+                check_model(self.root, model)
+            if kind == "models" and not read_models(self.root):
+                raise BridgeError("config/models.txt lists no models")
+            py = resolve_python(self.root, self.python)
+            argv, _out = run_argv(kind, py, utc_stamp(), parallel, model)
+            if not (self.root / argv[1]).is_file():
+                raise BridgeError(f"{argv[1]} not found")
+        except BridgeError as exc:
+            raise ApiError(400, self._scrub(str(exc))) from exc
+        with self._lock:
+            if self._running:
+                raise ApiError(409, "a run is in progress")
+            self._running = True
+            self._external = False
+            self._current = {"kind": kind, "model": model, "started": utc_now_iso()}
+            self._stop.clear()
+            thread = threading.Thread(target=self._work, args=(kind, model, parallel, py), daemon=True,
+                                      name="redline-run")
+            self._thread = thread
+        try:
+            thread.start()
+        except RuntimeError as exc:                 # no thread could be made: do not stay "running"
+            self._finish(kind, model, None, f"could not start the run ({exc})")
+            raise ApiError(400, "could not start the run") from exc
+
+    def stop(self) -> None:
+        """Ask the running run to stop (an interrupt first, then terminate, then kill); raise ApiError 409 if none."""
+        with self._lock:
+            if not self._running:
+                raise ApiError(409, "nothing is running")
+            if self._external:
+                raise ApiError(409, "this run was started from the command line; stop it there with Ctrl-C")
+            self._stop.set()
+
+    # ---- a run started by --run while the page is served ----
+    def begin_external(self, kind: str, model: Optional[str]) -> None:
+        with self._lock:
+            if self._running:
+                raise BridgeError("a run started from the page is already in progress")
+            self._running = True
+            self._external = True
+            self._current = {"kind": kind, "model": model, "started": utc_now_iso()}
+
+    def end_external(self, kind: str, model: Optional[str], outcome: Optional[RunOutcome], error: Optional[str]) -> None:
+        self._finish(kind, model, outcome, error)
+
+    # ---- the worker ----
+    def _set_child(self, child: Child) -> None:
+        self._child = child
+
+    def _work(self, kind: str, model: Optional[str], parallel: int, py: str) -> None:
+        outcome: Optional[RunOutcome] = None
+        error: Optional[str] = None
+        try:
+            _say(f"bridge: run started from the page: {kind}" + (f" (model {model})" if model else ""))
+            outcome = execute_run(self.root, py, kind, model, parallel, self.no_export, self.data_dir, self.scale,
+                                  stop=self._stop, fresh_screen=True, on_child=self._set_child,
+                                  stop_hint="The Stop button on the page stops the run.")
+        except BridgeError as exc:
+            error = str(exc)
+        except Exception as exc:  # noqa: BLE001 - whatever happens, the controller must not stay "running"
+            error = f"the run failed ({exc.__class__.__name__})"
+        self._finish(kind, model, outcome, error)
+
+    def _finish(self, kind: str, model: Optional[str], outcome: Optional[RunOutcome], error: Optional[str]) -> None:
+        last = self._last_record(kind, model, outcome, error)
+        with self._lock:
+            self._last = last
+            self._running = False
+            self._external = False
+            self._current = None
+            self._child = None
+
+    def _last_record(self, kind: str, model: Optional[str], outcome: Optional[RunOutcome], error: Optional[str]) -> dict:
+        if outcome is None:
+            return {"kind": kind, "model": model, "exit_code": 2, "export_status": "skipped", "export_text": "",
+                    "out": None, "error": self._scrub(error or "the run did not start")}
+        export = dict(outcome.export or {"status": "skipped", "text": ""})
+        err: Optional[str] = None
+        if outcome.refused:
+            err = outcome.refused
+            export = {"status": "skipped", "text": "Not started: " + outcome.refused}
+        elif outcome.interrupted:
+            err = "stopped by you"
+        elif outcome.code != 0:
+            err = f"the run ended with exit code {outcome.code}"
+        return {"kind": kind, "model": model, "exit_code": outcome.code, "export_status": export.get("status"),
+                "export_text": self._scrub(export.get("text") or ""), "out": outcome.out,
+                "error": self._scrub(err) if err else None}
+
+    def shutdown(self, timeout: float = SHUTDOWN_WAIT_S) -> None:
+        """Stop a page-started run and wait for it, so no child is left running when the bridge exits."""
+        with self._lock:
+            thread = self._thread if self._running and not self._external else None
+            if thread is not None:
+                self._stop.set()
+        if thread is None:
+            return
+        try:
+            thread.join(timeout)
+        except KeyboardInterrupt:
+            pass
+        child = self._child
+        if child is not None and child.alive():
+            child.stop(grace=0.0, term_wait=2.0)        # the wait ran out (or a second Ctrl-C): do not leave it
+
+
 # --------------------------------------------------------------------------- #
 # Command line.
 # --------------------------------------------------------------------------- #
 USAGE_TEXT = """\
 macOS / Linux (from the repo folder):
-  python3 ui/bridge.py --serve                                   # then open http://127.0.0.1:8765/
+  python3 ui/bridge.py --serve                                   # open http://127.0.0.1:8765/ ; the page can start runs
   python3 ui/bridge.py --run demo --serve                        # scripted run, shown paced for display
   python3 ui/bridge.py --run live-short --model qwen2.5:7b-instruct --serve
   python3 ui/bridge.py --run models --parallel 2 --follow-model qwen2.5-7b-instruct --serve
@@ -2292,7 +2777,7 @@ Windows PowerShell (from the repo folder; the repo's .venv is found by itself, e
   py ui\\bridge.py --bake results\\governance\\<run>\\progress.jsonl
   (Stopping a run with Ctrl-C uses CTRL_BREAK_EVENT: not verified on Windows.)
 
-Run keys: demo | live-short (2 tests per split, 1 rep) | live-smoke (1 test, 3 reps) | models.
+Run keys: demo | live-short (2 tests per split, 1 rep) | live-smoke (1 test, 3 reps) | live-full (26 tests, 3 reps; needs --model) | models.
 After a run the bridge calls ui/export.py --quiet --gov <run folder> (--no-export skips it).
 """
 
@@ -2351,13 +2836,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="start a run from the fixed list: " + ", ".join(RUN_KEYS))
     mode.add_argument("--batch", metavar="DIR", help="follow a model batch folder (results/models/<STAMP>)")
     p.add_argument("--model", metavar="TAG", default=None,
-                   help="with --run demo|live-short|live-smoke: a tag listed in config/models.txt")
+                   help="with --run demo|live-short|live-smoke|live-full: a tag listed in config/models.txt")
     p.add_argument("--parallel", type=_parallel, default=None, metavar="N", help="with --run models: 1 to 4 (default 2)")
     p.add_argument("--follow-model", metavar="SLUG", default=None,
                    help="with --run models or --batch: the model whose pipeline is shown")
-    p.add_argument("--no-export", action="store_true", help="with --run: do not run ui/export.py afterwards")
+    p.add_argument("--no-export", action="store_true", help="with --run or --serve: do not run ui/export.py afterwards")
     p.add_argument("--python", metavar="PATH", default=None,
-                   help="with --run: the interpreter to use when the repo has no .venv")
+                   help="with --run or --serve: the interpreter to use when the repo has no .venv")
     p.add_argument("--root", metavar="DIR", default=None, help=argparse.SUPPRESS)
     p.add_argument("--speed", type=_positive_float, default=DEFAULT_SPEED, metavar="N",
                    help="replay speed: recorded gaps divided by N, at most 3 s each (default 4)")
@@ -2402,7 +2887,7 @@ def _root_of(args) -> Path:
     return Path(args.root) if args.root else REPO_ROOT
 
 
-def _run_flow(args, data_dir: Path) -> int:
+def _run_flow(args, data_dir: Path, controller: Optional[RunController] = None) -> int:
     """--run KEY: check, (preflight), start the child, follow it, export, report."""
     root = _root_of(args)
     key = args.run
@@ -2411,86 +2896,23 @@ def _run_flow(args, data_dir: Path) -> int:
             raise BridgeError("--model does not apply to --run models; use --follow-model SLUG to choose what to watch")
         check_model(root, args.model)
     py = resolve_python(root, args.python)
-    env = child_env(args.model)
-    stamp = utc_stamp()
-    argv, out_rel = run_argv(key, py, stamp, args.parallel if args.parallel is not None else 2)
-    if not (root / argv[1]).is_file():
-        raise BridgeError(f"{argv[1]} not found")
-    if key == "models" and not read_models(root):
-        raise BridgeError("config/models.txt lists no models")
-    writer = LiveWriter(data_dir / "live.js")
-    session = Session(writer, kind="run", scale=args.pace_scale, gov=out_rel)
-    if key in LIVE_KEYS:
-        _say("bridge: running the preflight checks first ...")
-        ok, why = run_preflight(py, root, env, args.model)
-        if not ok:
-            session.refusal = f"preflight failed. {why}"
-            session.forced_state = "error"
-            session.tick(time.monotonic(), force=True)
-            print(f"bridge: not started: preflight failed. {why}", file=sys.stderr)
-            return 2
-    if key == "models":
-        follower: Any = BatchFollower(session, root, follow_model=args.follow_model, not_before=stamp)
-    else:
-        follower = Follower(session, root / out_rel / LOG_NAME, root=root)
-    child = Child(argv, root, env)
-    child.start()
-    session.child_alive = True
-    _say(f"bridge: started {key}" + (f" (model {args.model})" if args.model else "")
-         + (f", writing {out_rel}" if out_rel else "") + ". Ctrl-C stops the run.")
-    interrupted = False
-    exporter: Optional[threading.Thread] = None
+    parallel = args.parallel if args.parallel is not None else 2
+    outcome: Optional[RunOutcome] = None
+    error: Optional[str] = None
+    if controller is not None:
+        controller.begin_external(key, args.model)
     try:
-        while True:
-            alive = child.alive()
-            session.child_alive = alive
-            follower.step(time.monotonic())
-            if not alive:
-                break
-            time.sleep(POLL_S)
-        if isinstance(follower, BatchFollower):
-            follower.refresh()
-        follower.step(time.monotonic())
-        code = child.returncode()
-        if code != 0:
-            session.export = {"status": "skipped", "text": "The run did not finish, so the evidence screens were not updated."}
-        elif args.no_export:
-            session.export = None           # the default text is the command to run
-        else:
-            session.export = {"status": "running", "text": "Updating the evidence screens ..."}
-
-            def work() -> None:
-                session.export = run_export(py, root, env, out_rel)
-
-            exporter = threading.Thread(target=work, daemon=True)
-            exporter.start()
-        while session.pacer.pending() or (exporter is not None and exporter.is_alive()):
-            follower.step(time.monotonic())
-            time.sleep(POLL_S)
-        follower.step(time.monotonic())
-    except KeyboardInterrupt:
-        interrupted = True
-        _say("bridge: stopping the run; it keeps its folder")
+        outcome = execute_run(root, py, key, args.model, parallel, args.no_export, data_dir, args.pace_scale,
+                              follow_model=args.follow_model)
+    except BridgeError as exc:
+        error = str(exc)
+        raise
     finally:
-        if child.alive():
-            child.stop()
-    code = child.returncode()
-    if interrupted:
-        session.pacer.kind = "instant"
-        session.child_alive = False
-        follower.step(time.monotonic())
-        session.forced_state = session.forced_state or ("stopped" if session.model.run_state == "running" else None)
-        session.notes.append("stopped by you")
-        session.export = {"status": "skipped", "text": "The run was stopped, so the evidence screens were not updated."}
-    elif code not in (0, None) and session.model.run_state == "running":
-        session.forced_state = "error"
-        session.notes.append(f"the run ended with exit code {code} before it finished")
-    session.child_alive = False
-    follower.step(time.monotonic(), force=True)
-    done = session.snapshot(time.monotonic())["done"]
-    _say("bridge: " + (done["text"] if done else
-                       f"the run ended with exit code {code if code is not None else 'unknown'}"))
-    return 130 if interrupted else (code if code is not None else 0)
+        if controller is not None:
+            controller.end_external(key, args.model, outcome, error)
+    if outcome.refused:
+        print(f"bridge: not started: {outcome.refused}", file=sys.stderr)
+    return outcome.code
 
 
 def _run_batch_follow(args, data_dir: Path) -> int:
@@ -2557,24 +2979,30 @@ def main(argv=None) -> int:
         parser.error("--follow-model needs --run models or --batch")
     if args.follow_model and not RE_SLUG.match(args.follow_model):
         parser.error("--follow-model: that is not a model slug (letters, digits, . _ - only)")
-    if (args.no_export or args.python) and not args.run:
-        parser.error("--no-export and --python need --run")
+    if (args.no_export or args.python) and not (args.run or args.serve):
+        parser.error("--no-export and --python need --run or --serve")
     data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
     server = None
+    controller: Optional[RunController] = None
     try:
         clean_stale_temp(data_dir)
         if args.serve:
-            server = make_server(DEFAULT_PORT if args.port is None else args.port)
+            # The page may start runs when nothing else owns live.js: --serve alone, or with --run or --bake.
+            if not (args.follow or args.follow_latest or args.replay or args.batch):
+                controller = RunController(root=_root_of(args), data_dir=data_dir, python=args.python,
+                                           no_export=args.no_export, scale=args.pace_scale)
+            server = make_server(DEFAULT_PORT if args.port is None else args.port, controller=controller)
             serve_in_thread(server)
             _say(f"bridge: serving ui/ at http://{SERVE_HOST}:{server.server_address[1]}/ "
-                 "(this computer only). Ctrl-C stops.")
+                 "(this computer only). Ctrl-C stops."
+                 + (" The page can start runs." if controller is not None else ""))
         rc = 0
         if args.bake:
             out = data_dir / "replay.js"
             frames = bake(args.bake, out, speed=args.speed, scale=args.pace_scale)
             _say(f"bridge: wrote {display_path(out)} ({frames} frames)")
         elif args.run:
-            rc = _run_flow(args, data_dir)
+            rc = _run_flow(args, data_dir, controller)
         elif args.batch:
             rc = _run_batch_follow(args, data_dir)
         elif args.replay:
@@ -2591,6 +3019,8 @@ def main(argv=None) -> int:
         print("bridge: stopped", file=sys.stderr)
         return 0
     finally:
+        if controller is not None:
+            controller.shutdown()           # a run started from the page must not outlive the bridge
         if server is not None:
             server.shutdown()
             server.server_close()
