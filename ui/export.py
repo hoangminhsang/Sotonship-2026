@@ -2112,6 +2112,8 @@ def folder_mode_tags(ctx: Ctx, gov: dict) -> dict:
             continue
         if tag in MODE_TAGS:
             out[name] = tag
+        elif tag is not None and name.endswith(".json"):
+            ctx.warn("integrity", f"{name}: unknown mode {short(tag, 30)}; the other files decide the mode.")
     return out
 
 
@@ -2129,19 +2131,44 @@ def warn_mixed_modes(ctx: Ctx, tags: dict) -> bool:
     return True
 
 
-def detect_scripted(ctx: Ctx, gov: dict, batch) -> bool:
+def detect_mode(ctx: Ctx, gov: dict, batch, tags=None):
+    """The run mode of the governance output: SCRIPTED, the real-model tag or SAVED; None if unknown.
+
+    The mode comes from the tags the CLI writes, in this order:
+      1. "mode" of run_index.json
+      2. the "[TAG]" on the first line of the gate file (the configured one, then the other gate_*.txt)
+      3. the "**Mode: [TAG]**" line of the .md files (the configured ones, then the others)
+      4. "mode" of audit_verify.json
+    Only output with no tag at all (an old run) falls back to the exact DEMO digest literal and then
+    to the shape of the evidence batch. The digest is never matched by prefix: the DEMO placeholder
+    starts with the same eight hex digits as the real qwen2.5 digest, so a prefix test hides real runs.
+    `tags` is folder_mode_tags(ctx, gov), when the caller has it already.
+    """
+    tags = folder_mode_tags(ctx, gov) if tags is None else tags
+
+    def name_of(key):
+        v = gov.get(key)
+        return Path(v).name if isinstance(v, str) and v.strip() else None
+
+    gates = [n for n in (name_of("gate_report"),) if n] + sorted(
+        n for n in tags if n.startswith("gate_") and n.endswith(".txt"))
+    mds = [n for n in (name_of(k) for k in ("risk_register_md", "evidence_md", "fix_tickets_md")) if n] + sorted(
+        n for n in tags if n.endswith(".md"))
+    for name in ["run_index.json"] + gates + mds + ["audit_verify.json"]:
+        if name in tags:
+            return tags[name]
+    # Old output without any tag.
     for fp in gov.get("fingerprint") or []:
         try:
             text, _ = read_text(ctx, fp)
             obj = json.loads(text)
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("model_digest"), str) and (
-                obj["model_digest"] == DEMO_DIGEST or obj["model_digest"].startswith("sha256:845dbda0")):
-            return True
+        if isinstance(obj, dict) and obj.get("model_digest") == DEMO_DIGEST:
+            return MODE_SCRIPTED
     if batch and batch.get("_trace_count", 0) and not batch.get("_traces_started", 0):
-        return True
-    return False
+        return MODE_SCRIPTED
+    return None
 
 
 def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dict) -> dict:
@@ -2373,8 +2400,9 @@ def build_governance(ctx: Ctx, batches: dict):
     latest = None
 
     if connected:
-        warn_mixed_modes(ctx, folder_mode_tags(ctx, gov))
-        scripted = detect_scripted(ctx, gov, ev_batch)
+        mode_tags = folder_mode_tags(ctx, gov)
+        warn_mixed_modes(ctx, mode_tags)
+        scripted = detect_mode(ctx, gov, ev_batch, mode_tags) == MODE_SCRIPTED
         g_status = SAMPLE if scripted else REAL
         if scripted and not allow:
             reason = "Scripted output (backend DEMO mode) is not shown without --allow-sample."

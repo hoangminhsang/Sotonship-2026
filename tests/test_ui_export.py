@@ -9,6 +9,8 @@ parsers; nothing here pins a measured number of the backend.
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -357,3 +359,136 @@ def test_a_rate_that_is_really_outside_its_interval_is_still_refused(ex, tmp_pat
         assert out["geom"] is None and out["ci"] is None, (rate, lo, hi)
         assert [w["level"] for w in ctx.warnings] == ["integrity"], ctx.warnings
         assert "outside its interval" in ctx.warnings[0]["text"]
+
+
+# --------------------------------------------------------------------------- #
+# Breakage 2: the mode comes from the tags, never from a prefix of the model digest.
+# --------------------------------------------------------------------------- #
+# The DEMO placeholder "sha256:845dbda0..." is the start of the real qwen digest. A real digest has
+# 64 hex digits; this one only has the same first eight, which is all the old prefix test looked at.
+REAL_SHAPED_DIGEST = "sha256:845dbda0" + "0" * 56
+
+
+def tag_gates(repo: Path, tag: str | None, only: str | None = None) -> None:
+    """Put `tag` on the first line of the gate files (tag=None removes it: an old, untagged file)."""
+    for p in (repo / "governance_out").glob("gate_*.txt"):
+        if only and p.name != only:
+            continue
+        text = re.sub(r"^\[[A-Z]+\] ", "", p.read_text(encoding="utf-8"))
+        p.write_text((f"[{tag}] " if tag else "") + text, encoding="utf-8")
+
+
+def tag_markdown(repo: Path, tag: str | None) -> None:
+    """Put the mode line on every .md file (tag=None removes it, with the blank line under it)."""
+    for p in (repo / "governance_out").glob("*.md"):
+        lines = p.read_text(encoding="utf-8").split("\n")
+        if lines[0].startswith("**Mode: ["):
+            lines[0:2] = []
+        if tag:
+            lines[0:0] = [f"**Mode: [{tag}]**", ""]
+        p.write_text("\n".join(lines), encoding="utf-8")
+
+
+def set_digest(repo: Path, digest: str) -> None:
+    for p in (repo / "governance_out").glob("RC-00?.json"):
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        obj["model_digest"] = digest
+        p.write_text(json.dumps(obj), encoding="utf-8")
+
+
+def relabel(repo: Path, tag: str | None, digest: str | None = None) -> None:
+    """Re-tag the whole CLI output copy. Only the mode logic is under test: the scripted numbers stay."""
+    tag_gates(repo, tag)
+    tag_markdown(repo, tag)
+    if digest:
+        set_digest(repo, digest)
+
+
+def _mode(ex, repo: Path, batch=None):
+    ctx = make_ctx(ex, repo, dict(GOV_FILES))
+    return ex.detect_mode(ctx, ctx.sources["governance"], batch)
+
+
+def test_the_scripted_cli_output_is_detected_from_its_tags(ex, repo):
+    assert _mode(ex, repo) == "SCRIPTED"
+
+
+def test_a_real_model_run_that_shares_the_digest_prefix_is_real_data(ex, repo):
+    """The reported bug: the smoke run of qwen was taken for scripted output and hidden."""
+    relabel(repo, "LIVE", digest=REAL_SHAPED_DIGEST)
+    ctx = make_ctx(ex, repo, dict(GOV_FILES))  # no --allow-sample: scripted output would be held back
+    gate, audit, assurance, _latest = ex.build_governance(ctx, {"b": _stub_batch_for(ex, repo)})
+    assert (gate["status"], audit["status"], assurance["status"]) == (ex.REAL, ex.REAL, ex.REAL)
+    assert gate["sample_tag"] is None and gate["reason"] is None and [c["name"] for c in gate["checks"]] == GATE_CHECKS
+    assert not [w for w in ctx.warnings if w["level"] == "integrity"], ctx.warnings
+    assert _mode(ex, repo) == "LIVE"
+
+
+def test_a_saved_run_is_real_data_too(ex, repo):
+    relabel(repo, "SAVED", digest=REAL_SHAPED_DIGEST)
+    ctx = make_ctx(ex, repo, dict(GOV_FILES))
+    gate, _audit, _assurance, _latest = ex.build_governance(ctx, {"b": _stub_batch_for(ex, repo)})
+    assert gate["status"] == ex.REAL
+    assert _mode(ex, repo) == "SAVED"
+
+
+def test_scripted_output_is_still_held_back_without_allow_sample(ex, repo):
+    ctx = make_ctx(ex, repo, dict(GOV_FILES))
+    gate, audit, assurance, _latest = ex.build_governance(ctx, {"b": _stub_batch_for(ex, repo)})
+    assert gate["status"] == ex.PENDING and audit["status"] == ex.PENDING and assurance["status"] == ex.PENDING
+    assert any("--allow-sample" in w["text"] for w in ctx.warnings)
+
+
+def test_a_tag_beats_the_digest_in_both_directions(ex, repo):
+    relabel(repo, "SCRIPTED", digest=REAL_SHAPED_DIGEST)   # scripted tags, real-looking digest
+    assert _mode(ex, repo) == "SCRIPTED"
+    relabel(repo, "LIVE", digest="sha256:845dbda0...")     # real tags, placeholder digest
+    assert _mode(ex, repo) == "LIVE"
+
+
+def test_untagged_legacy_files_are_scripted_only_for_the_exact_placeholder(ex, repo):
+    relabel(repo, None)
+    assert _mode(ex, repo) == "SCRIPTED"                   # the exact literal still marks old scripted output
+    set_digest(repo, REAL_SHAPED_DIGEST)
+    assert _mode(ex, repo) is None                         # the same first eight digits are not enough
+    set_digest(repo, "sha256:845dbda0..." + "x")
+    assert _mode(ex, repo) is None                         # nor is "starts with the literal"
+
+
+def test_legacy_batch_without_start_times_still_marks_scripted_traces(ex, repo):
+    relabel(repo, None, digest=REAL_SHAPED_DIGEST)
+    assert _mode(ex, repo, {"_trace_count": 3, "_traces_started": 0}) == "SCRIPTED"
+    assert _mode(ex, repo, {"_trace_count": 3, "_traces_started": 3}) is None
+
+
+def test_run_index_comes_first_then_the_gate_then_the_md_files(ex, repo):
+    run_index = repo / "governance_out" / "run_index.json"
+    relabel(repo, "SCRIPTED")
+    tag_gates(repo, "SAVED", only="gate_RC-001.txt")
+    assert _mode(ex, repo) == "SAVED"                      # the gate before the md files
+    run_index.write_text('{"schema": "run-index/1", "mode": "LIVE"}', encoding="utf-8")
+    assert _mode(ex, repo) == "LIVE"                       # run_index.json before the gate
+    run_index.unlink()
+    tag_gates(repo, None)
+    assert _mode(ex, repo) == "SCRIPTED"                   # no gate tag: the md files speak
+
+
+def test_the_md_tag_is_used_when_the_gate_has_none(ex, repo):
+    relabel(repo, "LIVE", digest=REAL_SHAPED_DIGEST)
+    tag_gates(repo, None)
+    assert _mode(ex, repo) == "LIVE"
+
+
+def test_a_run_index_with_another_mode_is_noticed_as_a_mix(ex, repo):
+    (repo / "governance_out" / "run_index.json").write_text('{"mode": "LIVE"}', encoding="utf-8")
+    ctx, _built = _build(ex, repo)
+    mixed = [w for w in ctx.warnings if "mixes" in w["text"]]
+    assert len(mixed) == 1 and "run_index.json" in mixed[0]["text"]
+
+
+def test_an_unknown_mode_in_run_index_is_ignored_with_a_warning(ex, repo):
+    (repo / "governance_out" / "run_index.json").write_text('{"mode": "DEMO"}', encoding="utf-8")
+    ctx = make_ctx(ex, repo, dict(GOV_FILES))
+    assert ex.detect_mode(ctx, ctx.sources["governance"], None) == "SCRIPTED"   # the gate speaks instead
+    assert [w["level"] for w in ctx.warnings] == ["integrity"]
+    assert "run_index.json" in ctx.warnings[0]["text"] and "DEMO" in ctx.warnings[0]["text"]
