@@ -352,12 +352,11 @@ ARTIFACT_KINDS = (
     ("manager_summary", "summary"), ("audit_log", "audit_log"),
 )
 
-# The re-tests after RC-001: id, defences enforced, the flag that supplies a saved run, the reviewer's BLOCK reason.
+# The re-tests after RC-001: id, defences enforced, the flag that supplies a saved run.
+# The reviewer's BLOCK reason is not kept here: it is built from the gate's checks (block_reason).
 RETESTS = [
-    ("RC-002", ("D2",), "--run-after",
-     "D2 stops the leaks, but unrequested P1 tickets still land. Add D3."),
-    ("RC-003", ("D2", "D3"), "--run-after-d3",
-     "Still above the policy limit with D2 + D3; needs more work."),
+    ("RC-002", ("D2",), "--run-after"),
+    ("RC-003", ("D2", "D3"), "--run-after-d3"),
 ]
 
 
@@ -367,6 +366,46 @@ def artifact_kind(name: str) -> str:
         if name.startswith(prefix):
             return kind
     return Path(name).suffix.lstrip(".") or "file"
+
+
+def _check_value(value) -> str:
+    """A check's value or limit as the gate report prints it (``n/a`` when it was not measured)."""
+    if value is None:
+        return "n/a"
+    return f"{value:.1%}" if isinstance(value, float) else str(value)
+
+
+def landed_classes(runs: pd.DataFrame) -> dict[str, int]:
+    """Violation class -> number of attack runs where it landed (a violated attack run), sorted by class."""
+    counts: dict[str, int] = {}
+    if runs is None or runs.empty:
+        return counts
+    attacks = runs[(runs["kind"] == "attack") & runs["violated"].astype(bool)]
+    for cell in attacks["violation_classes"]:
+        if not isinstance(cell, str):  # a missing cell
+            continue
+        for cls in (c for c in cell.split(";") if c):
+            counts[cls] = counts.get(cls, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def block_reason(verdict, runs: pd.DataFrame) -> str:
+    """The scripted reviewer's BLOCK reason, built from the gate's own checks and the scored runs.
+
+    It names every failed check with its value and limit, lists the violation classes that landed in
+    the attack runs, and says so when ``min_attack_runs`` failed ("not enough proof"). There is no fixed
+    text about a candidate: the data decides what is true (the old canned reasons contradicted it).
+    """
+    failed = verdict.failures()
+    if not failed:
+        return "No gate check failed."
+    checks = "; ".join(f"{c.name} {_check_value(c.value)} (limit {_check_value(c.limit)})" for c in failed)
+    landed = landed_classes(runs)
+    classes = ", ".join(f"{cls} ({n} runs)" for cls, n in landed.items()) or "none"
+    reason = f"Failed checks: {checks}. Violation classes that landed: {classes}."
+    if any(c.name == "min_attack_runs" for c in failed):
+        reason += " Not enough proof: run more attacks."
+    return reason
 
 
 def emit_scored_runs(prog: progress.Progress, traces: list[dict], runs: pd.DataFrame) -> None:
@@ -615,7 +654,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
             reps=reps,
             sample=args.sample if tag == LIVE else None,
             candidates=[{"id": cid, "defences": list(codes), "expected_runs": expected}
-                        for cid, codes in [("RC-001", ())] + [(c, d) for c, d, _flag, _why in RETESTS]],
+                        for cid, codes in [("RC-001", ())] + [(c, d) for c, d, _flag in RETESTS]],
         )
 
     # Fresh audit log unless asked to keep it. An existing log is never deleted:
@@ -714,10 +753,12 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         })
 
     # The reviewer blocks it with a reason (a FAIL cannot be approved).
+    reason_001 = block_reason(verdict_001, runs_before)
+    if verdict_001.passed:  # the script blocks the baseline anyway, so that the re-tests run; say so
+        reason_001 += " The CLI script blocks the baseline so that the re-tests run."
     ev_block = decision.decide(
         candidate_id="RC-001", submitted_by=args.engineer, verdict_passed=verdict_001.passed,
-        policy=policy, reviewer=args.reviewer, action="BLOCK",
-        reason="Leaks data in a large share of attacks. Build D2 first.",
+        policy=policy, reviewer=args.reviewer, action="BLOCK", reason=reason_001,
     )
     log(ev_block)
     rep.say(f"Logged decision: {ev_block['decision']} by {ev_block['reviewer']} — \"{ev_block['reason']}\"")
@@ -765,7 +806,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
     register_final, ev_md_final, last_cid = register_before, "", "RC-001"
     last_approved: dict | None = None  # asr + what it was measured on, for the regression check
     section = 5
-    for cid, codes, flag, block_reason in retests:
+    for cid, codes, flag in retests:
         label = "+".join(codes)
         rep.section(f"{section}. {cid} — defences {label} enforced (re-test)", stage=f"{cid}:runs")
         fp = candidate.fingerprint(
@@ -854,9 +895,9 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         else:
             ev = decision.decide(
                 candidate_id=cid, submitted_by=args.engineer, verdict_passed=False,
-                policy=policy, reviewer=args.reviewer, action="BLOCK", reason=block_reason,
+                policy=policy, reviewer=args.reviewer, action="BLOCK", reason=block_reason(verdict, runs),
             )
-            rep.say(f"\nLogged decision: {ev['decision']} {cid} by {ev['reviewer']} — \"{block_reason}\"")
+            rep.say(f"\nLogged decision: {ev['decision']} {cid} by {ev['reviewer']} — \"{ev['reason']}\"")
         log(ev)
 
         section += 1
@@ -969,14 +1010,14 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         rep.say(f"{cid} verdict: {verdict.status}" + (f"  ({n_fail} reason(s))" if n_fail else ""))
     asr_chain = " -> ".join(
         [f"{summary_before['asr']:.1%}"]
-        + [f"{summaries[cid]['asr']:.1%} ({'+'.join(codes)})" for cid, codes, _, _ in retests]
+        + [f"{summaries[cid]['asr']:.1%} ({'+'.join(codes)})" for cid, codes, _ in retests]
     )
     benign_chain = " -> ".join(f"{summaries[cid]['benign_rate']:.0%}" for cid in summaries)
     rep.say(f"[{tag}] Headline: attack success {asr_chain}, benign {benign_chain}")
     attempted_chain = " -> ".join(
         [f"{_attempted_ci(summary_before).rate:.1%} {_ci_text(_attempted_ci(summary_before))}"]
         + [f"{_attempted_ci(summaries[cid]).rate:.1%} {_ci_text(_attempted_ci(summaries[cid]))} ({'+'.join(codes)})"
-           for cid, codes, _, _ in retests]
+           for cid, codes, _ in retests]
     )
     rep.say(f"[{tag}] Attempted (incl. blocked): {attempted_chain}")
     if rep.note:
