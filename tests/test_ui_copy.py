@@ -203,7 +203,8 @@ class _Page(HTMLParser):
         depth = len(self._stack)
         if a.get("id"):
             self.order[a["id"]] = self._last_child.get(depth)
-            self.by_id[a["id"]] = {"tag": tag, "attrs": a, "parent": parent[1]}
+            self.by_id[a["id"]] = {"tag": tag, "attrs": a, "parent": parent[1],
+                                   "ancestors": [i for _, i in self._stack if i]}
         self._last_child[depth] = (tag, a.get("id"))
         if tag == "button" and "nav-item" in (a.get("class") or "").split():
             self.nav_items.append(a.get("data-screen"))
@@ -275,6 +276,22 @@ def test_the_content_security_policy_is_kept():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "connect-src 'none'" in html and "font-src data:" in html
     assert "img-src data:" in html and "object-src 'none'" in html
+
+
+def test_every_beat_focus_is_an_element_on_its_own_screen():
+    # A beat's focus is the id of an element on the beat's screen. Two ids are global: the cover and the
+    # run drawer. Without this check a renamed id would leave a beat pointing at nothing.
+    _, copy = _load()
+    ids = _page().by_id
+    for beat in copy["beats"]:
+        focus = beat["focus"]
+        if focus is None:
+            continue
+        assert focus in ids, f"beat {beat['id']}: no element with id {focus} in index.html"
+        if focus in ("cover", "drawer"):
+            continue
+        screen_id = f"screen-{SCREEN_NAMES.index(beat['screen']) + 1}"
+        assert screen_id in ids[focus]["ancestors"], f"beat {beat['id']}: #{focus} is not inside #{screen_id}"
 
 
 def test_every_copy_key_that_app_js_reads_exists_in_copy_js():

@@ -556,6 +556,9 @@ body.no-data #chips,body.no-data #replay{display:none}
 .tile:focus-visible{outline:4px solid var(--ink);outline-offset:3px;box-shadow:0 0 0 3px var(--paper)}
 :is(.chain[data-ok="false"],.verdict[data-status="REAL"]) :focus-visible{outline-color:var(--paper);box-shadow:0 0 0 3px var(--ink)}
 
+/* the element a beat points at keeps the focus ring, except in presenter mode, where the audience sees no operator aids */
+body.presenter .beat-target:focus,body.presenter .beat-target:focus-visible{outline:none;box-shadow:none}
+
 /* ---------- 16 reduced motion ---------- */
 @media (prefers-reduced-motion:reduce){
   #deck,#deck.draw{transition:none}

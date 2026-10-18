@@ -1713,6 +1713,71 @@
     fill(sr, files.length || M.status ? [src(['Models: ', V(files.join(', ') || 'no file'), ' ', tag(M.status || 'PENDING')])] : []);
   }
 
+  /* ---------- beat mode: B steps through COPY.beats in order, Shift+B steps back ----------
+     A beat is {id, title, screen (a screen name), focus (an element id, or null), note}. This code never
+     names a beat, so adding, cutting or reordering beats is an edit of copy.js. Three focus ids do more than
+     focus an element: cover (the cover), drawer (open the first run that broke a rule) and p-decision
+     (the release-decision card on the pipeline screen). */
+
+  function firstBrokeKey() {
+    var batch = currentBatch();
+    if (!batch || !batch.runs) return null;
+    var first = null, broke = null;
+    sortedGroups(batch, 'attack').forEach(function (g) {
+      (g.tests || []).forEach(function (t) {
+        (t.runs || []).forEach(function (key) {
+          var r = batch.runs[key];
+          if (r && !first) first = key;
+          if (r && !broke && r.state === 'broke') broke = key;
+        });
+      });
+    });
+    return broke || first;
+  }
+
+  var beatTarget = null;
+
+  function focusBeatTarget(focus) {
+    if (beatTarget) { beatTarget.classList.remove('beat-target'); beatTarget = null; }
+    if (!focus) return;
+    if (focus === 'cover') { showCover(); return; }
+    if (focus === 'drawer') {
+      var key = firstBrokeKey();
+      if (key) openDrawer(key);
+      return;
+    }
+    if (focus === 'p-decision') { toggleCard(true); return; }
+    var t = $(focus);
+    if (!t || t.closest('[hidden]')) return;
+    if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1');
+    t.classList.add('beat-target');
+    beatTarget = t;
+    try { t.focus({ preventScroll: true }); } catch (e) { t.focus(); }
+    try { t.scrollIntoView({ block: 'nearest' }); } catch (e2) { /* older engines: the screen is not scrolled */ }
+  }
+
+  function applyBeat(i) {
+    var list = beatList();
+    if (!list.length) return;
+    i = Math.max(0, Math.min(list.length - 1, i));
+    var b = list[i];
+    hideCover();
+    if (drawerOpen) closeDrawer(false);
+    var n = ORDER.indexOf(b.screen) + 1;
+    show(n > 0 ? n : state.s, { noFocus: true, beat: true });
+    focusBeatTarget(b.focus);
+    beatIndex = i;
+    renderHints();
+  }
+
+  function stepBeat(dir) {
+    var list = beatList();
+    if (!list.length) return;
+    var next = beatIndex < 0 ? (dir > 0 ? 0 : list.length - 1) : beatIndex + dir;
+    if (next < 0 || next >= list.length) return;
+    applyBeat(next);
+  }
+
   /* ---------- screens, presenter, keys ---------- */
 
   function screens() { return Array.prototype.slice.call(doc.querySelectorAll('section.screen')); }
@@ -1802,6 +1867,7 @@
     n = Math.max(1, Math.min(SCREEN_COUNT, n | 0));
     if (drawerOpen && n !== 2) closeDrawer(false);
     state.s = n;
+    if (!opts.beat) beatIndex = -1;
     if (n !== PIPELINE_SCREEN) state.card = false;
     screens().forEach(function (sec) {
       var k = Number(sec.getAttribute('data-screen')) || Number((sec.id || '').replace('screen-', ''));
@@ -1853,6 +1919,7 @@
     if (k.length === 1 && k >= '1' && k <= String(SCREEN_COUNT)) { e.preventDefault(); show(Number(k)); return; }
     if (k === 'r' || k === 'R') { if (!e.repeat) { e.preventDefault(); location.reload(); } return; }
     if (k === 'p' || k === 'P') { if (!e.repeat) { e.preventDefault(); togglePresenter(); } return; }
+    if (k === 'b' || k === 'B') { if (!e.repeat) { e.preventDefault(); stepBeat(e.shiftKey ? -1 : 1); } return; }
     /* on the pipeline screen: D shows or hides the release-decision card; Space, Home, [ and ] drive the
        recorded run in pipeline.js (only while the card is hidden, so nothing moves out of sight) */
     if (state.s === PIPELINE_SCREEN) {
