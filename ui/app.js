@@ -1317,6 +1317,230 @@
     ]);
   }
 
+  /* ---------- data that other lanes add: governance, models, numbers ----------
+     Expected shapes (lane D exports them into window.DEMO; a name that is absent reads as PENDING):
+       governance {dir, mode, selected, scripted_reviewer?, candidates:[{id, verdict, defences?, runs?, duration?,
+                   decision?: Field | {decision, reviewer, reason, scripted}}]}
+       models {status, source_files?, headline?, rows:[{tag, digest12, tools, asr, benign, errors, verdicts, mode, folder}]}
+       numbers {key: Field}    keys: runs.total, headline.model, audit.entries, chain.status, models.n, ...
+     Every value is a Field {text, status, prov}. A bare string is wrapped as PENDING, so it never reads as REAL.
+     Nothing here types, computes or rounds a measured number. */
+
+  function pickKey(obj, names) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (var i = 0; i < names.length; i++) {
+      var v = obj[names[i]];
+      if (v !== undefined && v !== null) return v;
+    }
+    return null;
+  }
+
+  function asField(v, status) {
+    if (v === null || v === undefined) return null;
+    if (isField(v)) return v;
+    if (typeof v === 'string') return { text: v, status: status || 'PENDING', prov: null };
+    return null;
+  }
+
+  function fieldOf(obj, names, status) { return asField(pickKey(obj, names), status); }
+
+  /* numbers['runs.total']: a Field, or null when the key is missing */
+  function numberField(key) {
+    var n = D && D.numbers;
+    var f = n && typeof n === 'object' ? n[key] : null;
+    return isField(f) ? f : null;
+  }
+
+  function firstNumber(keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var f = numberField(keys[i]);
+      if (f && f.status !== 'PENDING') return f;
+    }
+    return null;
+  }
+
+  /* a value with its status tag; a missing value is a PENDING tag, never a typed number */
+  function withTag(f) {
+    if (!f) return [tag('PENDING')];
+    return [F(f), ' ', tag(f.status)];
+  }
+
+  function fact(label, value) {
+    return el('div', { class: 'dc-fact' }, [el('dt', null, label), el('dd', null, value)]);
+  }
+
+  /* ---------- screen 6: the release-decision card (for the buyer: the person who signs off) ---------- */
+
+  function auditDecisionFor(candText) {
+    var A = D.audit || {};
+    var list = Array.isArray(A.entries) ? A.entries : [];
+    var found = null;
+    list.forEach(function (e) {
+      if (e && e.readable !== false && e.event === 'decision' && e.candidate && String(e.candidate.text) === String(candText)) found = e;
+    });
+    return found;
+  }
+
+  /* The candidates on the card: governance.candidates when lane D exports them, else the one gate verdict
+     that the console already shows. Nothing is invented: no data means one PENDING column. */
+  function decisionCandidates() {
+    var g = D.governance;
+    var raw = g && Array.isArray(g.candidates) ? g.candidates : [];
+    var out = raw.map(function (c) {
+      var verdict = fieldOf(c, ['verdict', 'gate_verdict']) || (c && c.gate ? fieldOf(c.gate, ['verdict']) : null);
+      return { id: fieldOf(c, ['id', 'candidate', 'candidate_id']), verdict: verdict, raw: c };
+    });
+    if (!out.length) {
+      var gate = (D.console && D.console.gate) || null;
+      var shown = !!(gate && gate.status !== 'PENDING' && gate.verdict);
+      out.push({
+        id: shown ? gate.candidate_id : (D.console && D.console.candidate ? D.console.candidate.id : null),
+        verdict: shown ? gate.verdict : null, raw: null
+      });
+    }
+    return out;
+  }
+
+  /* who decided, what, why, and whether the reviewer was scripted (the CLI scripts its reviewer, LIVE runs too) */
+  function decisionOf(c) {
+    var raw = c.raw || {};
+    var d = raw.decision;
+    var who = null, what = null, reason = null, scripted = null;
+    if (d && isField(d)) {
+      what = d;
+    } else if (d && typeof d === 'object') {
+      who = fieldOf(d, ['reviewer', 'by', 'who']);
+      what = fieldOf(d, ['decision', 'verdict', 'what']);
+      reason = fieldOf(d, ['reason']);
+      if (typeof d.scripted === 'boolean') scripted = d.scripted;
+    }
+    if (!who && !what && c.id) {
+      var e = auditDecisionFor(c.id.text);
+      if (e) {
+        who = e.who || null; what = e.what || null; reason = e.reason || null;
+        if (typeof e.scripted === 'boolean') scripted = e.scripted;
+      }
+    }
+    if (scripted === null && typeof raw.scripted === 'boolean') scripted = raw.scripted;
+    if (scripted === null && D.governance && typeof D.governance.scripted_reviewer === 'boolean') scripted = D.governance.scripted_reviewer;
+    if (scripted === null && D.audit && /scripted/i.test(String(D.audit.sample_tag || ''))) scripted = true;
+    if (scripted === null && D.governance && (who || what)) scripted = true;
+    return { who: who, what: what, reason: reason, scripted: scripted };
+  }
+
+  function candidateColumn(c) {
+    var dec = decisionOf(c);
+    var vf = c.verdict;
+    var vStatus = vf ? word(vf.status) : 'PENDING';
+    var kids = [
+      el('p', { class: 'dc-id', title: copy('decision.candidate_label') }, c.id ? F(c.id) : tag('PENDING')),
+      el('p', { class: 'dc-label' }, copy('decision.verdict_label')),
+      el('div', { class: 'verdict compact', 'data-verdict': vf ? vf.text : '', 'data-status': vStatus }, [
+        el('p', { class: 'verdict-word' }, vf ? F(vf, 'num-mid') : tag('PENDING')),
+        vf ? tag(vf.status) : null
+      ]),
+      el('p', { class: 'dc-label' }, copy('decision.decided_label'))
+    ];
+    if (dec.who || dec.what) {
+      var main = dec.what || dec.who;
+      kids.push(el('p', { class: 'dc-who' }, [
+        dec.who ? F(dec.who) : null, dec.who && dec.what ? ': ' : null, dec.what ? F(dec.what) : null, ' ', tag(main.status)
+      ]));
+      if (dec.scripted) kids.push(el('p', { class: 'dc-who' }, el('span', { class: 'scripted-tag', title: copy('decision.scripted_note') }, copy('decision.scripted'))));
+      if (dec.reason) kids.push(el('p', { class: 'dc-reason' }, [copy('decision.reason_label') + ': ', F(dec.reason)]));
+    } else {
+      kids.push(el('p', { class: 'dc-who' }, [copy('decision.no_decision') + ' ', tag('PENDING')]));
+    }
+    return el('div', { class: 'dc-cand' }, kids);
+  }
+
+  function runsValue() {
+    var g = D.governance && Array.isArray(D.governance.candidates) ? D.governance.candidates : [];
+    var f = null;
+    g.forEach(function (c) { f = f || fieldOf(c, ['runs', 'run_count', 'n_runs']); });
+    f = f || firstNumber(['runs.total']);
+    if (f) return withTag(f);
+    var batch = byBatch(D.console && D.console.evidence_batch) || currentBatch();
+    var counts = batch && batch.counts ? batch.counts : null;
+    if (counts && counts.attack && counts.attack.runs && counts.benign && counts.benign.runs) {
+      return [F(counts.attack.runs), ' attack runs, ', F(counts.benign.runs), ' normal requests ', tag(counts.attack.runs.status)];
+    }
+    return withTag(null);
+  }
+
+  function timeValue() {
+    var g = D.governance && Array.isArray(D.governance.candidates) ? D.governance.candidates : [];
+    var f = null;
+    g.forEach(function (c) { f = f || fieldOf(c, ['duration', 'seconds', 'time_to_decision', 'elapsed']); });
+    f = f || firstNumber(['time.to_decision', 'time.total', 'run.seconds', 'duration.total']);
+    return withTag(f);
+  }
+
+  function modelValue() {
+    var cand = D.console && D.console.candidate ? D.console.candidate : null;
+    var f = (cand && cand.model && cand.model.status !== 'PENDING') ? cand.model : null;
+    f = f || firstNumber(['headline.model']) || (cand ? cand.model : null);
+    return withTag(f && isField(f) ? f : null);
+  }
+
+  function auditValue() {
+    var A = D.audit || {};
+    var chain = A.chain || {};
+    var out = [];
+    var chainField = isField(chain.text) && chain.status !== 'PENDING' ? chain.text : firstNumber(['chain.status']);
+    out.push(chainField ? withTag(chainField) : [tag('PENDING')]);
+    /* the backend's chain text already names the entry count; show the count apart only when there is no chain text */
+    if (chainField) return out;
+    var entries = firstNumber(['audit.entries']);
+    var list = Array.isArray(A.entries) ? A.entries : [];
+    if (entries) out.push(el('span', { class: 'dc-line' }, V(copy('decision.entries', { n: entries.text }), null, entries.prov || '')));
+    else if (list.length && A.status !== 'PENDING') out.push(el('span', { class: 'dc-line' }, V(copy('decision.entries', { n: String(list.length) }))));
+    return out;
+  }
+
+  /* a short list of listed rows (counting rows for display is allowed; the count sits in a data span) */
+  function listValue(items, countKey, line, statusTag) {
+    if (!items) return withTag(null);
+    if (!items.length) return [copy('decision.none_listed'), ' ', statusTag];
+    var out = [V(copy(countKey, { n: String(items.length) })), ' ', statusTag];
+    items.slice(0, 2).forEach(function (it) { out.push(el('span', { class: 'dc-line' }, line(it))); });
+    return out;
+  }
+
+  function renderDecision() {
+    var box = $('p-decision');
+    if (!box) return;
+    box.setAttribute('tabindex', '-1');
+    box.setAttribute('role', 'region');
+    box.setAttribute('aria-labelledby', 'dc-title');
+    var R = D.assurance || { status: 'PENDING' };
+    var open = Array.isArray(R.risks) && R.status !== 'PENDING'
+      ? R.risks.filter(function (r) { return /^open/i.test(String(r.status_text || '')); }) : null;
+    var tickets = Array.isArray(R.tickets) && R.status !== 'PENDING' ? R.tickets : null;
+    var riskTag = tag(R.status && R.status !== 'PENDING' ? R.status : 'PENDING');
+    var cands = decisionCandidates();
+    fill(box, [
+      el('div', { class: 'dc-head' }, [
+        el('h2', { id: 'dc-title' }, copy('decision.title') || 'Release decision'),
+        el('p', { class: 'dc-lede' }, copy('decision.lede'))
+      ]),
+      el('div', { class: 'dc-cands' }, cands.map(candidateColumn)),
+      el('div', { class: 'dc-facts' }, [
+        el('dl', { class: 'dc-col' }, [
+          fact(copy('decision.runs_label'), runsValue()),
+          fact(copy('decision.time_label'), timeValue()),
+          fact(copy('decision.model_label'), modelValue()),
+          fact(copy('decision.cost_label'), el('span', null, copy('decision.cost')))
+        ]),
+        el('dl', { class: 'dc-col' }, [
+          fact(copy('decision.audit_label'), auditValue()),
+          fact(copy('decision.risks_label'), listValue(open, 'decision.count_open', function (r) { return [V(r.id), ' ', V(r.title)]; }, riskTag.cloneNode(true))),
+          fact(copy('decision.tickets_label'), listValue(tickets, 'decision.count_listed', function (t) { return [V(t.id), ' ', V(t.title)]; }, riskTag.cloneNode(true)))
+        ])
+      ])
+    ]);
+  }
+
   /* ---------- screens, presenter, keys ---------- */
 
   function screens() { return Array.prototype.slice.call(doc.querySelectorAll('section.screen')); }
@@ -1556,6 +1780,7 @@
     guard('compare', renderCompare);
     guard('audit', renderAudit);
     guard('assurance', renderAssurance);
+    guard('decision', renderDecision);
   }
 
   function boot() {

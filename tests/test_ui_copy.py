@@ -277,6 +277,20 @@ def test_the_content_security_policy_is_kept():
     assert "img-src data:" in html and "object-src 'none'" in html
 
 
+def test_every_copy_key_that_app_js_reads_exists_in_copy_js():
+    # app.js reads its words with copy('group.key'); a typo in either file would show an empty label.
+    _, copy = _load()
+    source = APP_JS.read_text(encoding="utf-8")
+    paths = set(re.findall(r"copy\('([a-z_]+(?:\.[a-z_]+)+)'", source))
+    assert paths, "app.js should read words through copy()"
+    for path in sorted(paths):
+        node = copy
+        for part in path.split("."):
+            assert isinstance(node, dict) and part in node, f"app.js reads copy('{path}') but copy.js has no {part!r}"
+            node = node[part]
+        assert isinstance(node, str) and node.strip(), f"copy('{path}') is not a text"
+
+
 def test_app_js_never_names_a_beat():
     # The beat list is data. A new beat is one more entry in copy.js and needs no change in app.js.
     # (Words such as close or tamper also appear in app.js for other reasons, so the check looks for a

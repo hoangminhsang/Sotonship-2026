@@ -468,6 +468,36 @@ table.grid code{font-size:21px}
 #m-note{grid-area:note;min-width:0}
 #m-src{grid-area:src;font:400 22px/1.45 var(--sans);color:var(--sec);min-width:0;align-self:end}
 
+/* ---------- 13d release-decision card (screen 6) ----------
+   A card for the buyer, over the board: one column per candidate (gate verdict, who decided, whether the
+   reviewer was scripted), then the facts a risk lead asks for. Stage coordinates, like the pipeline view. */
+#p-decision{position:absolute;left:var(--pad);top:296px;width:1680px;height:720px;z-index:3;box-sizing:border-box;
+  background:var(--paper);border:var(--st) solid var(--ink);padding:10px 32px 8px;overflow:hidden;
+  display:flex;flex-direction:column;gap:8px;color:var(--ink)}
+#p-decision:focus{outline:none}
+.dc-head{display:flex;align-items:baseline;justify-content:space-between;gap:32px}
+#p-decision .dc-head h2{font:300 48px/1.05 var(--serif);letter-spacing:-.01em;color:var(--ink);margin:0}
+.dc-lede{font:400 24px/1.3 var(--sans);color:var(--label)}
+.dc-cands{display:flex;gap:28px;align-items:stretch}
+.dc-cand{flex:1 1 0;min-width:0;display:grid;gap:4px;align-content:start;border-top:2px solid var(--ink);padding-top:8px}
+.dc-label{font:500 22px/1.3 var(--sans);color:var(--label)}
+.dc-id{font:300 44px/1 var(--serif);color:var(--ink);font-variant-numeric:lining-nums;margin-bottom:2px}
+.dc-who{font:400 24px/1.35 var(--sans);color:var(--ink);overflow-wrap:anywhere}
+.dc-reason{font:400 22px/1.35 var(--sans);color:var(--lede);overflow-wrap:anywhere}
+.verdict.compact{display:flex;align-items:center;flex-wrap:wrap;gap:4px 18px;padding:6px 18px 8px;margin:2px 0 6px}
+.verdict.compact .num-mid{font-size:50px}
+.verdict.compact[data-status="SAMPLE"]{padding-left:54px}
+.verdict.compact[data-status="SAMPLE"]::before{width:30px}
+/* the reviewer in a CLI run is scripted: hatch strip, dashed frame and the words, never an alarm or ok fill */
+.scripted-tag{display:inline-flex;align-items:center;box-sizing:border-box;height:32px;padding-right:12px;
+  border:var(--st) dashed var(--ink);background:var(--paper);color:var(--ink);font:500 22px/1 var(--sans);letter-spacing:.02em;white-space:nowrap}
+.scripted-tag::before{content:"";align-self:stretch;flex:0 0 18px;margin-right:10px;background:var(--hatch);border-right:var(--st) solid var(--ink)}
+.dc-facts{display:flex;gap:56px;align-items:flex-start;border-top:2px solid var(--ink);padding-top:12px}
+#p-decision .dc-col{flex:1 1 0;min-width:0;display:grid;grid-template-columns:minmax(0,1fr);row-gap:8px;align-content:start}
+.dc-fact{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:16px;align-items:baseline;min-width:0}
+.dc-fact dd{overflow-wrap:anywhere}
+.dc-line{display:block;font:400 22px/1.35 var(--sans);color:var(--lede)}
+
 /* ---------- 13c the cover ----------
    Words only: the product name, what it is, the tagline, the team. It covers the whole stage and shows when the
    page opens with no screen in the address. Any key or a click starts. */
