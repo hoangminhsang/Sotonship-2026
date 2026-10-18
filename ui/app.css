@@ -465,6 +465,9 @@ table.risks td{padding-top:7px;padding-bottom:7px}
 #r-tickets li{padding:10px 0;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
 #r-tickets li > * + *{display:block;font-size:22px;color:var(--label)}
 
+/* the pipeline board fills the stage; the SAMPLE banner moves to the footer there (see SAMPLE_BANNER in app.js) */
+body[data-screen="6"] #banner{display:none!important}
+
 /* ---------- 13b pipeline shell (screen 6) and Models (screen 7) ----------
    Screen 6: pipeline.js and pipeline.css place the board, the rail, the status line and the tiles by stage
    coordinates, so #screen-6 stays unpositioned and the stage is the positioned ancestor. Without them the

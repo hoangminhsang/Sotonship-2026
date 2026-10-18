@@ -335,12 +335,16 @@
     });
   }
 
+  /* The banner sentence. On the pipeline screen the board fills the stage, so the banner is hidden there
+     (body[data-screen="6"] in app.css) and the same sentence leads the footer warnings instead. */
+  var SAMPLE_BANNER = 'SAMPLE data on screen — not produced by the backend';
+
   function renderBanner() {
     var b = $('banner');
     if (!b) return;
     clear(b);
     if (samplePresent()) {
-      add(b, el('p', null, 'SAMPLE data on screen — not produced by the backend'));
+      add(b, el('p', null, SAMPLE_BANNER));
       b.hidden = false;
     } else {
       b.hidden = true;
@@ -360,7 +364,8 @@
     clear(w);
     /* integrity warnings first and always (presenter too); info notes only outside presenter mode.
        The footer holds two lines, so a longer list ends with a counted pointer to the export report. */
-    var all = D.warnings || [];
+    var all = (D.warnings || []).slice();
+    if (state.s === PIPELINE_SCREEN && samplePresent()) all.unshift({ level: 'integrity', text: SAMPLE_BANNER });
     var integrity = all.filter(function (x) { return x.level === 'integrity'; });
     var info = all.filter(function (x) { return x.level !== 'integrity'; });
     var shown = integrity.concat(state.p ? [] : info);
@@ -1877,6 +1882,8 @@
       if (Number(b.getAttribute('data-screen')) === n) b.setAttribute('aria-current', 'page');
       else b.removeAttribute('aria-current');
     });
+    doc.body.setAttribute('data-screen', String(n));
+    if (D && D.schema === 'ui-demo/1') renderWarnings();
     renderReplay(n);
     renderHints();
     syncCard();
