@@ -1,5 +1,7 @@
-/* Agent Release Gate: demo UI behaviour.
-   Reads window.DEMO (schema "ui-demo/1", written by ui/export.py) and draws five screens.
+/* Redline: demo UI behaviour.
+   Reads window.DEMO (schema "ui-demo/1", written by ui/export.py) and draws seven screens.
+   Words come from window.COPY (ui/copy.js). The pipeline view (screen 6) is drawn by pipeline.js;
+   every call into it is guarded, because the page must work without it.
    Rules kept here: every data value goes through F() or V() into an element with [data-prov];
    text is set with textContent only; no data number is formatted in this file (the only
    arithmetic on data is SVG geometry inside meter()); state is kept in location.hash only. */
@@ -8,6 +10,12 @@
 
   var D = window.DEMO;
   var doc = document;
+  var C = window.COPY || {};
+  /* The screens by name. A screen's key digit is its place in this list, so the digits live here and
+     nowhere else: copy.js names screens, never numbers them. */
+  var ORDER = ['console', 'attacks', 'compare', 'decisions', 'assurance', 'pipeline', 'models'];
+  var SCREEN_COUNT = ORDER.length;
+  var PIPELINE_SCREEN = ORDER.indexOf('pipeline') + 1;
   /* the SVG namespace, read from a parsed literal tag so no URL string sits in this file */
   var SVGNS = (function () {
     try { return doc.createRange().createContextualFragment('<svg></svg>').firstChild.namespaceURI; } catch (e) { return null; }
@@ -30,7 +38,8 @@
     missing: 'Trace file not found'
   };
 
-  var state = { s: 1, p: false, run: null, tech: null, batch: null, d: false };
+  var state = { s: 1, p: false, run: null, tech: null, batch: null, d: false, card: false };
+  var beatIndex = -1;       /* the beat shown now (index into COPY.beats), -1 before the first B */
   var lastHash = '';
   var deckReady = false;
   var drawerOpen = false;
@@ -43,6 +52,20 @@
   /* ---------- small DOM helpers ---------- */
 
   function $(id) { return doc.getElementById(id); }
+
+  /* copy('screens.console.nav'): one word from window.COPY, or '' when it is missing.
+     {name} placeholders are filled from vars; an unknown placeholder stays visible, so a typo shows. */
+  function copy(path, vars) {
+    var v = C;
+    var parts = String(path).split('.');
+    for (var i = 0; i < parts.length && v; i++) v = v[parts[i]];
+    if (typeof v !== 'string') return '';
+    if (!vars) return v;
+    return v.replace(/\{([a-z_]+)\}/g, function (m, k) { return vars[k] !== undefined ? vars[k] : m; });
+  }
+
+  /* the demo beats, in the order copy.js lists them; app.js never names a beat */
+  function beatList() { return Array.isArray(C.beats) ? C.beats : []; }
 
   function isNode(x) { return x && typeof x === 'object' && typeof x.nodeType === 'number'; }
 
@@ -191,7 +214,7 @@
 
   function guard(name, fn) {
     try { fn(); } catch (err) {
-      if (window.console) console.error('Agent Release Gate: could not draw ' + name, err);
+      if (window.console) console.error((copy('product.name') || 'Dashboard') + ': could not draw ' + name, err);
     }
   }
 
@@ -201,8 +224,9 @@
     var q;
     try { q = new URLSearchParams(location.hash.replace(/^#/, '')); } catch (e) { return; }
     var s = parseInt(q.get('s') || '', 10);
-    state.s = s >= 1 && s <= 5 ? s : 1;
+    state.s = s >= 1 && s <= SCREEN_COUNT ? s : 1;
     state.p = q.get('p') === '1';
+    state.card = q.get('card') === '1';
     state.run = q.get('run') || null;
     state.tech = q.get('tech') || null;
     state.batch = q.get('batch') || null;
@@ -213,6 +237,7 @@
     var q = new URLSearchParams();
     q.set('s', String(state.s));
     if (state.p) q.set('p', '1');
+    if (state.card && state.s === PIPELINE_SCREEN) q.set('card', '1');
     if (state.batch) q.set('batch', state.batch);
     if (state.tech) q.set('tech', state.tech);
     if (state.run) q.set('run', state.run);
@@ -310,12 +335,16 @@
     });
   }
 
+  /* The banner sentence. On the pipeline screen the board fills the stage, so the banner is hidden there
+     (body[data-screen="6"] in app.css) and the same sentence leads the footer warnings instead. */
+  var SAMPLE_BANNER = copy('warnings.sample') || 'SAMPLE data on screen';
+
   function renderBanner() {
     var b = $('banner');
     if (!b) return;
     clear(b);
     if (samplePresent()) {
-      add(b, el('p', null, 'SAMPLE data on screen — not produced by the backend'));
+      add(b, el('p', null, SAMPLE_BANNER));
       b.hidden = false;
     } else {
       b.hidden = true;
@@ -329,31 +358,30 @@
     add(s, ['Exported ', V(D.exported_at)]);
   }
 
+  /* One short line at the bottom: how many warnings there are and where to read them. The full texts
+     stay in the title (hover) and in the export report. In presenter mode only integrity warnings count.
+     On the pipeline screen the SAMPLE sentence leads the line, because the banner is hidden there. */
   function renderWarnings() {
     var w = $('warn');
     if (!w) return;
     clear(w);
-    /* integrity warnings first and always (presenter too); info notes only outside presenter mode.
-       The footer holds two lines, so a longer list ends with a counted pointer to the export report. */
     var all = D.warnings || [];
     var integrity = all.filter(function (x) { return x.level === 'integrity'; });
-    var info = all.filter(function (x) { return x.level !== 'integrity'; });
-    var shown = integrity.concat(state.p ? [] : info);
-    var MAX = 2;
-    var visible = shown.length > MAX ? shown.slice(0, MAX - 1) : shown;
-    visible.forEach(function (item) {
-      w.appendChild(el('p', { class: 'warn-line', 'data-level': item.level === 'integrity' ? 'integrity' : 'info', title: item.text }, [
-        el('span', { class: 'warn-level' }, item.level === 'integrity' ? 'Integrity:' : 'Note:'), ' ', V(item.text)
-      ]));
-    });
-    if (shown.length > visible.length) {
-      var rest = shown.slice(visible.length);
-      var restIntegrity = rest.some(function (x) { return x.level === 'integrity'; });
-      w.appendChild(el('p', {
-        class: 'warn-line', 'data-level': restIntegrity ? 'integrity' : 'info',
-        title: rest.map(function (x) { return x.text; }).join('\n')
-      }, [V(String(rest.length), 'warn-count'), restIntegrity ? ' more warnings, with integrity ones. The export report lists them.' : ' more notes. The export report lists them.']));
+    var text = '';
+    if (state.p) {
+      if (integrity.length) text = copy('warnings.integrity_only', { i: String(integrity.length) });
+    } else if (all.length) {
+      text = integrity.length
+        ? copy('warnings.summary_integrity', { n: String(all.length), i: String(integrity.length) })
+        : copy('warnings.summary', { n: String(all.length) });
     }
+    var sample = state.s === PIPELINE_SCREEN && samplePresent();
+    if (!text && !sample) return;
+    var shown = state.p ? integrity : all;
+    w.appendChild(el('p', {
+      class: 'warn-line', 'data-level': integrity.length || sample ? 'integrity' : 'info',
+      title: (sample ? [copy('warnings.sample')] : []).concat(shown.map(function (x) { return x.text; })).join('\n')
+    }, [sample ? copy('warnings.sample') + '. ' : null, text ? V(text) : null]));
   }
 
   function replayLabelsFor(n) {
@@ -372,6 +400,8 @@
       if (c.b && c.b.status !== 'PENDING' && c.b.replay_label) out.push('B: ' + c.b.replay_label);
       return out;
     }
+    /* the pipeline screen shows its own mode chip (LIVE, REPLAY, SCRIPTED); the Models table tags each row */
+    if (n === PIPELINE_SCREEN || n === ORDER.indexOf('models') + 1) return [];
     return [];
   }
 
@@ -387,10 +417,20 @@
     r.hidden = labels.length === 0;
   }
 
+  /* The key hints; the digits come from the router, the words from copy.js.
+     While a beat is active the line names the beat instead (hidden in presenter mode with the other hints). */
   function renderHints() {
     var h = $('hints');
-    if (!h || h.childNodes.length) return;
-    add(h, 'Keys 1 to 5, Enter, Esc, P, R');
+    if (!h) return;
+    clear(h);
+    var b = beatList()[beatIndex];
+    if (b && b.title) {
+      add(h, (copy('hints.beat_label') || 'Beat') + ': ' + b.title);
+      return;
+    }
+    var keys = state.s === PIPELINE_SCREEN && copy('hints.pipeline') ? copy('hints.pipeline')
+      : copy('hints.keys', { first: '1', last: String(SCREEN_COUNT) });
+    add(h, keys || ('Keys 1 to ' + SCREEN_COUNT));
   }
 
   /* ---------- meter: the only place that turns data numbers into geometry ---------- */
@@ -532,7 +572,7 @@
             'Normal requests handled: ', benign ? F(benign.x_of_n) : F(null),
             benign && benign.measured && benign.rate ? [', ', F(benign.rate)] : null, '.'
           ]),
-          el('li', null, [F(counts.runs), ' runs in the file, ', F(counts.error), ' errored. Summary file: ', F(sm.error_runs), ' errored.'])
+          el('li', null, [F(counts.runs), ' runs in the file, ', F(counts.error), ' errored. Summary file: ', F(sm.error_runs), '.'])
         ])
       ]);
     }
@@ -1100,7 +1140,6 @@
 
     var ks = $('k-src');
     fill(ks, [
-      !aPending ? src(['Side A: ', V(c.a.title), ', from summary files only.']) : null,
       src('Compare uses summary files only. SAMPLE data is never compared.')
     ]);
   }
@@ -1186,6 +1225,16 @@
   }
 
   /* ---------- screen 5: assurance ---------- */
+
+  /* Source paths that share a folder: the folder once, then the file names ("dir/{a.md, b.md}").
+     This only shortens a label; each file is still named in full in the export report. */
+  function joinPaths(list) {
+    if (!Array.isArray(list) || list.length < 2) return (list || []).join(', ');
+    var dirs = list.map(function (p) { var i = String(p).lastIndexOf('/'); return i >= 0 ? String(p).slice(0, i + 1) : ''; });
+    var same = dirs.every(function (d) { return d === dirs[0]; });
+    if (!same || !dirs[0]) return list.join(', ');
+    return dirs[0] + '{' + list.map(function (p) { return String(p).slice(dirs[0].length); }).join(', ') + '}';
+  }
 
   function renderAssurance() {
     var R = D.assurance || { status: 'PENDING' };
@@ -1276,20 +1325,567 @@
 
     var rs = $('r-src');
     fill(rs, [
-      src(['Risks, evidence and tickets: ', V((R.source_files || []).join(', ') || 'not connected'), ' ', tag(R.status)]),
+      src(['Risks, evidence and tickets: ', V(joinPaths(R.source_files || []) || 'not connected'), ' ', tag(R.status)]),
       CT.source_file ? src(['Controls: ', V(CT.source_file), ' ', tag(CT.status)]) : null
     ]);
+  }
+
+  /* ---------- data that other lanes add: governance, models, numbers ----------
+     Expected shapes (lane D exports them into window.DEMO; a name that is absent reads as PENDING):
+       governance {dir, mode, selected, scripted_reviewer?, candidates:[{id, verdict, defences?, runs?, duration?,
+                   decision?: Field | {decision, reviewer, reason, scripted}}]}
+       models {status, source_files?, headline?, rows:[{tag, digest12, tools, asr, benign, errors, verdicts, mode, folder}]}
+       numbers {key: Field}    keys: runs.total, headline.model, audit.entries, chain.status, models.n, ...
+     Every value is a Field {text, status, prov}. A bare string is wrapped as PENDING, so it never reads as REAL.
+     Nothing here types, computes or rounds a measured number. */
+
+  function pickKey(obj, names) {
+    if (!obj || typeof obj !== 'object') return null;
+    for (var i = 0; i < names.length; i++) {
+      var v = obj[names[i]];
+      if (v !== undefined && v !== null) return v;
+    }
+    return null;
+  }
+
+  function asField(v, status) {
+    if (v === null || v === undefined) return null;
+    if (isField(v)) return v;
+    if (typeof v === 'string') return { text: v, status: status || 'PENDING', prov: null };
+    return null;
+  }
+
+  function fieldOf(obj, names, status) { return asField(pickKey(obj, names), status); }
+
+  /* numbers['runs.total']: a Field, or null when the key is missing */
+  function numberField(key) {
+    var n = D && D.numbers;
+    var f = n && typeof n === 'object' ? n[key] : null;
+    return isField(f) ? f : null;
+  }
+
+  function firstNumber(keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var f = numberField(keys[i]);
+      if (f && f.status !== 'PENDING') return f;
+    }
+    return null;
+  }
+
+  /* a value with its status tag; a missing value is a PENDING tag, never a typed number */
+  function withTag(f) {
+    if (!f) return [tag('PENDING')];
+    return [F(f), ' ', tag(f.status)];
+  }
+
+  function fact(label, value) {
+    return el('div', { class: 'dc-fact' }, [el('dt', null, label), el('dd', null, value)]);
+  }
+
+  /* ---------- screen 6: the release-decision card (for the buyer: the person who signs off) ---------- */
+
+  function auditDecisionFor(candText) {
+    var A = D.audit || {};
+    var list = Array.isArray(A.entries) ? A.entries : [];
+    var found = null;
+    list.forEach(function (e) {
+      if (e && e.readable !== false && e.event === 'decision' && e.candidate && String(e.candidate.text) === String(candText)) found = e;
+    });
+    return found;
+  }
+
+  /* The candidates on the card: governance.candidates when lane D exports them, else the one gate verdict
+     that the console already shows. Nothing is invented: no data means one PENDING column. */
+  function decisionCandidates() {
+    var g = D.governance;
+    var raw = g && Array.isArray(g.candidates) ? g.candidates : [];
+    var out = raw.map(function (c) {
+      var verdict = fieldOf(c, ['verdict', 'gate_verdict']) || (c && c.gate ? fieldOf(c.gate, ['verdict']) : null);
+      return { id: pickKey(c, ['id', 'candidate', 'candidate_id']), verdict: verdict, raw: c };
+    });
+    if (!out.length) {
+      var gate = (D.console && D.console.gate) || null;
+      var shown = !!(gate && gate.status !== 'PENDING' && gate.verdict);
+      out.push({
+        id: shown ? gate.candidate_id : (D.console && D.console.candidate ? D.console.candidate.id : null),
+        verdict: shown ? gate.verdict : null, raw: null
+      });
+    }
+    return out;
+  }
+
+  /* who decided, what, why, and whether the reviewer was scripted (the CLI scripts its reviewer, LIVE runs too) */
+  function decisionOf(c) {
+    var raw = c.raw || {};
+    var d = raw.decision;
+    var who = null, what = null, reason = null, scripted = null;
+    if (d && isField(d)) {
+      what = d;
+    } else if (d && typeof d === 'object') {
+      who = fieldOf(d, ['reviewer', 'by', 'who']);
+      what = fieldOf(d, ['decision', 'verdict', 'what']);
+      reason = fieldOf(d, ['reason']);
+      if (typeof d.scripted === 'boolean') scripted = d.scripted;
+    }
+    if (!who && !what && c.id) {
+      var e = auditDecisionFor(textOf(c.id));
+      if (e) {
+        who = e.who || null; what = e.what || null; reason = e.reason || null;
+        if (typeof e.scripted === 'boolean') scripted = e.scripted;
+      }
+    }
+    if (scripted === null && typeof raw.scripted === 'boolean') scripted = raw.scripted;
+    if (scripted === null && D.governance && typeof D.governance.scripted_reviewer === 'boolean') scripted = D.governance.scripted_reviewer;
+    if (scripted === null && D.audit && /scripted/i.test(String(D.audit.sample_tag || ''))) scripted = true;
+    if (scripted === null && D.governance && (who || what)) scripted = true;
+    return { who: who, what: what, reason: reason, scripted: scripted };
+  }
+
+  function candidateColumn(c) {
+    var dec = decisionOf(c);
+    var vf = c.verdict;
+    var vStatus = vf ? word(vf.status) : 'PENDING';
+    var kids = [
+      el('p', { class: 'dc-id', title: copy('decision.candidate_label') }, c.id ? (isField(c.id) ? F(c.id) : V(String(c.id))) : tag('PENDING')),
+      el('p', { class: 'dc-label' }, copy('decision.verdict_label')),
+      el('div', { class: 'verdict compact', 'data-verdict': vf ? vf.text : '', 'data-status': vStatus }, [
+        el('p', { class: 'verdict-word' }, vf ? F(vf, 'num-mid') : tag('PENDING')),
+        vf ? tag(vf.status) : null
+      ]),
+      el('p', { class: 'dc-label' }, copy('decision.decided_label'))
+    ];
+    if (dec.who || dec.what) {
+      var main = dec.what || dec.who;
+      kids.push(el('p', { class: 'dc-who' }, [
+        dec.who ? F(dec.who) : null, dec.who && dec.what ? ': ' : null, dec.what ? F(dec.what) : null, ' ', tag(main.status)
+      ]));
+      if (dec.scripted) kids.push(el('p', { class: 'dc-who' }, el('span', { class: 'scripted-tag', title: copy('decision.scripted_note') }, copy('decision.scripted'))));
+      if (dec.reason) kids.push(el('p', { class: 'dc-reason' }, [copy('decision.reason_label') + ': ', F(dec.reason)]));
+    } else {
+      kids.push(el('p', { class: 'dc-who' }, [copy('decision.no_decision') + ' ', tag('PENDING')]));
+    }
+    return el('div', { class: 'dc-cand' }, kids);
+  }
+
+  function runsValue() {
+    var g = D.governance && Array.isArray(D.governance.candidates) ? D.governance.candidates : [];
+    var f = null;
+    g.forEach(function (c) { f = f || fieldOf(c, ['runs', 'run_count', 'n_runs']); });
+    f = f || firstNumber(['runs.total']);
+    if (f) return withTag(f);
+    var batch = byBatch(D.console && D.console.evidence_batch) || currentBatch();
+    var counts = batch && batch.counts ? batch.counts : null;
+    if (counts && counts.attack && counts.attack.runs && counts.benign && counts.benign.runs) {
+      return [F(counts.attack.runs), ' attack runs, ', F(counts.benign.runs), ' normal requests ', tag(counts.attack.runs.status)];
+    }
+    return withTag(null);
+  }
+
+  function timeValue() {
+    var g = D.governance && Array.isArray(D.governance.candidates) ? D.governance.candidates : [];
+    var f = null;
+    g.forEach(function (c) { f = f || fieldOf(c, ['duration', 'seconds', 'time_to_decision', 'elapsed']); });
+    f = f || firstNumber(['time.to_decision', 'time.total', 'run.seconds', 'duration.total']);
+    return withTag(f);
+  }
+
+  function modelValue() {
+    var cand = D.console && D.console.candidate ? D.console.candidate : null;
+    var f = (cand && cand.model && cand.model.status !== 'PENDING') ? cand.model : null;
+    f = f || firstNumber(['headline.model']) || (cand ? cand.model : null);
+    return withTag(f && isField(f) ? f : null);
+  }
+
+  function auditValue() {
+    var A = D.audit || {};
+    var chain = A.chain || {};
+    var out = [];
+    var chainField = isField(chain.text) && chain.status !== 'PENDING' ? chain.text : firstNumber(['chain.status']);
+    out.push(chainField ? withTag(chainField) : [tag('PENDING')]);
+    /* the backend's chain text already names the entry count; show the count apart only when there is no chain text */
+    if (chainField) return out;
+    var entries = firstNumber(['audit.entries']);
+    var list = Array.isArray(A.entries) ? A.entries : [];
+    if (entries) out.push(el('span', { class: 'dc-line' }, V(copy('decision.entries', { n: entries.text }), null, entries.prov || '')));
+    else if (list.length && A.status !== 'PENDING') out.push(el('span', { class: 'dc-line' }, V(copy('decision.entries', { n: String(list.length) }))));
+    return out;
+  }
+
+  /* a short list of listed rows (counting rows for display is allowed; the count sits in a data span) */
+  function listValue(items, countKey, line, statusTag) {
+    if (!items) return withTag(null);
+    if (!items.length) return [copy('decision.none_listed'), ' ', statusTag];
+    var out = [V(copy(countKey, { n: String(items.length) })), ' ', statusTag];
+    items.slice(0, 2).forEach(function (it) { out.push(el('span', { class: 'dc-line' }, line(it))); });
+    return out;
+  }
+
+  function renderDecision() {
+    var box = $('p-decision');
+    if (!box) return;
+    box.setAttribute('tabindex', '-1');
+    box.setAttribute('role', 'region');
+    box.setAttribute('aria-labelledby', 'dc-title');
+    var R = D.assurance || { status: 'PENDING' };
+    var open = Array.isArray(R.risks) && R.status !== 'PENDING'
+      ? R.risks.filter(function (r) { return /^open/i.test(String(r.status_text || '')); }) : null;
+    var tickets = Array.isArray(R.tickets) && R.status !== 'PENDING' ? R.tickets : null;
+    var riskTag = tag(R.status && R.status !== 'PENDING' ? R.status : 'PENDING');
+    var cands = decisionCandidates();
+    fill(box, [
+      el('div', { class: 'dc-head' }, [
+        el('h2', { id: 'dc-title' }, copy('decision.title') || 'Release decision'),
+        el('p', { class: 'dc-lede' }, copy('decision.lede'))
+      ]),
+      el('div', { class: 'dc-cands' }, cands.map(candidateColumn)),
+      el('div', { class: 'dc-facts' }, [
+        el('dl', { class: 'dc-col' }, [
+          fact(copy('decision.runs_label'), runsValue()),
+          fact(copy('decision.time_label'), timeValue()),
+          fact(copy('decision.model_label'), modelValue()),
+          fact(copy('decision.cost_label'), el('span', null, copy('decision.cost')))
+        ]),
+        el('dl', { class: 'dc-col' }, [
+          fact(copy('decision.audit_label'), auditValue()),
+          fact(copy('decision.risks_label'), listValue(open, 'decision.count_open', function (r) { return [V(r.id), ' ', V(r.title)]; }, riskTag.cloneNode(true))),
+          fact(copy('decision.tickets_label'), listValue(tickets, 'decision.count_listed', function (t) { return [V(t.id), ' ', V(t.title)]; }, riskTag.cloneNode(true)))
+        ])
+      ])
+    ]);
+  }
+
+  /* ---------- screen 7: Models. One row per model, sorted by tag, no best highlight ---------- */
+
+  function textOf(v) { return isField(v) ? String(v.text) : (typeof v === 'string' ? v : ''); }
+
+  function rowTag(row) { return fieldOf(row, ['tag', 'model', 'name']); }
+
+  /* tool support as three states: yes, no (every run errored), unchecked. Anything else reads as unchecked. */
+  function toolsState(row) {
+    var raw = pickKey(row, ['tools', 'tool_calls', 'tool_support']);
+    var t = raw && typeof raw === 'object' && !isField(raw) ? pickKey(raw, ['state', 'status', 'text']) : raw;
+    var text = typeof t === 'boolean' ? (t ? 'yes' : 'no') : textOf(t);
+    text = String(text || '').trim().toLowerCase();
+    if (/^(yes|true|ok|supported)/.test(text)) return 'yes';
+    if (/^(no\b|false|none|unsupported)/.test(text) || /every run errored/.test(text)) return 'no';
+    return 'unchecked';
+  }
+
+  function toolsStatus(row) {
+    var raw = pickKey(row, ['tools', 'tool_calls', 'tool_support']);
+    return isField(raw) ? raw.status : 'PENDING';
+  }
+
+  /* a metric {measured, x_of_n, rate, ci}: the counts first, then the rate, then the range */
+  function metricNodes(m) {
+    if (!m) return [tag('PENDING')];
+    if (isField(m)) return withTag(m);
+    if (typeof m !== 'object') return [tag('PENDING')];
+    if (m.measured === false) return [F(asField(m.x_of_n) || null)];
+    /* lane D writes {asr, x_of_n, range}; the older shape is {rate, x_of_n, ci} */
+    var rate = m.rate || m.asr, ci = m.ci || m.range;
+    var out = [F(asField(m.x_of_n) || null)];
+    if (rate) out.push(', ', F(asField(rate)));
+    if (ci) out.push(el('span', { class: 'dc-line' }, [copy('models.range') + ' ', F(asField(ci))]));
+    return out;
+  }
+
+  function verdictNodes(row) {
+    var raw = pickKey(row, ['verdicts', 'gates']);
+    var items = [];
+    if (Array.isArray(raw)) {
+      raw.forEach(function (v) {
+        var c = fieldOf(v, ['cand', 'id', 'candidate']);
+        var vv = fieldOf(v, ['verdict']);
+        if (c || vv) items.push([c ? V(c.text, 'm-cand', c.prov || '') : null, ' ', vv ? F(vv) : tag('PENDING')]);
+      });
+    } else if (raw && typeof raw === 'object') {
+      Object.keys(raw).forEach(function (k) { items.push([V(k, 'm-cand'), ' ', raw[k] ? F(asField(raw[k])) : tag('PENDING')]); });
+    }
+    if (!items.length) return [tag('PENDING')];
+    return items.map(function (it) { return el('span', { class: 'dc-line m-v' }, it); });
+  }
+
+  /* the first candidate's id as data names it, for the column title; a plain word when data has none */
+  function baselineName(rows) {
+    for (var i = 0; i < rows.length; i++) {
+      var raw = pickKey(rows[i], ['verdicts', 'gates']);
+      if (Array.isArray(raw) && raw.length) {
+        var c = fieldOf(raw[0], ['cand', 'id', 'candidate']);
+        if (c) return c.text;
+      }
+    }
+    var g = D.governance && Array.isArray(D.governance.candidates) ? D.governance.candidates : [];
+    if (g.length) {
+      var f = fieldOf(g[0], ['id', 'candidate', 'candidate_id']);
+      if (f) return f.text;
+    }
+    return copy('models.cand_fallback');
+  }
+
+  function headlineTag() {
+    var M = D.models || {};
+    var h = M.headline_tag !== undefined ? M.headline_tag : M.headline;
+    var t = textOf(asField(h));
+    if (!t) {
+      var f = firstNumber(['headline.model']);
+      t = f ? f.text : '';
+    }
+    return t;
+  }
+
+  /* the last folder name of a path, for a narrow column; the whole path stays in the title */
+  function baseName(p) {
+    var t = String(p || '').replace(/[\\/]+$/, '');
+    var i = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\'));
+    return i >= 0 ? t.slice(i + 1) : t;
+  }
+
+  /* a column title; the candidate id from data stays in one piece (RC-001 never breaks at its hyphen) */
+  function columnHead(col, baseline) {
+    var raw = copy('models.columns.' + col);
+    var at = raw.indexOf('{cand}');
+    if (at < 0) return raw;
+    return [raw.slice(0, at), V(baseline, 'nowrap'), raw.slice(at + 6)];
+  }
+
+  /* the source folder: lane D writes it as a plain path string, an older shape as a Field */
+  function folderNode(folder) {
+    var text = textOf(folder);
+    if (!text) return null;
+    var shown = baseName(text);
+    if (isField(folder)) return el('span', { class: 'dc-line m-folder', title: text }, F({ text: shown, status: folder.status, prov: folder.prov }));
+    return el('span', { class: 'dc-line m-folder', title: text }, V(shown));
+  }
+
+  function modelRow(row, headline, baseline) {
+    var tf = rowTag(row);
+    var st = toolsState(row);
+    var noTools = st === 'no';
+    var digest = fieldOf(row, ['digest12', 'digest']);
+    var asr = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['asr', 'rc001', 'attack', 'attack_success']));
+    /* The export's own note comes first (it says when a rate means nothing, or comes from a smoke run).
+       A model whose tool calls were never checked must not read as safe because its rate is low. */
+    var asrNote = typeof row.asr_note === 'string' && row.asr_note ? row.asr_note : '';
+    if (asrNote && !noTools) asr.push(el('span', { class: 'dc-line m-caution' }, V(asrNote)));
+    else if (st === 'unchecked') asr.push(el('span', { class: 'dc-line m-caution' }, copy('models.unchecked_note')));
+    var benign = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['benign', 'normal']));
+    var mode = fieldOf(row, ['mode', 'mode_tag']);
+    var folder = pickKey(row, ['folder', 'source', 'dir', 'path']);
+    var isHead = row.headline === true || (!!headline && !!tf && tf.text === headline);
+    return el('tr', { 'data-tools': st, 'data-headline': isHead ? 'true' : null }, [
+      el('td', { class: 'm-model' }, [
+        tf ? F(tf, 'm-tag') : tag('PENDING'),
+        digest ? el('span', { class: 'm-digest', title: copy('models.digest_label') }, F(digest)) : null,
+        isHead ? el('span', { class: 'headline-mark' }, copy('models.headline')) : null
+      ]),
+      el('td', null, [el('span', { class: 'm-tools', 'data-state': st }, copy('models.tools.' + st)), ' ', tag(toolsStatus(row))]),
+      el('td', null, asr),
+      el('td', null, benign),
+      el('td', null, errorsNodes(row)),
+      el('td', null, verdictNodes(row)),
+      el('td', null, [mode ? tag(mode.status, mode.text) : tag('PENDING'), folderNode(folder)])
+    ]);
+  }
+
+  function errorsNodes(row) {
+    var f = fieldOf(row, ['errors', 'error_runs']);
+    return f ? withTag(f) : [tag('PENDING')];
+  }
+
+  function renderModels() {
+    var t = $('m-table'), note = $('m-note'), sr = $('m-src');
+    if (!t) return;
+    var M = D.models && typeof D.models === 'object' ? D.models : null;
+    var rows = M && Array.isArray(M.rows) ? M.rows.slice() : [];
+    if (!rows.length) {
+      setPanelStatus(t, 'PENDING');
+      fill(t, [pendingBlock(copy('models.empty'), M && (M.reason || M.note) ? (M.reason || M.note) : null)]);
+      fill(note, []);
+      fill(sr, []);
+      return;
+    }
+    rows.sort(function (a, b) {
+      var x = textOf(rowTag(a)), y = textOf(rowTag(b));
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    var headline = headlineTag();
+    var baseline = baselineName(rows);
+    var cols = ['tag', 'tools', 'asr', 'benign', 'errors', 'verdicts', 'source'];
+    setPanelStatus(t, M.status && M.status !== 'REAL' ? M.status : null);
+    t.classList.remove('is-pending');
+    fill(t, [
+      el('table', { class: 'grid models' }, [
+        el('colgroup', null, cols.map(function (c) { return el('col', { class: 'm-col-' + c }); })),
+        el('thead', null, el('tr', null, cols.map(function (c) { return el('th', null, columnHead(c, baseline)); }))),
+        el('tbody', null, rows.map(function (r) { return modelRow(r, headline, baseline); }))
+      ])
+    ]);
+    fill(note, [
+      /* the headline row carries its own mark in the table, so the note repeats it only when none is chosen */
+      el('p', { class: 'n-note' }, headline ? copy('models.note') : [copy('models.no_headline') + ' ', copy('models.note')]),
+      M.note ? el('p', { class: 'n-note' }, V(M.note)) : null
+    ]);
+    var files = Array.isArray(M.source_files) ? M.source_files : (M.source_file ? [M.source_file] : []);
+    fill(sr, files.length || M.status ? [src(['Models: ', V(files.join(', ') || 'no file'), ' ', tag(M.status || 'PENDING')])] : []);
+  }
+
+  /* ---------- beat mode: B steps through COPY.beats in order, Shift+B steps back ----------
+     A beat is {id, title, screen (a screen name), focus (an element id, or null), note}. This code never
+     names a beat, so adding, cutting or reordering beats is an edit of copy.js. Three focus ids do more than
+     focus an element: cover (the cover), drawer (open the first run that broke a rule) and p-decision
+     (the release-decision card on the pipeline screen). */
+
+  function firstBrokeKey() {
+    var batch = currentBatch();
+    if (!batch || !batch.runs) return null;
+    var first = null, broke = null;
+    sortedGroups(batch, 'attack').forEach(function (g) {
+      (g.tests || []).forEach(function (t) {
+        (t.runs || []).forEach(function (key) {
+          var r = batch.runs[key];
+          if (r && !first) first = key;
+          if (r && !broke && r.state === 'broke') broke = key;
+        });
+      });
+    });
+    return broke || first;
+  }
+
+  var beatTarget = null;
+
+  function focusBeatTarget(focus) {
+    if (beatTarget) { beatTarget.classList.remove('beat-target'); beatTarget = null; }
+    if (!focus) return;
+    if (focus === 'cover') { showCover(); return; }
+    if (focus === 'drawer') {
+      var key = firstBrokeKey();
+      if (key) openDrawer(key);
+      return;
+    }
+    if (focus === 'p-decision') { toggleCard(true); return; }
+    var t = $(focus);
+    if (!t || t.closest('[hidden]')) return;
+    if (!t.hasAttribute('tabindex')) t.setAttribute('tabindex', '-1');
+    t.classList.add('beat-target');
+    beatTarget = t;
+    try { t.focus({ preventScroll: true }); } catch (e) { t.focus(); }
+    try { t.scrollIntoView({ block: 'nearest' }); } catch (e2) { /* older engines: the screen is not scrolled */ }
+  }
+
+  function applyBeat(i) {
+    var list = beatList();
+    if (!list.length) return;
+    i = Math.max(0, Math.min(list.length - 1, i));
+    var b = list[i];
+    hideCover();
+    if (drawerOpen) closeDrawer(false);
+    var n = ORDER.indexOf(b.screen) + 1;
+    show(n > 0 ? n : state.s, { noFocus: true, beat: true });
+    focusBeatTarget(b.focus);
+    beatIndex = i;
+    renderHints();
+  }
+
+  function stepBeat(dir) {
+    var list = beatList();
+    if (!list.length) return;
+    var next = beatIndex < 0 ? (dir > 0 ? 0 : list.length - 1) : beatIndex + dir;
+    if (next < 0 || next >= list.length) return;
+    applyBeat(next);
   }
 
   /* ---------- screens, presenter, keys ---------- */
 
   function screens() { return Array.prototype.slice.call(doc.querySelectorAll('section.screen')); }
 
+  /* The pipeline view (pipeline.js) may be missing or may throw; the page works without it. */
+  function pipelineVisible(flag) {
+    try {
+      if (window.Pipeline && typeof window.Pipeline.visible === 'function') window.Pipeline.visible(flag);
+    } catch (err) {
+      if (window.console) console.error('Pipeline view: ' + err);
+    }
+  }
+
+  function pipelineKey(name) {
+    try {
+      if (window.Pipeline && typeof window.Pipeline.key === 'function') return !!window.Pipeline.key(name);
+    } catch (err) {
+      if (window.console) console.error('Pipeline view: ' + err);
+    }
+    return false;
+  }
+
+  /* The release-decision card sits over the board on screen 6, and only there. */
+  function syncCard() {
+    var card = $('p-decision');
+    var on = state.card && state.s === PIPELINE_SCREEN;
+    if (card) card.hidden = !on;
+    doc.body.classList.toggle('card-open', !!on);
+  }
+
+  function toggleCard(on) {
+    if (state.s !== PIPELINE_SCREEN) return;
+    state.card = on === undefined ? !state.card : !!on;
+    syncCard();
+    writeHash();
+    var card = $('p-decision');
+    if (state.card && card) { try { card.focus({ preventScroll: true }); } catch (e) { card.focus(); } }
+  }
+
+  /* ---------- the cover: Redline, the team and the tagline, all from copy.js ---------- */
+
+  var coverShown = false;
+
+  function setText(id, text) {
+    var n = $(id);
+    if (!n) return;
+    clear(n);
+    if (text) { n.textContent = text; n.setAttribute('data-static', ''); }
+  }
+
+  /* Without copy.js there is no cover: the page opens on a screen, as before. */
+  function renderCover() {
+    var name = copy('product.name');
+    if (!$('cover') || !name) return false;
+    setText('cover-name', name);
+    setText('cover-what', copy('product.what'));
+    setText('cover-tagline', copy('product.tagline'));
+    setText('cover-team', copy('product.team_line', { team: copy('product.team') }));
+    setText('cover-track', copy('product.track'));
+    setText('cover-hint', copy('cover.hint'));
+    return true;
+  }
+
+  function showCover() {
+    var cv = $('cover');
+    if (!cv || !renderCover()) return false;
+    if (drawerOpen) closeDrawer(false);
+    cv.hidden = false;
+    coverShown = true;
+    doc.body.classList.add('cover-open');
+    try { cv.focus({ preventScroll: true }); } catch (e) { cv.focus(); }
+    return true;
+  }
+
+  function hideCover() {
+    var cv = $('cover');
+    if (!cv || !coverShown) return;
+    cv.hidden = true;
+    coverShown = false;
+    doc.body.classList.remove('cover-open');
+    var h = doc.querySelector('#screen-' + state.s + ' .screen-title');
+    if (h) { try { h.focus({ preventScroll: true }); } catch (e) { h.focus(); } }
+  }
+
   function show(n, opts) {
     opts = opts || {};
-    n = Math.max(1, Math.min(5, n | 0));
+    n = Math.max(1, Math.min(SCREEN_COUNT, n | 0));
     if (drawerOpen && n !== 2) closeDrawer(false);
     state.s = n;
+    if (!opts.beat) beatIndex = -1;
+    if (n !== PIPELINE_SCREEN) state.card = false;
     screens().forEach(function (sec) {
       var k = Number(sec.getAttribute('data-screen')) || Number((sec.id || '').replace('screen-', ''));
       sec.hidden = k !== n;
@@ -1298,9 +1894,14 @@
       if (Number(b.getAttribute('data-screen')) === n) b.setAttribute('aria-current', 'page');
       else b.removeAttribute('aria-current');
     });
+    doc.body.setAttribute('data-screen', String(n));
+    if (D && D.schema === 'ui-demo/1') renderWarnings();
     renderReplay(n);
+    renderHints();
+    syncCard();
     writeHash();
     placeDeck(opts.initial ? 'none' : 'glide');
+    pipelineVisible(n === PIPELINE_SCREEN);
     if (n === 4) scrollEntriesToEnd();
     if (!opts.noFocus) {
       var h = doc.querySelector('#screen-' + n + ' .screen-title');
@@ -1327,10 +1928,29 @@
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     var k = e.key;
+    /* on the cover any key starts the show; a digit also opens its screen, and R and P keep their jobs */
+    if (coverShown) {
+      if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock') return;
+      hideCover();
+      if (k === ' ' || k === 'Enter' || k === 'Escape' || k === 'Tab' || k === 'ArrowRight') { e.preventDefault(); return; }
+    }
     if (drawerOpen && (k === 'Escape' || k === 'Tab')) { onDrawerKey(e); return; }
-    if (k.length === 1 && k >= '1' && k <= '5') { e.preventDefault(); show(Number(k)); return; }
+    if (k.length === 1 && k >= '1' && k <= String(SCREEN_COUNT)) { e.preventDefault(); show(Number(k)); return; }
     if (k === 'r' || k === 'R') { if (!e.repeat) { e.preventDefault(); location.reload(); } return; }
     if (k === 'p' || k === 'P') { if (!e.repeat) { e.preventDefault(); togglePresenter(); } return; }
+    if (k === 'b' || k === 'B') { if (!e.repeat) { e.preventDefault(); stepBeat(e.shiftKey ? -1 : 1); } return; }
+    /* on the pipeline screen: D shows or hides the release-decision card; Space, Home, [ and ] drive the
+       recorded run in pipeline.js (only while the card is hidden, so nothing moves out of sight) */
+    if (state.s === PIPELINE_SCREEN) {
+      if (k === 'd' || k === 'D') { if (!e.repeat) { e.preventDefault(); toggleCard(); } return; }
+      if (k === 'Escape' && state.card) { e.preventDefault(); toggleCard(false); return; }
+      var name = k === ' ' ? 'space' : k === 'Home' ? 'home' : k === '[' ? 'prev' : k === ']' ? 'next' : '';
+      if (name) {
+        e.preventDefault();
+        if (!state.card && !e.repeat) pipelineKey(name);
+        return;
+      }
+    }
   }
 
   function onHashChange() {
@@ -1345,6 +1965,41 @@
     if (drawerOpen && want !== drawerReturnKey) closeDrawer(false);
     show(state.s, { noFocus: !!want });
     if (want && state.s === 2 && !drawerOpen && !openDrawer(want)) { state.run = null; writeHash(); }
+  }
+
+  /* Put the words from copy.js into the static markup. index.html keeps a plain fallback for each one,
+     so the page still reads if copy.js is missing. The key digits come from the router, not from copy.js. */
+  function applyCopy() {
+    var name = copy('product.name');
+    if (name) doc.title = name;
+    var brand = doc.querySelector('.brand');
+    if (brand && name) {
+      clear(brand);
+      brand.appendChild(el('span', { class: 'brand-name' }, name));
+      var team = copy('product.team_line', { team: copy('product.team') });
+      if (team) {
+        brand.appendChild(doc.createTextNode(' '));
+        brand.appendChild(el('span', { class: 'brand-team' }, team));
+      }
+    }
+    ORDER.forEach(function (screenName, i) {
+      var n = i + 1;
+      var item = navItem(n);
+      var label = copy('screens.' + screenName + '.nav');
+      if (item && label) item.textContent = n + ' ' + label;
+      var title = copy('screens.' + screenName + '.title');
+      var h = $('title-' + n);
+      if (h && title) h.textContent = title;
+    });
+    var rail = $('p-rail');
+    if (rail && !rail.hasAttribute('aria-label') && copy('pipeline.rail_label')) rail.setAttribute('aria-label', copy('pipeline.rail_label'));
+    var board = $('p-board');
+    if (board && !board.hasAttribute('aria-label') && copy('pipeline.board_label')) board.setAttribute('aria-label', copy('pipeline.board_label'));
+    var missing = $('p-status');
+    if (missing && !window.Pipeline && copy('pipeline.not_loaded')) {
+      missing.textContent = copy('pipeline.not_loaded');
+      missing.setAttribute('data-static', '');
+    }
   }
 
   function bindNav() {
@@ -1383,11 +2038,18 @@
     guard('compare', renderCompare);
     guard('audit', renderAudit);
     guard('assurance', renderAssurance);
+    guard('decision', renderDecision);
+    guard('models', renderModels);
   }
 
   function boot() {
+    /* the cover shows only when the page opens with no screen in the address; a reload keeps the screen */
+    var fresh = !location.hash || location.hash === '#';
     readHash();
+    applyCopy();
     bindNav();
+    var cover = $('cover');
+    if (cover) cover.addEventListener('click', hideCover);
     doc.addEventListener('keydown', onKey);
     addEventListener('hashchange', onHashChange);
     addEventListener('mousemove', armIdle, { passive: true });
@@ -1411,6 +2073,7 @@
       state.run = null;
       writeHash();
     }
+    if (fresh) showCover();
     fontsReady(1000).then(function () {
       fit();
       deckReady = true;
