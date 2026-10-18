@@ -30,7 +30,7 @@ Steps V1–V15 are v2 (the batch runner). Steps F0–F7 are the v1 sequential fa
 ## Bridge check, about 10:45
 
 Do this when no batch runs and the results are sent. Details are in runbook V15.
-Only the `#s=6` part of check 15 needs the owner's push with the pipeline screen. The rest works now.
+The pipeline screen (`#s=6`) is in the push `005ae13` and later, so every part of check 15 works now.
 
 14. `cd $HOME\Desktop\redline`, then V1. `git status --short` shows no `corpus/` line.
 15. `& $PY ui\bridge.py --run demo --serve --no-export`. Check:

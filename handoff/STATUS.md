@@ -41,9 +41,10 @@ The v1 sequential commands (F0–F7) stay the fallback for all of these.
 
 ## Coming (the owner tells you)
 
-- Dashboard **screen 6** (pipeline) and **screen 7**. They arrive with the next push.
-  Until then `http://127.0.0.1:8765/#s=6` shows no pipeline. The bridge check (V15) works without it.
-- Do not pull for it while a batch runs. Pull between batches (V3).
+- Dashboard **screen 6** (pipeline) and **screen 7** (models) are in this push (`005ae13` and later).
+  `http://127.0.0.1:8765/#s=6` shows the pipeline during a bridge run.
+- Do not pull while a batch runs. Pull between batches (V3).
+- Expected `pytest` last line on macOS for this push: `916 passed`.
 
 ## Known effects
 
