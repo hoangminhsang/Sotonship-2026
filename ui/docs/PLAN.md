@@ -1,5 +1,8 @@
 # Agent Release Gate — demo UI in `ui/` (plan)
 
+> **Status, 18 Oct 2026:** this is the approved plan of 17 Oct for the five-screen dashboard. It is kept as the record. On 18 Oct the team added a bridge, a models runner and, with lane F, screens 6 and 7 (being merged into `demo/integrated`). The current rules are in `BUILD_CONTRACT.md` (see its "Amendments of 18 Oct 2026"), the file formats are in `../../docs/DATA_CONTRACT.md`, and how to run it is in `../README.md`. Where this plan disagrees with them, they win.
+
+
 ## Context
 - **Need:** a read-only, offline, projector-ready view of the evidence for the demo after the pitch. "Working product" is the largest judging weight (25%), and the attack board carries the demo.
 - **Change since the prompt:** governance, assurance, a CLI (`scripts/run_governance.py`), a menu app (`lab/app.py`) and a demo module (`lab/demo.py`) are on `origin/main` of the lab repo (`f729076`, `d825341`).

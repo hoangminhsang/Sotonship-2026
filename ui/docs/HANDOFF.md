@@ -1,5 +1,8 @@
 # Demo UI — handoff (saved Sun 18 Oct, 05:0x)
 
+> **Status, 18 Oct 2026:** this handoff is the state of 17 Oct, when the build stopped partway. It is kept as the record. Its "Next steps" are done or replaced: `ui/README.md` exists; the seven-screen page (lane F) and the export of the real governance outputs (lane D) are being merged into `demo/integrated`. For the current state read `BUILD_CONTRACT.md` ("Amendments of 18 Oct 2026"), `../README.md` and `../../docs/DATA_CONTRACT.md`.
+
+
 ## State
 - Branch `ui/demo` in the lab repo (`hoangminhsang/Sotonship-2026`), based on `origin/main` `d825341`. Only `ui/` is added; no backend file is changed.
 - The build stopped partway: the session usage limit stopped all four build agents. Their files were written, but **integration, screenshots, the README and QA did not run**.

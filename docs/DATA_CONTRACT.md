@@ -9,6 +9,13 @@ Every CLI artifact carries its mode: `gate_*.txt` files start with
 `[SCRIPTED] Candidate …`, `[LIVE] …` or `[SAVED] …`; every CLI `.md` starts
 with `**Mode: [TAG]** <note>`.
 
+**This file has two parts.** Part A (sections 1 to 6) is the 17 Oct contract for
+the backend's own files. Part B (sections 7 to 13, added 18 Oct) lists the files
+that the dashboard pages (`ui/index.html`, the one-page demo, and `ui/details.html`, the old seven screens) and the numbers sheet read:
+`progress.jsonl`, `live.js` (`ui-live/1`), `replay.js` (`ui-replay/1`),
+`results/models/<STAMP>/`, `run_index.json`, `audit_verify.json`,
+`numbers.json`, and how the export reads run folders. Part B marks where each file stands.
+
 Read this first:
 
 1. **Rates are fractions 0–1 in every CSV and JSON** (`rate`, `ci_low`,
@@ -367,3 +374,270 @@ generator and stops on a mismatch; it never rewrites them.
 
 The committed `results/summary.csv` and `results/runs.csv` stay where they
 are and are never overwritten.
+
+---
+
+# Part B — files the dashboard reads (added 18 Oct 2026)
+
+Part A (sections 1 to 6) describes the backend's own files. Part B describes the files that the dashboard pages and the numbers sheet read. §7 to §10 were checked on 18 Oct 2026 against `lab/progress.py`, `ui/bridge.py` and `scripts/run_models.py`. §11 to §13 were checked again against `scripts/run_governance.py`, `scripts/verify_log.py` and `ui/export.py` on the branch of this commit; they are on it, and the formats can still change.
+
+| § | File | Written by | State on 18 Oct |
+|---|---|---|---|
+| 7 | `<out>/progress.jsonl` | `lab/progress.py`, through `scripts/run_governance.py` | on this branch |
+| 8 | `ui/data/live.js` (`ui-live/1`) | `ui/bridge.py` | on this branch |
+| 9 | `ui/data/replay.js` (`ui-replay/1`) | `ui/bridge.py --bake` | on this branch |
+| 10 | `results/models/<STAMP>/plan.json`, `status.jsonl`, `<slug>.<step>.log` | `scripts/run_models.py` | on this branch |
+| 11 | `<out>/run_index.json`, `<out>/audit_verify.json` | `scripts/run_governance.py` | on this branch |
+| 12 | `ui/data/numbers.json` | `ui/export.py` | on this branch |
+| 13 | run folders, as the dashboard reads them | `ui/export.py` | on this branch |
+
+---
+
+## 7. `progress.jsonl` — one event per line while a pipeline run goes on
+
+**Producer:** `lab/progress.py`. `scripts/run_governance.py` writes it to `<out>/progress.jsonl`. **Consumer:** `ui/bridge.py`, which turns it into `live.js` (§8) or `replay.js` (§9).
+**Fixture:** `tests/fixtures/progress_scripted.jsonl` (a SCRIPTED run).
+
+### File rules
+
+- One JSON object per line. Each line is written with `json.dumps(ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)`. NaN and infinity become `null`.
+- Each line goes out in one `write()` and a `flush()`, so a reader that waits for the newline never sees half a line.
+- An existing `progress.jsonl` is renamed to `progress.<UTC stamp>.jsonl` first. Nothing is deleted.
+- Paths in the file are repo-relative POSIX paths (`results/runs/x/runs.csv`) or `<outside repo>/<name>`. An absolute path never appears.
+- The writer never raises. Any `Exception` disables it, prints one stderr line, and the run carries on. Ctrl-C is not caught, so an interrupted run still locks its folder.
+- A run refused before it creates its folder (a bad `--run` path) writes no file.
+
+### Keys on every line
+
+| Key | Meaning |
+|---|---|
+| `v` | schema version, `1` |
+| `seq` | 1, 2, 3 … per file (the number of the progress event, not of an audit entry) |
+| `t` | UTC ISO 8601 with microseconds |
+| `uid` | 12 hex characters, one per pipeline run |
+| `type` | the event type (below) |
+| `cand` | `RC-001` … or `null` |
+| `stage` | the open stage id or `null` |
+
+Stage ids: `setup`; then for each candidate `RC-00N:runs`, `RC-00N:gate`, `RC-00N:decide`, `RC-00N:assure`; then `trace`, `summary`, `chain`, `done`.
+
+### Event types
+
+| `type` | Fields besides the common keys |
+|---|---|
+| `pipeline_start` | `mode`, `argv`, `out`, `platform`, `git_commit` |
+| `meta` | `model`, `digest12` (or `placeholder (DEMO)`), `policy_version`, `test_set{records, attacks, benign, sha12}`, `reps`, `sample`, `candidates[{id, defences, expected_runs}]` |
+| `stage_start` | `stage`, `title` |
+| `stage_done` | `stage`, `title`, `status` (`ok`, `error`, `skipped`), `dur_s` |
+| `run_start` | `i`, `n`, `test_id`, `rep`, `kind`, `technique` (real-model runs only) |
+| `run_done` | `i`, `n`, `test_id`, `rep`, `kind`, `technique`, `goal`, `violated`, `classes`, `attempted`, `calls`, `blocked`, `tool_calls` (at most 300 characters), `error` (at most 200), `benign_success`, `duration_s`, `running{attack_runs, attack_violations, asr, asr_lo, asr_hi, benign_n, benign_rate, errors, runs}` |
+| `runs_done` | `run_id`, `runs_csv`, `summary{…}` (the §5.1 summary dict) |
+| `fingerprint` | `identity12`, `changed_vs_prev` |
+| `gate` | `verdict`, `reasons`, `checks[{name, ok, value, limit, note}]`, `lines`, `file` |
+| `audit` | `entry` (the audit log's own entry number), `event`, `by`, `reviewer`, `verdict`, `decision`, `reason`, `scripted`, `hash12` |
+| `risks`, `tickets`, `evidence` | `rows`, `controls_used` |
+| `artifact` | `name`, `path`, `kind` |
+| `trace` | `finding`, `steps_n` |
+| `summary` | `bullets` |
+| `chain` | `ok`, `entries`, `head12`, `detail`, `tamper{ok, bad_seq, kind}` or `null` |
+| `pipeline_done` | `status` (`ok`, `error`, `interrupted`), `exit_code`, `dur_s`, `headline{cands[{id, verdict, asr, asr_lo, asr_hi, attack_runs, attack_violations, benign_rate, benign_n}]}`, `error` |
+
+### Notes for readers
+
+- `run_done` comes in every mode. In a real-model run it goes out as each run finishes; `run_start` goes out just before the model is called. In a SCRIPTED or SAVED run, `run_done` goes out in one burst per candidate, after the runs are scored.
+- A value with nothing behind it is `null`, never `0`: `asr`, `asr_lo` and `asr_hi` while `attack_runs` is 0; `benign_rate` while `benign_n` is 0; `benign_success` on an attack run; `error` when the run did not fail; `duration_s` on a scripted run. A reader must show "not measured", not 0%.
+- `fingerprint` follows `runs_done` for every candidate. RC-002 and RC-003 write their `RC-00N.json` (the `artifact` event) before their runs.
+- RC-002 and RC-003 print gate and decision in one section. The log splits it: `:gate` ends with the `gate` event, and `:decide` holds the `audit` events.
+- With the tamper demo, `chain` appears twice: first for the real log (`tamper` is `null`), then for the forged copy.
+- The mode of the run is in `pipeline_start.mode`: `SCRIPTED`, `LIVE` or `SAVED`. The bridge turns it into the word SCRIPTED, LIVE, REPLAY or SAVED (§8). A recorded `LIVE` log is shown as REPLAY.
+
+---
+
+## 8. `ui/data/live.js` — `window.LIVE`, schema `ui-live/1`
+
+**Producer:** `ui/bridge.py` (`--follow`, `--follow-latest`, `--replay`, `--run`, `--batch`). **Consumers:** `ui/index.html`, whose inline script re-inserts the script tag every 1000 ms, and `ui/pipeline.js` (the old page, `details.html`), which re-inserts it every 500 ms while screen 6 is visible. Neither page uses fetch for this file. The demo page reads `label.word`, `state`, `model`, `nodes`, `rail` and `tiles`.
+**Committed placeholder:** `window.LIVE = null;`. Restore it (`git checkout -- ui/data/live.js`) before every commit.
+**Format:** the file is `window.LIVE = <JSON>;` plus a newline. It is pure ASCII, and `<`, `>` and `&` are escaped as `<`, `>`, `&`. The bridge writes it through a temporary file in the same folder and `os.replace`, at most every 250 ms, and only when something changed. On Windows it retries `os.replace` 10 times at 50 ms when the browser holds the file. The bridge removes absolute paths and the user name before it writes. Every number in the file is formatted by the bridge from a backend value.
+
+| Key | Content |
+|---|---|
+| `schema` | `"ui-live/1"` |
+| `rev` | counts up with every change |
+| `written_at` | UTC ISO 8601 |
+| `source` | `{kind, log, uid, speed, paced}`. `kind` is `follow`, `replay`, `run` or `batch`. `speed` is set for a replay only |
+| `label` | `{word, text, status}`. `word` is `SCRIPTED`, `LIVE`, `REPLAY` or `SAVED` (empty while waiting). `status` is `REAL` or `SAMPLE` |
+| `mode`, `model`, `digest` | from `pipeline_start` and `meta` |
+| `state` | `waiting`, `running`, `done`, `error` or `stopped` |
+| `active`, `prev_active` | the node that started last (`null` unless running) and the one before. The page animates the edge `prev_active>active` |
+| `nodes` | 15 entries, `{state, fact, fact2, status, tag}` each. `state` is `idle`, `running`, `done`, `error` or `skipped`. `tag` is `PASS` or `FAIL` on `sl.gate`, `scripted by the CLI` on `sl.review`, `intact` or `broken` on `sl.log` |
+| `edges` | 16 keys `"a>b"`, each `idle` or `done` |
+| `rail` | `[{id, text, verdict, state, status}]`, one per candidate. `verdict` is `FAIL`, `PASS` or empty (the gate's own) |
+| `tiles` | `{cand, n, list:[[key, state]]}` for the candidate on show. `key` is `<test_id>:<rep>`, or `#<i>` before the run starts. `state` is `idle`, `running`, `violated`, `held`, `ok`, `missed`, `error` or `unscored` |
+| `events_tail` | up to 6 short strings |
+| `warnings` | strings |
+| `done` | `null` until the run ends, then `{exit_code, dur, text, export{status, text}}`. `export.status` is `ok`, `failed`, `not_run`, `running` or `skipped`. `text` is the command to run when the export did not run |
+| `batch` | `null`, or `{models:[{slug, tag, state, tools, text}]}` sorted by tag (the multi-model run) |
+
+**Node ids (15):** `rt.attack`, `rt.record`, `rt.check`, `rt.rate`, `rt.fixes`, `sl.fingerprint`, `sl.gate`, `sl.review`, `sl.log`, `fix.ticket`, `ll.risks`, `ll.controls`, `ll.evidence`, `ll.trace`, `ll.summary`. (`rt` is the red team, `sl` the short loop, `ll` the long loop.) Nine nodes start again for each candidate; `rt.fixes` and the `ll.*` nodes keep their state from pass to pass.
+**Edge ids (16):** the 12 along the rows (`rt.attack>rt.record` … `ll.trace>ll.summary`), plus `rt.rate>sl.fingerprint` ("every change"), `fix.ticket>rt.attack` ("test again"), `rt.attack>ll.risks` ("same test data") and `ll.summary>fix.ticket` ("open risk", lit only when the run ends).
+**Which event moves which node:** the table in the docstring of `ui/bridge.py` is the single source. Facts are short (about 50 characters), because a node box has two 22 px lines.
+
+### Labels and pacing
+
+- **LIVE** only while a real-model log is still growing: the child process is alive, or the last event is under 60 s old.
+- **REPLAY** for a recorded log, also a recorded real-model log. The text reads `REPLAY · real-model run of <UTC> · N× speed · long gaps shortened`. Gaps are divided by the speed and capped at 3 s.
+- **SCRIPTED** for a DEMO run. The text reads `SCRIPTED · paced for display`: about 40 ms per `run_done`, at least 1.4 s per node change.
+- **SAVED** for a saved run folder that the CLI re-scored.
+- A log that stops growing for 180 s with no child is shown as `stopped`.
+- The bridge reads new bytes from the last offset, keeps an unfinished last line until its newline arrives, and skips a malformed complete line (it counts it in `warnings`). It resets when the file shrinks or its first bytes change. A missing file is the state `waiting`.
+
+---
+
+## 9. `ui/data/replay.js` — `window.LIVE_REPLAY`, schema `ui-replay/1`
+
+**Producer:** `python ui/bridge.py --bake PATH` (a `progress.jsonl`, or a run folder that holds one). **Consumer:** `ui/pipeline.js` on `details.html`, when no bridge runs (the page opened from `file://`). `index.html` does not read this file. Space plays or pauses it, Home restarts it, and `[` and `]` step to the previous or next recorded run (or one frame, when the file holds one run).
+**Committed placeholder:** `window.LIVE_REPLAY = null;`.
+
+```
+window.LIVE_REPLAY = {
+  "schema": "ui-replay/1",
+  "baked_at": "<UTC ISO>",
+  "source": {"log": "<repo-relative path>", "mode": "...", "uid": "...", "speed": 4.0},
+  "frames": [ {"t": <ms on a virtual clock>, "live": <a ui-live/1 object with rev 1..n>}, … ]
+};
+```
+
+- At most **120 frames**. The first frame, the last frame and every frame where a node changed state come first. If that is too many, the key frames are spread evenly.
+- The default speed is 4×. `t` is the time of the frame on the virtual replay clock, in milliseconds.
+- The file has the same escaping and path scrubbing as §8.
+
+---
+
+## 10. `results/models/<STAMP>/` — one batch of several models
+
+**Producer:** `scripts/run_models.py` (stdlib; Python 3.9 or newer). `<STAMP>` is the UTC start time. `<slug>` is the model tag as `lab.run_folder._safe` writes it. **Consumers:** `ui/bridge.py --run models` and `--batch`, and `ui/export.py` (tool support on the Models screen).
+**Models list:** `config/models.txt`, one Ollama tag per line, `#` for comments, no duplicates. On 18 Oct it holds `qwen2.5:7b-instruct`. The IBM Granite tag is a comment because the exact tag is not verified.
+
+| File | Content |
+|---|---|
+| `plan.json` | the plan, with no absolute path |
+| `status.jsonl` | one JSON line per state change |
+| `<slug>.<step>.log` | the output of each child (`pull`, `preflight`, `smoke`, `full`) |
+
+The governance output of each child is `results/governance/<STAMP>_<slug>_smoke` and `results/governance/<STAMP>_<slug>`. The locked run folders are in `results/runs/` (§6).
+
+### `plan.json` (schema `run-models/1`)
+
+Keys: `schema`, `stamp`, `mode` (`live` or `scripted`), `smoke_only`, `pull`, `parallel`, `parallel_requested`, `parallel_note`, `models_file`, `batch_dir`, `smoke{sample, reps}`, `full{sample, reps}`, `env{PYTHONUNBUFFERED, PYTHONUTF8}` and `models[]`.
+Each model: `tag`, `slug`, `env{LAB_MODEL}`, `smoke_out`, `full_out`, `logs{step: path}` and `commands{pull, preflight, smoke, full}`. A command is an argument list with `python` (or `ollama`) first. The real interpreter replaces it when the command runs. `pull` and `preflight` are `null` when they do not apply.
+The smoke run is `--live --sample 1 --reps 1`. The full run is `--live --sample 26 --reps 3` by default, and `--sample` and `--reps` change it. `parallel` is 1 until the corpus race fix is in `scripts/run_governance.py`; `parallel_note` says so when the request was lowered.
+
+### `status.jsonl`
+
+Every line has `ts` (UTC, to the second), `event`, `slug` and `tag`, plus:
+
+| `event` | Extra fields |
+|---|---|
+| `queued` | `position` |
+| `pull_start` | `log` |
+| `pull_done` | `exit_code` (`null`: `ollama` could not start; see `error`) |
+| `preflight_start` | `log` |
+| `preflight_ok` | `exit_code` |
+| `preflight_fail` | `exit_code`, `detail` (the FAIL lines of `preflight.py`) |
+| `preflight_skipped` | `reason` (`scripted`) |
+| `smoke_start` | `out`, `log` |
+| `smoke_done` | `exit_code`, `tools` (`yes`, `no` or `not checked`), `reason`, `text`, `out`, `run_dirs`, `detail`. `text` is `<tools> (<reason>)`, for example `no (every run errored)` or `not checked (scripted)` |
+| `full_start` | `out`, `log` |
+| `full_done` | `exit_code`, `out`, `run_dirs` (and `reason: "interrupted"`) |
+| `skipped` | `reason`. The last line of every model that did not reach `full_done` (no tool support, a failed step, `--smoke-only`, Ctrl-C) |
+
+`out`, `log` and `run_dirs` are relative to the repo. `run_dirs` are folder names inside `results/runs/`.
+
+**Tool support** is `yes` only when all of these hold for the smoke run's folders: at least one trace holds a structured tool call; no `final_text` contains the text `<tool_call>` (the model wrote its calls as text); not every run errored. Otherwise it is `no`, with the reason. A model without tool support is skipped after the smoke run. The Models screen shows it as a model without tool support, never as a safe 0%.
+**Exit codes:** 0 all went as planned (a model skipped for missing tool support is a result, not a failure); 1 a step failed; 2 bad command line or setup; 130 stopped.
+
+---
+
+## 11. `run_index.json` and `audit_verify.json`
+
+`scripts/run_governance.py` writes these two files into the CLI's output folder `<out>`. The keys below match `RunIndex` and `verify_log.verify_document`.
+
+### `<out>/run_index.json` (schema `run-index/1`)
+
+One index of the pipeline run, so the dashboard does not guess from file names.
+
+| Key | Meaning |
+|---|---|
+| `schema` | `"run-index/1"` |
+| `mode`, `uid` | the run's mode (`SCRIPTED`, `LIVE` or `SAVED`) and the `uid` of `progress.jsonl` |
+| `started`, `ended` | UTC ISO 8601 (the export reads `started_at` or `started`) |
+| `complete` | `true` only when the run finished. A partial index (`complete: false`) is written on an error |
+| `model`, `digest`, `git_commit`, `reps`, `sample` | what was run |
+| `candidates[]` | per candidate: `id`, `defences`, `run_id`, `runs_csv`, `summary_csv`, `gate`, `fingerprint`, `verdict` |
+
+The export uses `mode` first when it decides whether a folder is SCRIPTED, LIVE or SAVED. It uses `started` (a content time, never a file time) to pick the newest real run, and `model` and `digest` for the Models screen.
+
+### `<out>/audit_verify.json` (schema `audit-verify/1`)
+
+The result of verifying the audit log, written as raw JSON (not through the mode-tagged report writer).
+
+| Key | Meaning |
+|---|---|
+| `schema` | `"audit-verify/1"` |
+| `ok` | `true` when the chain holds |
+| `bad_seq` | the position of the first bad entry, or `null` |
+| `kind` | `edited`, `inserted`, `missing`, `reordered`, `malformed`, or `null` |
+| `detail` | the wording of `lab/governance/audit.py` (§5.3), for example `10 entries, chain intact (head 8709e0d29aed)` |
+| `entries`, `last_hash` | the entry count and the head hash |
+| `verified_at` | UTC ISO 8601 |
+| `mode` | the run's mode |
+| `tamper_demo` | the result for the forged copy, or `null` |
+
+`scripts/verify_log.py --json OUT` writes the same core fields. The export checks `ok == ("chain intact" in detail or detail.startswith("no entries"))` and shows the chain as PENDING when a file breaks that rule. Without this file the chain status is PENDING.
+
+---
+
+## 12. `ui/data/numbers.json` — the numbers sheet
+
+**Producer:** `ui/export.py`. It writes the file next to `demo.js`, with the same content as `window.DEMO.numbers`. **Consumer:** `scripts/fill_script.py` (`--numbers ui/data/numbers.json`), which fills the demo script and the slides. The pages do not read this file; they read `DEMO.numbers`.
+
+A flat object. Each key is a lowercase dotted name. Each value is an entry:
+
+```
+{"value": "42.3%", "text": "42.3%", "status": "REAL", "mode": "LIVE",
+ "source": "<file> @<rev> row 2 (…)", "prov": "numbers.rc001.asr"}
+```
+
+| Field | Meaning |
+|---|---|
+| `value`, `text` | the words as the narrator reads them. `value` repeats `text`, because `fill_script.py` reads `value` |
+| `status` | `REAL`, `SAMPLE` or `PENDING` |
+| `mode` | `SCRIPTED`, `LIVE`, `SAVED` or `null`. A SCRIPTED value says so in `source` too |
+| `source` | file, revision and place, in words. A value from a hand-written fixture says so |
+| `prov` | the id of the provenance entry that `export.py --check` re-reads |
+| `reason` | only on PENDING: why the key has no value |
+
+A key with no source is PENDING: `value`, `source` and `prov` are `null`, `text` is `not available`, and `reason` says why. A key is never guessed.
+
+Keys (28): `headline.model`, `policy.max_asr`; for each of `rc001`, `rc002`, `rc003`: `.asr`, `.asr_range`, `.violations`, `.attack_runs`, `.attempted`; and `runs.attack`, `runs.total`, `reps`, `benign.rate`, `benign.n`, `audit.entries`, `chain.status`, `tamper.entry`, `models.n`, `time.to_decision`, `time.runs`.
+
+- Rates are text with one decimal and `%`, in the backend's format. `*.asr_range` is the `[lo%, hi%]` text of the gate note, as `metrics.wilson` prints it.
+- `*.attempted` is the information line of the gate (`attempted_incl_blocked`), not a limit.
+- `tamper.entry` is the position `verify_log` names in the tampered copy. It is `#4` in the CLI demo and `#5` in the menu app.
+- `time.to_decision` and `time.runs` are measured from run times in files. A SCRIPTED run keeps both PENDING, because nobody measured a decision time.
+- `models.n` stays PENDING until `results/governance/*/run_index.json` exists (§11).
+- The demo script `SCRIPT_CUT.md` uses seven of these keys. `fill_script.py` reports a missing or PENDING key as missing and leaves the placeholder in the text.
+
+---
+
+## 13. Run folders, as the dashboard reads them
+
+The files are the ones in §6. The export treats a folder as a source of evidence only when `parse_manifest` accepts it:
+
+- `schema` is `1`, `locked` is `true`, and `complete` is `true` (an interrupted run is not shown).
+- `run_id` is a plain folder name.
+- `files` lists safe relative paths, each with a `sha256`.
+- `model` is not empty and `started_at` is a usable time.
+- `manifest_sha256` matches the manifest body. An edit of the model, the digest or the defences after the lock is refused.
+
+The export then reads `runs.csv`, `summary.csv`, `records.jsonl` and `traces/`, and checks every file against `manifest.files`. The model, digest, defences and driver come from the manifest and are shown as REAL. The REPLAY label uses the manifest `started_at`. A folder that fails a check is skipped with a warning; it never stops the export.
