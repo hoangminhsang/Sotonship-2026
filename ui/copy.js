@@ -202,6 +202,8 @@ window.COPY = {
       "unchecked": "not checked"
     },
     "not_measured": "Not measured: no tool calls ran",
+    "unchecked_note": "Tool calls not checked: not proof of safety.",
+    "range": "range",
     "headline": "Headline model",
     "no_headline": "No headline model chosen yet.",
     "empty": "No model results yet. Run the models, export, then press R.",

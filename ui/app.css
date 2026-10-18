@@ -438,7 +438,7 @@ table.grid code{font-size:21px}
    once the risk register is a table it takes the full width and controls move under it. */
 #screen-5{grid-template-columns:640px minmax(0,1fr);grid-template-rows:auto auto auto minmax(auto,1fr) auto;
   grid-template-areas:"title title" "risks controls" "evidence controls" "tickets controls" "src src";column-gap:88px}
-#screen-5:has(#r-risks table){grid-template-columns:minmax(0,1fr) 560px;
+#screen-5:has(#r-risks table){grid-template-columns:minmax(0,1fr) 520px;grid-template-rows:auto auto auto auto auto;row-gap:12px;
   grid-template-areas:"title title" "risks risks" "controls evidence" "controls tickets" "src src"}
 #r-risks{grid-area:risks;min-width:0}
 #r-controls{grid-area:controls;min-width:0}
@@ -450,7 +450,17 @@ table.grid code{font-size:21px}
 /* the standards columns wrap at spaces only: "Manage" is never cut in two */
 #r-controls table.grid :is(th,td){overflow-wrap:normal;word-break:normal;hyphens:none}
 #r-controls table.grid :is(th,td):last-child{min-width:7.5em}
-#r-controls .caveat,#r-controls .note{margin-top:12px}
+#r-controls .caveat,#r-controls .note{margin-top:8px}
+#r-controls table.grid td{padding-top:6px;padding-bottom:6px}
+#r-controls .quote{font-size:30px;margin-bottom:6px}
+/* risk register: the id never breaks at its hyphen, and the violation code sits under its label, not over it */
+table.risks :is(th,td):first-child,table.risks :is(th,td):nth-child(n+4){white-space:nowrap}
+table.risks .d-code{display:inline;border:0;padding:0;margin-left:10px;font-size:22px;line-height:1.35;color:var(--sec)}
+table.risks td{padding-top:7px;padding-bottom:7px}
+/* with a full register the screen is dense: 22px (the smallest size) in its tables and tickets */
+#screen-5:has(#r-risks table) :is(table.grid,#r-tickets li){font-size:22px}
+#screen-5:has(#r-risks table) #r-tickets li{padding:6px 0}
+#screen-5:has(#r-risks table) #r-controls table.grid td:nth-child(n+3){font-size:22px}
 #r-tickets ul,#r-tickets ol{display:grid}
 #r-tickets li{padding:10px 0;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
 #r-tickets li > * + *{display:block;font-size:22px;color:var(--label)}
@@ -497,6 +507,23 @@ table.grid code{font-size:21px}
 .dc-fact{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:16px;align-items:baseline;min-width:0}
 .dc-fact dd{overflow-wrap:anywhere}
 .dc-line{display:block;font:400 22px/1.35 var(--sans);color:var(--lede)}
+
+/* ---------- 13e Models (screen 7): one row per model, sorted by tag, no best highlight ---------- */
+#m-table table.grid{table-layout:fixed;width:100%}
+#m-table th,#m-table td{padding-right:18px;overflow-wrap:break-word}
+#m-table td{padding-top:12px;padding-bottom:12px}
+.m-col-tag{width:290px}.m-col-tools{width:190px}.m-col-asr{width:260px}.m-col-benign{width:220px}
+.m-col-errors{width:110px}.m-col-verdicts{width:220px}.m-col-source{width:390px}
+.m-tag{font:500 26px/1.25 var(--sans);color:var(--ink);overflow-wrap:anywhere}
+.m-digest{display:block;font:400 22px/1.4 var(--mono);color:var(--sec)}
+.headline-mark{display:inline-block;margin-top:6px;padding:2px 10px;border:var(--st) solid var(--ink);font:500 22px/1.3 var(--sans);color:var(--ink)}
+.m-tools[data-state="no"]{font-weight:500}
+.m-caution{color:var(--ink);font-weight:500}
+.m-cand{font-weight:500}
+.nowrap{white-space:nowrap}
+.m-folder{font:400 22px/1.35 var(--mono);color:var(--sec);overflow-wrap:break-word}
+#m-table tr[data-tools="no"] td{background:repeating-linear-gradient(45deg,transparent 0 10px,rgba(17,17,17,.05) 10px 12px)}
+#m-note:not(:empty){font:400 24px/1.4 var(--sans);color:var(--ink);padding-left:18px;border-left:var(--st) solid var(--ink)}
 
 /* ---------- 13c the cover ----------
    Words only: the product name, what it is, the tagline, the team. It covers the whole stage and shows when the

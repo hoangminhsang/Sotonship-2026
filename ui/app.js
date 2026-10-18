@@ -1223,6 +1223,16 @@
 
   /* ---------- screen 5: assurance ---------- */
 
+  /* Source paths that share a folder: the folder once, then the file names ("dir/{a.md, b.md}").
+     This only shortens a label; each file is still named in full in the export report. */
+  function joinPaths(list) {
+    if (!Array.isArray(list) || list.length < 2) return (list || []).join(', ');
+    var dirs = list.map(function (p) { var i = String(p).lastIndexOf('/'); return i >= 0 ? String(p).slice(0, i + 1) : ''; });
+    var same = dirs.every(function (d) { return d === dirs[0]; });
+    if (!same || !dirs[0]) return list.join(', ');
+    return dirs[0] + '{' + list.map(function (p) { return String(p).slice(dirs[0].length); }).join(', ') + '}';
+  }
+
   function renderAssurance() {
     var R = D.assurance || { status: 'PENDING' };
     var pending = R.status === 'PENDING';
@@ -1312,7 +1322,7 @@
 
     var rs = $('r-src');
     fill(rs, [
-      src(['Risks, evidence and tickets: ', V((R.source_files || []).join(', ') || 'not connected'), ' ', tag(R.status)]),
+      src(['Risks, evidence and tickets: ', V(joinPaths(R.source_files || []) || 'not connected'), ' ', tag(R.status)]),
       CT.source_file ? src(['Controls: ', V(CT.source_file), ' ', tag(CT.status)]) : null
     ]);
   }
@@ -1539,6 +1549,168 @@
         ])
       ])
     ]);
+  }
+
+  /* ---------- screen 7: Models. One row per model, sorted by tag, no best highlight ---------- */
+
+  function textOf(v) { return isField(v) ? String(v.text) : (typeof v === 'string' ? v : ''); }
+
+  function rowTag(row) { return fieldOf(row, ['tag', 'model', 'name']); }
+
+  /* tool support as three states: yes, no (every run errored), unchecked. Anything else reads as unchecked. */
+  function toolsState(row) {
+    var raw = pickKey(row, ['tools', 'tool_calls', 'tool_support']);
+    var t = raw && typeof raw === 'object' && !isField(raw) ? pickKey(raw, ['state', 'status', 'text']) : raw;
+    var text = typeof t === 'boolean' ? (t ? 'yes' : 'no') : textOf(t);
+    text = String(text || '').trim().toLowerCase();
+    if (/^(yes|true|ok|supported)/.test(text)) return 'yes';
+    if (/^(no\b|false|none|unsupported)/.test(text) || /every run errored/.test(text)) return 'no';
+    return 'unchecked';
+  }
+
+  function toolsStatus(row) {
+    var raw = pickKey(row, ['tools', 'tool_calls', 'tool_support']);
+    return isField(raw) ? raw.status : 'PENDING';
+  }
+
+  /* a metric {measured, x_of_n, rate, ci}: the counts first, then the rate, then the range */
+  function metricNodes(m) {
+    if (!m) return [tag('PENDING')];
+    if (isField(m)) return withTag(m);
+    if (typeof m !== 'object') return [tag('PENDING')];
+    if (m.measured === false) return [F(asField(m.x_of_n) || null)];
+    var out = [F(asField(m.x_of_n) || null)];
+    if (m.rate) out.push(', ', F(asField(m.rate)));
+    if (m.ci) out.push(el('span', { class: 'dc-line' }, [copy('models.range') + ' ', F(asField(m.ci))]));
+    return out;
+  }
+
+  function verdictNodes(row) {
+    var raw = pickKey(row, ['verdicts', 'gates']);
+    var items = [];
+    if (Array.isArray(raw)) {
+      raw.forEach(function (v) {
+        var c = fieldOf(v, ['cand', 'id', 'candidate']);
+        var vv = fieldOf(v, ['verdict']);
+        if (c || vv) items.push([c ? V(c.text, 'm-cand', c.prov || '') : null, ' ', vv ? F(vv) : tag('PENDING')]);
+      });
+    } else if (raw && typeof raw === 'object') {
+      Object.keys(raw).forEach(function (k) { items.push([V(k, 'm-cand'), ' ', raw[k] ? F(asField(raw[k])) : tag('PENDING')]); });
+    }
+    if (!items.length) return [tag('PENDING')];
+    return items.map(function (it) { return el('span', { class: 'dc-line m-v' }, it); });
+  }
+
+  /* the first candidate's id as data names it, for the column title; a plain word when data has none */
+  function baselineName(rows) {
+    for (var i = 0; i < rows.length; i++) {
+      var raw = pickKey(rows[i], ['verdicts', 'gates']);
+      if (Array.isArray(raw) && raw.length) {
+        var c = fieldOf(raw[0], ['cand', 'id', 'candidate']);
+        if (c) return c.text;
+      }
+    }
+    var g = D.governance && Array.isArray(D.governance.candidates) ? D.governance.candidates : [];
+    if (g.length) {
+      var f = fieldOf(g[0], ['id', 'candidate', 'candidate_id']);
+      if (f) return f.text;
+    }
+    return copy('models.cand_fallback');
+  }
+
+  function headlineTag() {
+    var M = D.models || {};
+    var h = M.headline_tag !== undefined ? M.headline_tag : M.headline;
+    var t = textOf(asField(h));
+    if (!t) {
+      var f = firstNumber(['headline.model']);
+      t = f ? f.text : '';
+    }
+    return t;
+  }
+
+  /* the last folder name of a path, for a narrow column; the whole path stays in the title */
+  function baseName(p) {
+    var t = String(p || '').replace(/[\\/]+$/, '');
+    var i = Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\'));
+    return i >= 0 ? t.slice(i + 1) : t;
+  }
+
+  /* a column title; the candidate id from data stays in one piece (RC-001 never breaks at its hyphen) */
+  function columnHead(col, baseline) {
+    var raw = copy('models.columns.' + col);
+    var at = raw.indexOf('{cand}');
+    if (at < 0) return raw;
+    return [raw.slice(0, at), V(baseline, 'nowrap'), raw.slice(at + 6)];
+  }
+
+  function modelRow(row, headline, baseline) {
+    var tf = rowTag(row);
+    var st = toolsState(row);
+    var noTools = st === 'no';
+    var digest = fieldOf(row, ['digest12', 'digest']);
+    var asr = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['asr', 'attack', 'attack_success']));
+    /* a model whose tool calls were never checked must not read as safe because its rate is low */
+    if (st === 'unchecked') asr.push(el('span', { class: 'dc-line m-caution' }, copy('models.unchecked_note')));
+    var benign = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['benign', 'normal']));
+    var mode = fieldOf(row, ['mode', 'mode_tag']);
+    var folder = fieldOf(row, ['folder', 'source', 'dir', 'path']);
+    var isHead = !!headline && !!tf && tf.text === headline;
+    return el('tr', { 'data-tools': st, 'data-headline': isHead ? 'true' : null }, [
+      el('td', { class: 'm-model' }, [
+        tf ? F(tf, 'm-tag') : tag('PENDING'),
+        digest ? el('span', { class: 'm-digest' }, [copy('models.digest_label') + ' ', F(digest)]) : null,
+        isHead ? el('span', { class: 'headline-mark' }, copy('models.headline')) : null
+      ]),
+      el('td', null, [el('span', { class: 'm-tools', 'data-state': st }, copy('models.tools.' + st)), ' ', tag(toolsStatus(row))]),
+      el('td', null, asr),
+      el('td', null, benign),
+      el('td', null, errorsNodes(row)),
+      el('td', null, verdictNodes(row)),
+      el('td', null, [mode ? tag(mode.status, mode.text) : tag('PENDING'), folder ? el('span', { class: 'dc-line m-folder', title: folder.text }, F({ text: baseName(folder.text), status: folder.status, prov: folder.prov })) : null])
+    ]);
+  }
+
+  function errorsNodes(row) {
+    var f = fieldOf(row, ['errors', 'error_runs']);
+    return f ? withTag(f) : [tag('PENDING')];
+  }
+
+  function renderModels() {
+    var t = $('m-table'), note = $('m-note'), sr = $('m-src');
+    if (!t) return;
+    var M = D.models && typeof D.models === 'object' ? D.models : null;
+    var rows = M && Array.isArray(M.rows) ? M.rows.slice() : [];
+    if (!rows.length) {
+      setPanelStatus(t, 'PENDING');
+      fill(t, [pendingBlock(copy('models.empty'), M && M.reason ? M.reason : null)]);
+      fill(note, []);
+      fill(sr, []);
+      return;
+    }
+    rows.sort(function (a, b) {
+      var x = textOf(rowTag(a)), y = textOf(rowTag(b));
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    var headline = headlineTag();
+    var baseline = baselineName(rows);
+    var cols = ['tag', 'tools', 'asr', 'benign', 'errors', 'verdicts', 'source'];
+    setPanelStatus(t, M.status && M.status !== 'REAL' ? M.status : null);
+    t.classList.remove('is-pending');
+    fill(t, [
+      el('table', { class: 'grid models' }, [
+        el('colgroup', null, cols.map(function (c) { return el('col', { class: 'm-col-' + c }); })),
+        el('thead', null, el('tr', null, cols.map(function (c) { return el('th', null, columnHead(c, baseline)); }))),
+        el('tbody', null, rows.map(function (r) { return modelRow(r, headline, baseline); }))
+      ])
+    ]);
+    fill(note, [
+      el('p', { class: 'n-note' }, headline
+        ? [copy('models.headline') + ': ', V(headline), '. ', copy('models.note')]
+        : [copy('models.no_headline') + ' ', copy('models.note')])
+    ]);
+    var files = Array.isArray(M.source_files) ? M.source_files : (M.source_file ? [M.source_file] : []);
+    fill(sr, files.length || M.status ? [src(['Models: ', V(files.join(', ') || 'no file'), ' ', tag(M.status || 'PENDING')])] : []);
   }
 
   /* ---------- screens, presenter, keys ---------- */
@@ -1781,6 +1953,7 @@
     guard('audit', renderAudit);
     guard('assurance', renderAssurance);
     guard('decision', renderDecision);
+    guard('models', renderModels);
   }
 
   function boot() {
