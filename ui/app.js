@@ -1403,7 +1403,7 @@
     var raw = g && Array.isArray(g.candidates) ? g.candidates : [];
     var out = raw.map(function (c) {
       var verdict = fieldOf(c, ['verdict', 'gate_verdict']) || (c && c.gate ? fieldOf(c.gate, ['verdict']) : null);
-      return { id: fieldOf(c, ['id', 'candidate', 'candidate_id']), verdict: verdict, raw: c };
+      return { id: pickKey(c, ['id', 'candidate', 'candidate_id']), verdict: verdict, raw: c };
     });
     if (!out.length) {
       var gate = (D.console && D.console.gate) || null;
@@ -1430,7 +1430,7 @@
       if (typeof d.scripted === 'boolean') scripted = d.scripted;
     }
     if (!who && !what && c.id) {
-      var e = auditDecisionFor(c.id.text);
+      var e = auditDecisionFor(textOf(c.id));
       if (e) {
         who = e.who || null; what = e.what || null; reason = e.reason || null;
         if (typeof e.scripted === 'boolean') scripted = e.scripted;
@@ -1448,7 +1448,7 @@
     var vf = c.verdict;
     var vStatus = vf ? word(vf.status) : 'PENDING';
     var kids = [
-      el('p', { class: 'dc-id', title: copy('decision.candidate_label') }, c.id ? F(c.id) : tag('PENDING')),
+      el('p', { class: 'dc-id', title: copy('decision.candidate_label') }, c.id ? (isField(c.id) ? F(c.id) : V(String(c.id))) : tag('PENDING')),
       el('p', { class: 'dc-label' }, copy('decision.verdict_label')),
       el('div', { class: 'verdict compact', 'data-verdict': vf ? vf.text : '', 'data-status': vStatus }, [
         el('p', { class: 'verdict-word' }, vf ? F(vf, 'num-mid') : tag('PENDING')),
@@ -1584,9 +1584,11 @@
     if (isField(m)) return withTag(m);
     if (typeof m !== 'object') return [tag('PENDING')];
     if (m.measured === false) return [F(asField(m.x_of_n) || null)];
+    /* lane D writes {asr, x_of_n, range}; the older shape is {rate, x_of_n, ci} */
+    var rate = m.rate || m.asr, ci = m.ci || m.range;
     var out = [F(asField(m.x_of_n) || null)];
-    if (m.rate) out.push(', ', F(asField(m.rate)));
-    if (m.ci) out.push(el('span', { class: 'dc-line' }, [copy('models.range') + ' ', F(asField(m.ci))]));
+    if (rate) out.push(', ', F(asField(rate)));
+    if (ci) out.push(el('span', { class: 'dc-line' }, [copy('models.range') + ' ', F(asField(ci))]));
     return out;
   }
 
@@ -1649,22 +1651,34 @@
     return [raw.slice(0, at), V(baseline, 'nowrap'), raw.slice(at + 6)];
   }
 
+  /* the source folder: lane D writes it as a plain path string, an older shape as a Field */
+  function folderNode(folder) {
+    var text = textOf(folder);
+    if (!text) return null;
+    var shown = baseName(text);
+    if (isField(folder)) return el('span', { class: 'dc-line m-folder', title: text }, F({ text: shown, status: folder.status, prov: folder.prov }));
+    return el('span', { class: 'dc-line m-folder', title: text }, V(shown));
+  }
+
   function modelRow(row, headline, baseline) {
     var tf = rowTag(row);
     var st = toolsState(row);
     var noTools = st === 'no';
     var digest = fieldOf(row, ['digest12', 'digest']);
-    var asr = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['asr', 'attack', 'attack_success']));
-    /* a model whose tool calls were never checked must not read as safe because its rate is low */
-    if (st === 'unchecked') asr.push(el('span', { class: 'dc-line m-caution' }, copy('models.unchecked_note')));
+    var asr = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['asr', 'rc001', 'attack', 'attack_success']));
+    /* The export's own note comes first (it says when a rate means nothing, or comes from a smoke run).
+       A model whose tool calls were never checked must not read as safe because its rate is low. */
+    var asrNote = typeof row.asr_note === 'string' && row.asr_note ? row.asr_note : '';
+    if (asrNote && !noTools) asr.push(el('span', { class: 'dc-line m-caution' }, V(asrNote)));
+    else if (st === 'unchecked') asr.push(el('span', { class: 'dc-line m-caution' }, copy('models.unchecked_note')));
     var benign = noTools ? [copy('models.not_measured')] : metricNodes(pickKey(row, ['benign', 'normal']));
     var mode = fieldOf(row, ['mode', 'mode_tag']);
-    var folder = fieldOf(row, ['folder', 'source', 'dir', 'path']);
-    var isHead = !!headline && !!tf && tf.text === headline;
+    var folder = pickKey(row, ['folder', 'source', 'dir', 'path']);
+    var isHead = row.headline === true || (!!headline && !!tf && tf.text === headline);
     return el('tr', { 'data-tools': st, 'data-headline': isHead ? 'true' : null }, [
       el('td', { class: 'm-model' }, [
         tf ? F(tf, 'm-tag') : tag('PENDING'),
-        digest ? el('span', { class: 'm-digest' }, [copy('models.digest_label') + ' ', F(digest)]) : null,
+        digest ? el('span', { class: 'm-digest', title: copy('models.digest_label') }, F(digest)) : null,
         isHead ? el('span', { class: 'headline-mark' }, copy('models.headline')) : null
       ]),
       el('td', null, [el('span', { class: 'm-tools', 'data-state': st }, copy('models.tools.' + st)), ' ', tag(toolsStatus(row))]),
@@ -1672,7 +1686,7 @@
       el('td', null, benign),
       el('td', null, errorsNodes(row)),
       el('td', null, verdictNodes(row)),
-      el('td', null, [mode ? tag(mode.status, mode.text) : tag('PENDING'), folder ? el('span', { class: 'dc-line m-folder', title: folder.text }, F({ text: baseName(folder.text), status: folder.status, prov: folder.prov })) : null])
+      el('td', null, [mode ? tag(mode.status, mode.text) : tag('PENDING'), folderNode(folder)])
     ]);
   }
 
@@ -1688,7 +1702,7 @@
     var rows = M && Array.isArray(M.rows) ? M.rows.slice() : [];
     if (!rows.length) {
       setPanelStatus(t, 'PENDING');
-      fill(t, [pendingBlock(copy('models.empty'), M && M.reason ? M.reason : null)]);
+      fill(t, [pendingBlock(copy('models.empty'), M && (M.reason || M.note) ? (M.reason || M.note) : null)]);
       fill(note, []);
       fill(sr, []);
       return;
@@ -1710,9 +1724,9 @@
       ])
     ]);
     fill(note, [
-      el('p', { class: 'n-note' }, headline
-        ? [copy('models.headline') + ': ', V(headline), '. ', copy('models.note')]
-        : [copy('models.no_headline') + ' ', copy('models.note')])
+      /* the headline row carries its own mark in the table, so the note repeats it only when none is chosen */
+      el('p', { class: 'n-note' }, headline ? copy('models.note') : [copy('models.no_headline') + ' ', copy('models.note')]),
+      M.note ? el('p', { class: 'n-note' }, V(M.note)) : null
     ]);
     var files = Array.isArray(M.source_files) ? M.source_files : (M.source_file ? [M.source_file] : []);
     fill(sr, files.length || M.status ? [src(['Models: ', V(files.join(', ') || 'no file'), ' ', tag(M.status || 'PENDING')])] : []);
