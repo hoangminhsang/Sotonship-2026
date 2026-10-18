@@ -67,7 +67,7 @@ Rules that apply to every row:
   * "." in the table stands for the middle dot (U+00B7) that separates the parts of a fact.
 
 ui-live/1 FIELDS (where the spec leaves a choice; keys are exactly the A3 list, plus "schema",
-done.dur and done.text)
+done.dur and done.text, and the stream panel's "feed" and "feed_pin")
   nodes[id]  state idle|running|done|error|skipped; status REAL|SAMPLE (the run's status, "" while waiting);
              tag: sl.gate PASS|FAIL, sl.review "scripted by the CLI" when the event says so, sl.log intact|broken
   edges      16 keys "a>b", idle|done; "ll.summary>fix.ticket" is lit only when the run ends
@@ -80,6 +80,21 @@ done.dur and done.text)
              export.status ok|failed|not_run|running|skipped; text is the command to run when it did not run
   batch      null, or {"models": [{slug, tag, state, tools, text}]} sorted by tag
   events_tail up to 6 short strings; warnings: strings
+  feed       what passed through the pipeline, oldest first, at most 40 items (the oldest are dropped); it restarts
+             with every run (new uid). An item appears only when its event reaches the screen (after the pacer).
+             Every item has seq (1, 2, 3 ... strictly increasing within the run) and type:
+               run          i, n, cand, test_id, rep, kind, technique, goal, violated, classes, calls, blocked,
+                            tool_calls (<= 300 chars), duration_s, and from the corpus record with that id:
+                            user_task, doc (inject_target.doc), hidden (inject_target.payload or poison, <= 240
+                            chars); the three are null when the record is missing
+               fingerprint  identity12, changed_vs_prev
+               gate         cand, verdict, reason (the first reason, <= 160 chars)
+               audit        entry, event, verdict, decision, scripted, hash12, by
+               chain        ok, entries, head12
+               tickets      rows (a count), first (title or id of the first row, <= 120 chars, or null)
+  feed_pin   null, or a copy of the one "run" item to feature: the first run with test_id ATK-0002 (the pitch
+             script's example); until it arrives, the first attack run with violated true, else the first attack
+             run. ATK-0002 replaces a fallback pin and, once chosen, nothing replaces it.
 
 LABELS AND PACING
   LIVE only while a LIVE-mode log is still growing (the child is alive, or the last event is under 60 s old);
@@ -148,6 +163,9 @@ REPLACE_TRIES = 10         # os.replace attempts on Windows when the page holds 
 REPLACE_WAIT_S = 0.05
 TAIL_LINES = 6
 MAX_TILES = 600
+FEED_MAX = 40              # items kept in the feed (the oldest are dropped)
+PIN_TEST_ID = "ATK-0002"   # the pitch script's example run, featured when it arrives
+CORPUS_FILES = ("corpus/test.jsonl", "corpus/dev.jsonl")
 
 
 # --------------------------------------------------------------------------- #
@@ -519,6 +537,48 @@ def _dicts(value) -> List[dict]:
     return [x for x in _list(value) if isinstance(x, dict)]
 
 
+_CORPUS: Optional[Dict[str, dict]] = None
+
+
+def load_corpus(root=None, files=CORPUS_FILES) -> Dict[str, dict]:
+    """The corpus records by id (the first file wins). Read once, on first use; never raises."""
+    global _CORPUS
+    if _CORPUS is not None:
+        return _CORPUS
+    found: Dict[str, dict] = {}
+    base = Path(root) if root is not None else REPO_ROOT
+    for name in files:
+        try:
+            with open(base / name, "r", encoding="utf-8", errors="replace") as handle:
+                for text in handle:
+                    rec, _why = parse_line(text, key="id")
+                    if rec is not None:
+                        found.setdefault(rec["id"], rec)
+        except OSError:
+            continue
+    _CORPUS = found
+    return found
+
+
+def _corpus_fields(test_id) -> dict:
+    """user_task, doc and hidden for a test id; all three are None when the record is missing."""
+    out: dict = {"user_task": None, "doc": None, "hidden": None}
+    rec = load_corpus().get(test_id) if isinstance(test_id, str) else None
+    if not isinstance(rec, dict):
+        return out
+    task = rec.get("user_task")
+    out["user_task"] = clip(task, 300) if isinstance(task, str) and task.strip() else None
+    target = rec.get("inject_target")
+    target = target if isinstance(target, dict) else {}
+    doc = target.get("doc")
+    out["doc"] = clip(doc, 120) if isinstance(doc, str) and doc.strip() else None
+    hidden = target.get("payload")
+    if not (isinstance(hidden, str) and hidden.strip()):
+        hidden = rec.get("poison")
+    out["hidden"] = clip(hidden, 240) if isinstance(hidden, str) and hidden.strip() else None
+    return out
+
+
 class LiveModel:
     """The state of the screen, built one progress event at a time.
 
@@ -558,8 +618,18 @@ class LiveModel:
         self._log_was_done = False
         self._deferred: List[tuple] = []
         self._beat = False
+        self._feed_reset()
         self._tiles_reset(None, 0)
         self._acc_reset()
+
+    def _feed_reset(self) -> None:
+        self.feed: deque = deque(maxlen=FEED_MAX)
+        self.feed_seq = 0
+        self.feed_pin: Optional[dict] = None
+        self._pin_first: Optional[dict] = None       # the first attack run
+        self._pin_violated: Optional[dict] = None    # the first attack run with violated true
+        self._pin_final = False                      # the ATK-0002 run was chosen: nothing replaces the pin now
+        self._feed_uid: Optional[str] = None
 
     def _acc_reset(self) -> None:
         """Counters for one pass (they restart for every candidate)."""
@@ -586,6 +656,10 @@ class LiveModel:
         uid = ev.get("uid")
         if self.uid is None and isinstance(uid, str) and uid:
             self.uid = uid
+        if isinstance(uid, str) and uid:
+            if self._feed_uid is not None and uid != self._feed_uid:
+                self._feed_reset()                  # a new run: the feed starts again
+            self._feed_uid = uid
         try:
             self._run_deferred()
         except Exception:  # noqa: BLE001 - a bad line must never stop the bridge
@@ -605,7 +679,77 @@ class LiveModel:
             text = None
         if text:
             self.tail.append(text)
+        if handler is not None:
+            try:
+                self._feed_add(ev)
+            except Exception:  # noqa: BLE001
+                self.problems += 1
         return self._beat
+
+    # -- the feed: what passes through the pipeline, for the stream panel -- #
+    def _feed_add(self, ev: dict) -> None:
+        kind = ev.get("type")
+        item: Optional[dict] = None
+        if kind == "run_done":
+            test_id = str_or_none(ev.get("test_id"))
+            classes = [clip(c, 40) for c in _list(ev.get("classes")) if isinstance(c, str) and c]
+            tool_calls = ev.get("tool_calls")
+            item = {
+                "type": "run", "i": to_int(ev.get("i")), "n": to_int(ev.get("n")),
+                "cand": _cand_of(ev) or self.cand, "test_id": test_id, "rep": to_int(ev.get("rep")),
+                "kind": str_or_none(ev.get("kind")), "technique": str_or_none(ev.get("technique")),
+                "goal": str_or_none(ev.get("goal")),
+                "violated": ev.get("violated") if isinstance(ev.get("violated"), bool) else None,
+                "classes": classes, "calls": to_int(ev.get("calls")), "blocked": to_int(ev.get("blocked")),
+                "tool_calls": tool_calls[:300] if isinstance(tool_calls, str) else None,
+                "duration_s": to_float(ev.get("duration_s")),
+            }
+            item.update(_corpus_fields(test_id))
+        elif kind == "fingerprint":
+            changed = ev.get("changed_vs_prev")
+            item = {"type": "fingerprint", "identity12": str_or_none(ev.get("identity12")),
+                    "changed_vs_prev": changed if isinstance(changed, bool) else None}
+        elif kind == "gate":
+            first = next((r for r in _list(ev.get("reasons")) if isinstance(r, str) and r.strip()), None)
+            item = {"type": "gate", "cand": _cand_of(ev) or self.cand,
+                    "verdict": (str_or_none(ev.get("verdict")) or "").upper() or None,
+                    "reason": clip(first, 160) if first else None}
+        elif kind == "audit":
+            scripted = ev.get("scripted")
+            item = {"type": "audit", "entry": to_int(ev.get("entry")), "event": str_or_none(ev.get("event")),
+                    "verdict": str_or_none(ev.get("verdict")), "decision": str_or_none(ev.get("decision")),
+                    "scripted": scripted if isinstance(scripted, bool) else None,
+                    "hash12": str_or_none(ev.get("hash12")), "by": str_or_none(ev.get("by"))}
+        elif kind == "chain":
+            item = {"type": "chain", "ok": ev.get("ok") is True, "entries": to_int(ev.get("entries")),
+                    "head12": str_or_none(ev.get("head12"))}
+        elif kind == "tickets":
+            rows = _dicts(ev.get("rows"))
+            first = (str_or_none(rows[0].get("title")) or str_or_none(rows[0].get("id"))) if rows else None
+            item = {"type": "tickets", "rows": len(rows), "first": clip(first, 120) if first else None}
+        if item is None:
+            return
+        self.feed_seq += 1
+        item = {"seq": self.feed_seq, **item}
+        self.feed.append(item)
+        if kind == "run_done":
+            self._pin_consider(item)
+
+    def _pin_consider(self, item: dict) -> None:
+        """ATK-0002 beats a fallback; the fallback is the first attack run with violated true, else the first one."""
+        if self._pin_final:
+            return
+        if item["test_id"] == PIN_TEST_ID:
+            self.feed_pin = dict(item)
+            self._pin_final = True
+            return
+        if item["kind"] != "attack":
+            return
+        if self._pin_first is None:
+            self._pin_first = item
+        if self._pin_violated is None and item["violated"] is True:
+            self._pin_violated = item
+        self.feed_pin = dict(self._pin_violated or self._pin_first)
 
     def apply_all(self, events) -> int:
         """Apply many events at once; returns how many were beats."""
@@ -1253,6 +1397,8 @@ def build_live(model: LiveModel, view: View) -> dict:
         "warnings": warnings,
         "done": make_done(model, view),
         "batch": view.batch,
+        "feed": [dict(item) for item in model.feed],
+        "feed_pin": dict(model.feed_pin) if model.feed_pin else None,
     }
 
 
@@ -2575,6 +2721,9 @@ def execute_run(root, py: str, key: str, model: Optional[str], parallel: int, no
 # --------------------------------------------------------------------------- #
 API_KINDS = ("demo", "live-short", "live-full", "models")      # the page's runs; live-smoke stays command-line only
 API_PARALLEL = (1, 2)
+# Beat 2 of the pitch is spoken while the page's demo runs (about 17 to 25 s). At scale 1 the demo display takes
+# about 100 s, so the page's demo holds are scaled down (the command line's `--run demo` keeps the full pacing).
+PAGE_DEMO_SCALE = 0.16
 SHUTDOWN_WAIT_S = STOP_GRACE_S + STOP_TERM_S + 10.0
 
 
@@ -2694,6 +2843,10 @@ class RunController:
         self._finish(kind, model, outcome, error)
 
     # ---- the worker ----
+    def scale_for(self, kind: str) -> float:
+        """The pace scale of a page-started run: the demo is shortened so the whole display takes about 21 s."""
+        return self.scale * PAGE_DEMO_SCALE if kind == "demo" else self.scale
+
     def _set_child(self, child: Child) -> None:
         self._child = child
 
@@ -2702,7 +2855,8 @@ class RunController:
         error: Optional[str] = None
         try:
             _say(f"bridge: run started from the page: {kind}" + (f" (model {model})" if model else ""))
-            outcome = execute_run(self.root, py, kind, model, parallel, self.no_export, self.data_dir, self.scale,
+            outcome = execute_run(self.root, py, kind, model, parallel, self.no_export, self.data_dir,
+                                  self.scale_for(kind),
                                   stop=self._stop, fresh_screen=True, on_child=self._set_child,
                                   stop_hint="The Stop button on the page stops the run.")
         except BridgeError as exc:
