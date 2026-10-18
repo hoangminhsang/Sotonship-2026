@@ -220,6 +220,8 @@ window.COPY = {
     "badge_real": "Real model run",
     "badge_scripted": "Scripted demo",
     "badge_none": "No run yet",
+    "badge_replay": "Replay of a real run",
+    "scripted_badge": "Scripted demo",
     "tabs": { "live": "Live run", "results": "Results", "proof": "Proof" },
     "verdict": { "PASS": "Ready to ship", "FAIL": "Blocked" },
     "chip": { "PASS": "Ready", "FAIL": "Blocked" },
@@ -257,7 +259,32 @@ window.COPY = {
       "broke": "Rule broken",
       "blocked": "A defence stopped the agent",
       "held": "No rule broken",
-      "caught": "Redline caught it."
+      "caught": "Redline caught it.",
+      "from_rehearsal": "From the rehearsal run",
+      "from_earlier": "From an earlier run"
+    },
+    "run": {
+      "kinds": {
+        "demo": "Scripted demo (no model)",
+        "live-short": "Quick live check",
+        "live-full": "Full run",
+        "models": "All models"
+      },
+      "model_label": "Model",
+      "run": "Run",
+      "stop": "Stop",
+      "file_line": "To run from here, start the local runner with python ui/bridge.py --serve and open the address it prints.",
+      "confirm_long": "This run takes a long time on this machine. Start it anyway?",
+      "idle": "Ready. Choose a run and press Run.",
+      "running": "Running",
+      "runs_done": "runs done",
+      "finished": "Finished. The results are updated.",
+      "finished_no_export": "Finished. The results are not updated yet.",
+      "failed": "The run failed.",
+      "starting": "Starting",
+      "stopping": "Stopping",
+      "could_not": "The run could not start.",
+      "no_model": "Choose a model first."
     },
     "chips_title": "Release candidates",
     "proof": {

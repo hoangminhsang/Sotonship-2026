@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="connect-src 'none'; font-src data:; img-src data:; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="connect-src 'self'; font-src data:; img-src data:; object-src 'none'">
 <title>Redline</title>
 <link rel="stylesheet" href="fonts.css">
 <style>
@@ -32,11 +32,11 @@
   #cover-hint { font-size:22px; color:#666; position:absolute; left:120px; bottom:56px; }
 
   /* ---------- frame ---------- */
-  main { max-width:1840px; margin:0 auto; padding:36px 56px 48px; }
+  main { max-width:1840px; margin:0 auto; padding:24px 56px 32px; }
   header { display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap; }
   .brand { font:400 30px/1 var(--serif); letter-spacing:.01em; }
   .badge { font-size:20px; color:var(--soft); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:8px 18px; }
-  nav { display:flex; gap:8px; margin:20px 0 22px; }
+  nav { display:flex; gap:8px; margin:14px 0 16px; }
   nav button { font-size:22px; font-weight:500; color:var(--soft); padding:10px 26px; border-radius:999px; border:1px solid transparent; }
   nav button:hover { color:var(--ink); }
   nav button[aria-selected="true"] { background:var(--card); color:var(--ink); border-color:var(--line); }
@@ -45,7 +45,7 @@
   h2.title { font-size:26px; font-weight:500; margin:0 0 18px; }
 
   /* ---------- live run: the canvas ---------- */
-  .canvas-wrap { background:var(--card); border:1px solid var(--line); border-radius:24px; padding:20px 28px 16px; overflow:hidden;
+  .canvas-wrap { background:var(--card); border:1px solid var(--line); border-radius:24px; padding:14px 28px 4px; overflow:hidden;
                  background-image:radial-gradient(#e9e9e4 1.2px, transparent 1.2px); background-size:26px 26px; }
   #fit { width:100%; }
   #board { position:relative; width:1700px; height:424px; transform-origin:0 0; }
@@ -68,9 +68,9 @@
   .node.done .tick { display:flex; }
   .tick svg { width:14px; height:14px; stroke:var(--good); stroke-width:3.2; opacity:1; }
 
-  .lower { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(0, 1fr); gap:24px; margin-top:24px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:26px 30px; }
-  .card h3 { font-size:22px; font-weight:500; color:var(--soft); margin-bottom:16px; }
+  .lower { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(0, 1fr); gap:24px; margin-top:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:22px 30px; }
+  .card h3 { font-size:22px; font-weight:500; color:var(--soft); margin-bottom:14px; }
   .ex { display:grid; grid-template-columns:260px minmax(0, 1fr); gap:10px 22px; align-items:baseline; font-size:22px; }
   .ex dt { color:var(--soft); } .ex dd { margin:0; overflow-wrap:anywhere; }
   .ex q { quotes:"\201C" "\201D"; }
@@ -100,6 +100,21 @@
 
   @media (max-width: 1100px) { .lower, .cards, .grid2 { grid-template-columns:1fr; } main { padding:24px 20px 40px; } }
   @media (prefers-reduced-motion: reduce) { .node { transition:none; } }
+
+  /* ---------- run bar and small labels ---------- */
+  .runbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:20px; padding:10px 16px; margin-bottom:16px; }
+  .runbar select { font:inherit; font-size:21px; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:8px 14px; }
+  .btn { font-size:21px; font-weight:500; border:1px solid var(--line); border-radius:999px; padding:8px 24px; background:var(--card); }
+  .btn.primary { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn:focus-visible, .runbar select:focus-visible { outline:2px solid var(--run); outline-offset:2px; }
+  .runtext { color:var(--soft); font-size:21px; margin-left:8px; }
+  .runtext.bad { color:var(--bad); }
+  .fileline { color:var(--soft); font-size:20px; margin:0 0 16px; }
+  .canvas-wrap { position:relative; }
+  .mini { position:absolute; top:16px; right:22px; z-index:2; font-size:18px; color:var(--soft); background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:4px 14px; }
+  .src { color:var(--soft); font-size:20px; margin:-8px 0 14px; }
+  .src:empty { display:none; }
 </style>
 </head>
 <body>
@@ -121,9 +136,17 @@
   <nav id="tabs" role="tablist"></nav>
 
   <section class="view" id="view-live">
-    <div class="canvas-wrap"><div id="fit"><div id="board"><svg id="wires" viewBox="0 0 1700 424"></svg></div></div></div>
+    <p class="fileline" id="fileline" hidden></p>
+    <div class="runbar" id="runbar" hidden>
+      <select id="run-kind" aria-label="Run"></select>
+      <select id="run-model" aria-label="Model" hidden></select>
+      <button type="button" class="btn primary" id="run-go"></button>
+      <button type="button" class="btn" id="run-stop"></button>
+      <span class="runtext" id="run-text" role="status"></span>
+    </div>
+    <div class="canvas-wrap"><span class="mini" id="live-badge" hidden></span><div id="fit"><div id="board"><svg id="wires" viewBox="0 0 1700 424"></svg></div></div></div>
     <div class="lower">
-      <div class="card" id="happened"><h3 id="happened-title"></h3><dl class="ex" id="ex"></dl></div>
+      <div class="card" id="happened"><h3 id="happened-title"></h3><p class="src" id="ex-src"></p><dl class="ex" id="ex"></dl></div>
       <div class="card"><h3 id="chips-title"></h3><div class="chips" id="chips"></div></div>
     </div>
   </section>
@@ -150,28 +173,50 @@
 <script src="data/live.js"></script>
 <script>
 (function () {
-  var D = window.DEMO || {}, CP = window.COPY || {}, C = CP.page || {}, P = CP.product || {};
-  var N = D.numbers || {}, G = D.governance || {};
+  var CP = window.COPY || {}, C = CP.page || {}, P = CP.product || {}, H = C.happened || {}, PR = C.proof || {}, RUN = C.run || {};
+  var D, N, G, cands, batches;
   var SVGNS = ['ht', 'tp:', '//www.w3.org/2000/svg'].join('');  /* built so the page holds no network URL */
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function sv(tag, attrs) { var e = document.createElementNS(SVGNS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
-  function num(k) { var v = N[k]; return v && v.status !== 'PENDING' ? v.text : null; }
   function key(id) { return id.toLowerCase().replace(/[^a-z0-9]/g, ''); }
   function txt(f) { return f && f.text != null ? String(f.text) : ''; }
   function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
-  var cands = G.candidates || [];
-  var batches = D.batches || [];
-  if (!Array.isArray(batches)) batches = Object.keys(batches).map(function (k) { return batches[k]; });
-  function batchOf(c) { return batches.filter(function (x) { return x.id === c.evidence_batch; })[0]; }
-  function defCodes(c) { var b = batchOf(c), t = b && b.defences && b.defences.status !== 'PENDING' ? b.defences.text : ''; return t; }
-  function defWords(t) {
-    var parts = [], D2 = C.defences;
-    if (/D1/.test(t)) parts.push(D2.labels);
-    if (/D2/.test(t)) parts.push(D2.code);
-    if (/D3/.test(t)) parts.push(D2.human);
-    return parts.length ? parts.join(' + ') : (t ? D2.none : '');
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+
+  /* The page reads the exported data (DEMO). bind() is called again after a new export. */
+  function bind() {
+    D = window.DEMO || {}; N = D.numbers || {}; G = D.governance || {}; cands = G.candidates || [];
+    batches = D.batches || [];
+    if (!Array.isArray(batches)) batches = Object.keys(batches).map(function (k) { return batches[k]; });
   }
+  function num(k) { var v = N[k]; return v && v.status !== 'PENDING' ? v.text : null; }
+  function numReal(k) { var v = N[k]; return v && v.status === 'REAL' ? v.text : null; }
+  function batchOf(c) { return batches.filter(function (x) { return x.id === c.evidence_batch; })[0]; }
+  function defCodes(c) { var b = batchOf(c); return b && b.defences && b.defences.status !== 'PENDING' ? b.defences.text : ''; }
+  function defWords(t) {
+    var parts = [], W = C.defences;
+    if (/D1/.test(t)) parts.push(W.labels);
+    if (/D2/.test(t)) parts.push(W.code);
+    if (/D3/.test(t)) parts.push(W.human);
+    return parts.length ? parts.join(' + ') : (t ? W.none : '');
+  }
+  function dateOnly(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+    return m ? Number(m[3]) + ' ' + C.months[Number(m[2]) - 1] : '';
+  }
+  function when(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || '');
+    return m ? Number(m[3]) + ' ' + C.months[Number(m[2]) - 1] + ', ' + m[4] + ':' + m[5] : (iso || '');
+  }
+
+  /* ---------- the live feed (data/live.js, written by the bridge) ---------- */
+  function liveFeed() { return window.LIVE || null; }
+  function liveWord() { var L = liveFeed(); return (L && ((L.label && L.label.word) || L.mode)) || ''; }
+  function anyRunning() { var L = liveFeed(); return !!L && L.state === 'running'; }
+  /* The rail of LIVE may stand in for the exported verdicts only while a real run (LIVE, REPLAY or SAVED) is in
+     progress. A scripted feed never replaces what the real export says. */
+  function liveInProgress() { return anyRunning() && /^(LIVE|REPLAY|SAVED)$/.test(liveWord()); }
 
   /* ---------- cover ---------- */
   $('cover-name').textContent = P.name || 'Redline';
@@ -182,28 +227,18 @@
   $('cover-hint').textContent = (CP.cover || {}).hint || '';
   var coverUp = true;
   function hideCover() { if (!coverUp) return; coverUp = false; $('cover').hidden = true; }
-
-  /* ---------- header and honesty badge ---------- */
   $('brand').textContent = P.name || 'Redline';
-  (function () {
-    var badge = C.badge_none, mode = G.mode || '';
-    if (cands.length) {
-      var date = (cands[0].run_id || '').slice(0, 8);
-      date = date.length === 8 ? date.slice(0, 4) + '-' + date.slice(4, 6) + '-' + date.slice(6) : '';
-      badge = (mode === 'LIVE' || mode === 'SAVED' ? C.badge_real : C.badge_scripted);
-      if (mode === 'LIVE' || mode === 'SAVED') badge += [num('headline.model'), date].filter(Boolean).map(function (s) { return ' · ' + s; }).join('');
-    }
-    $('badge').textContent = badge;
-  })();
 
   /* ---------- tabs ---------- */
   var VIEWS = ['live', 'results', 'proof'];
-  VIEWS.forEach(function (v, i) {
+  VIEWS.forEach(function (v) {
     var b = el('button', null, (C.tabs || {})[v]); b.type = 'button'; b.setAttribute('role', 'tab'); b.id = 'tab-' + v;
     b.addEventListener('click', function () { show(v); });
     $('tabs').appendChild(b);
   });
+  var currentView = 'live';
   function show(v) {
+    currentView = v;
     VIEWS.forEach(function (n) {
       $('view-' + n).hidden = n !== v;
       $('tab-' + n).setAttribute('aria-selected', n === v ? 'true' : 'false');
@@ -212,8 +247,28 @@
     fit();
   }
 
+  /* ---------- the badge: one honest label ---------- */
+  function renderBadge() {
+    var badge = C.badge_none, L = liveFeed();
+    if (anyRunning()) {
+      /* while a run is in progress the badge shows that run's own label */
+      var w = liveWord();
+      badge = w === 'SCRIPTED' ? C.badge_scripted : w === 'REPLAY' ? C.badge_replay : C.badge_real;
+      if (L.model && w !== 'SCRIPTED') badge += ' · ' + L.model;
+    } else if (cands.length) {
+      var mode = G.mode || '', date = (cands[0].run_id || '').slice(0, 8);
+      date = date.length === 8 ? date.slice(0, 4) + '-' + date.slice(4, 6) + '-' + date.slice(6) : '';
+      badge = mode === 'LIVE' || mode === 'SAVED' ? C.badge_real : C.badge_scripted;
+      if (mode === 'LIVE' || mode === 'SAVED') badge += [num('headline.model'), date].filter(Boolean).map(function (s) { return ' · ' + s; }).join('');
+    }
+    $('badge').textContent = badge;
+    /* a scripted feed on the canvas is labelled on the Live run view itself */
+    var mini = $('live-badge'), scripted = !!L && liveWord() === 'SCRIPTED';
+    mini.hidden = !scripted; mini.textContent = scripted ? C.scripted_badge : '';
+  }
+
   /* ---------- live run: the canvas ---------- */
-  var W = 294, X = function (i) { return i * W; }, Y1 = 60, Y2 = 262, NW = 230, NH = 140;
+  var X = function (i) { return i * 294; }, Y1 = 60, Y2 = 262, NW = 230, NH = 140;
   var POS = {  /* column, row */
     'rt.attack': [0, 1], 'rt.record': [1, 1], 'rt.check': [2, 1], 'sl.gate': [3, 1], 'sl.review': [4, 1], 'sl.log': [5, 1],
     'll.risks': [5, 2], 'fix.ticket': [3, 2]
@@ -225,38 +280,35 @@
     box.style.left = p.x + 'px'; box.style.top = p.y + 'px';
     var svg = sv('svg', { viewBox: '0 0 120 90' }); svg.innerHTML = (window.GLYPHS || {})[s.id] || '';
     box.appendChild(svg); box.appendChild(el('div', 'lbl', s.label));
-    var tick = el('div', 'tick'), ts = sv('svg', { viewBox: '0 0 16 16' });
+    var tk = el('div', 'tick'), ts = sv('svg', { viewBox: '0 0 16 16' });
     ts.appendChild(sv('path', { d: 'M3 8.5 L6.5 12 L13 4.5', fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
-    tick.appendChild(ts); box.appendChild(tick);
+    tk.appendChild(ts); box.appendChild(tk);
     board.appendChild(box); nodeEls[s.id] = box;
   });
-  var G_ = C.groups || {};
-  function glabel(text, col0, cols, row) {
-    var g = el('div', 'glabel', text); g.style.left = X(col0) + 'px'; g.style.width = (cols * W - 64) + 'px';
-    g.style.top = (row === 1 ? 6 : Y2 - 58) + 'px'; board.appendChild(g);
+  var GL = C.groups || {};
+  function glabel(text, col0, cols) {
+    var g = el('div', 'glabel', text); g.style.left = X(col0) + 'px'; g.style.width = (cols * 294 - 64) + 'px'; board.appendChild(g);
   }
-  glabel(G_.red, 0, 3, 1); glabel(G_.gate, 3, 3, 1);
-  /* wires: id of the step they enter -> path */
+  glabel(GL.red, 0, 3); glabel(GL.gate, 3, 3);
   function R(id) { var p = pos(id); return [p.x + NW, p.y + NH / 2]; }
-  function L(id) { var p = pos(id); return [p.x, p.y + NH / 2]; }
+  function L_(id) { var p = pos(id); return [p.x, p.y + NH / 2]; }
   function B(id) { var p = pos(id); return [p.x + NW / 2, p.y + NH]; }
   function T(id) { var p = pos(id); return [p.x + NW / 2, p.y]; }
   function hcurve(a, b) { var d = (b[0] - a[0]) / 2; return 'M' + a[0] + ' ' + a[1] + ' C' + (a[0] + d) + ' ' + a[1] + ' ' + (b[0] - d) + ' ' + b[1] + ' ' + b[0] + ' ' + b[1]; }
   function addWire(to, d) { var p = sv('path', { d: d }); wires.appendChild(p); wireEls[to] = p; }
   [['rt.attack', 'rt.record'], ['rt.record', 'rt.check'], ['rt.check', 'sl.gate'], ['sl.gate', 'sl.review'], ['sl.review', 'sl.log']].forEach(function (e) {
-    addWire(e[1], hcurve(R(e[0]), L(e[1])));
+    addWire(e[1], hcurve(R(e[0]), L_(e[1])));
   });
   (function () {
     var a = B('sl.log'), b = T('ll.risks');
     addWire('ll.risks', 'M' + a[0] + ' ' + a[1] + ' C' + a[0] + ' ' + (a[1] + 40) + ' ' + b[0] + ' ' + (b[1] - 40) + ' ' + b[0] + ' ' + b[1]);
-    addWire('fix.ticket', hcurve(L('ll.risks'), R('fix.ticket')));
-    var f = L('fix.ticket'), t = B('rt.attack');
+    addWire('fix.ticket', hcurve(L_('ll.risks'), R('fix.ticket')));
+    var f = L_('fix.ticket'), t = B('rt.attack');
     addWire('rt.attack', 'M' + f[0] + ' ' + f[1] + ' C' + (f[0] - 380) + ' ' + f[1] + ' ' + t[0] + ' ' + (t[1] + 150) + ' ' + t[0] + ' ' + t[1]);
     var lab = sv('text', { x: 700, y: Y2 + NH / 2 - 16, 'text-anchor': 'middle' }); lab.textContent = C.loop_label || ''; wires.appendChild(lab);
   })();
   var dot = sv('circle', { id: 'dot', r: 7, cx: -50, cy: -50 }); wires.appendChild(dot);
 
-  var ST = (C.state || {});
   function stateOf(id, nodes) {
     if (!nodes) return cands.length ? 'done' : 'idle';
     var ids = id === 'll.risks' ? ['ll.risks', 'll.controls', 'll.evidence', 'll.trace', 'll.summary'] : [id];
@@ -266,8 +318,8 @@
     return 'idle';
   }
   var runningId = null;
-  function paint() {
-    var L_ = window.LIVE, nodes = (L_ && L_.nodes) || null;
+  function paintNodes() {
+    var Lf = liveFeed(), nodes = (Lf && Lf.nodes) || null;
     runningId = null;
     steps.forEach(function (s) {
       var st = stateOf(s.id, nodes);
@@ -275,7 +327,6 @@
       if (st === 'running' && !runningId) runningId = s.id;
       if (wireEls[s.id]) wireEls[s.id].setAttribute('class', st === 'running' ? 'lit' : '');
     });
-    paintChips(); paintExample();
   }
 
   /* one dot, only on the wire into the step that runs; none with reduced motion */
@@ -291,7 +342,6 @@
   }
   if (!reduce) requestAnimationFrame(function (n) { t0 = n; tick(n); });
 
-  /* fit the 1700-wide board to its box */
   function fit() {
     var box = $('fit'), s = Math.min(1.12, box.clientWidth / 1700);
     if (!box.clientWidth) return;
@@ -300,22 +350,22 @@
   }
   window.addEventListener('resize', fit);
 
-  /* three small result chips */
+  /* ---------- result chips: the exported verdicts ---------- */
   $('chips-title').textContent = C.chips_title || '';
   function paintChips() {
-    var box = $('chips'); box.textContent = '';
-    var L_ = window.LIVE, rail = (L_ && L_.rail) || [];
-    var rows = rail.length ? rail.map(function (r) { return { id: r.id, v: r.verdict }; })
-      : cands.map(function (c) { return { id: c.id, v: txt(c.gate && c.gate.verdict) }; });
+    var box = $('chips'), Lf = liveFeed(); clear(box);
+    var rows;
+    if (liveInProgress() && Lf.rail && Lf.rail.length) rows = Lf.rail.map(function (r) { return { id: r.id, v: r.verdict }; });
+    else rows = cands.map(function (c) { return { id: c.id, v: txt(c.gate && c.gate.verdict) }; });
     rows.forEach(function (r) {
       var row = el('div', 'chip'); row.appendChild(el('b', null, r.id));
       if (r.v === 'PASS' || r.v === 'FAIL') row.appendChild(el('span', 'pill ' + (r.v === 'PASS' ? 'good' : 'bad'), C.chip[r.v]));
-      else row.appendChild(el('span', 'muted', ST.idle));
+      else row.appendChild(el('span', 'muted', C.state.idle));
       box.appendChild(row);
     });
   }
 
-  /* What just happened: one real run from the data. Nothing is invented. */
+  /* ---------- What just happened: one real run from the data. Nothing is invented. ---------- */
   function pickRun() {
     var order = [], seen = {};
     cands.forEach(function (c) { var b = batchOf(c); if (b && !seen[b.id]) { seen[b.id] = 1; order.push(b); } });
@@ -323,26 +373,32 @@
     function find(test) {
       for (var i = 0; i < order.length; i++) {
         var runs = order[i].runs || {}, ks = Object.keys(runs);
-        for (var j = 0; j < ks.length; j++) if (test(runs[ks[j]])) return runs[ks[j]];
+        for (var j = 0; j < ks.length; j++) if (test(runs[ks[j]])) return { run: runs[ks[j]], batch: order[i] };
       }
       return null;
     }
     return find(function (r) { return r.kind === 'attack' && r.violated; }) ||
            find(function (r) { return r.kind === 'attack' && (r.tool_calls || []).some(function (t) { return t.blocked; }); });
   }
-  var painted = false;
-  function paintExample() {
-    if (painted) return; painted = true;
-    var H = C.happened || {}, run = pickRun(), box = $('ex');
+  function renderExample() {
+    var box = $('ex'), src = $('ex-src'); clear(box); src.textContent = '';
     $('happened-title').textContent = H.title || '';
-    if (!run) { $('happened').hidden = true; $('happened').parentNode.style.gridTemplateColumns = '1fr'; return; }
-    function row(k, v) { box.appendChild(el('dt', null, k)); var d = el('dd'); if (typeof v === 'string') d.textContent = v; else d.appendChild(v); box.appendChild(d); }
+    var pick = pickRun(), card = $('happened');
+    card.hidden = !pick; card.parentNode.style.gridTemplateColumns = pick ? '' : '1fr';
+    if (!pick) return;
+    var run = pick.run, b = pick.batch;
+    /* say which run this is, unless it is the run the badge names */
+    var same = cands.some(function (c) { return c.evidence_batch === b.id; }) && !anyRunning();
+    if (!same) {
+      var d = dateOnly(b.produced && b.produced.raw);
+      src.textContent = (b.id === 'rehearsal' ? H.from_rehearsal : H.from_earlier) + (d ? ', ' + d : '');
+    }
+    function row(k, v) { box.appendChild(el('dt', null, k)); var dd = el('dd'); if (typeof v === 'string') dd.textContent = v; else dd.appendChild(v); box.appendChild(dd); }
     var task = txt(run.user_task);
     if (task) row(H.asked, '“' + task + '”');
     var pl = run.planted;
     if (pl && pl.status === 'match' && txt(pl.text)) {
-      var hid = txt(pl.text).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim();
-      row(H.hidden, '“' + hid + '”');
+      row(H.hidden, '“' + txt(pl.text).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim() + '”');
     }
     var calls = run.tool_calls || [], hit = calls.filter(function (t) { return t.flagged; })[0] || calls.filter(function (t) { return t.blocked; })[0];
     if (hit) row(H.did, hit.text);
@@ -356,39 +412,36 @@
   }
 
   /* ---------- results ---------- */
-  cands.forEach(function (c) {
-    var k = key(c.id), v = txt(c.gate && c.gate.verdict);
-    var card = el('article', 'card');
-    card.appendChild(el('div', 'cid', c.id));
-    card.appendChild(el('div', 'def', defWords(defCodes(c))));
-    if (v === 'PASS' || v === 'FAIL') card.appendChild(el('span', 'pill ' + (v === 'PASS' ? 'good' : 'bad'), C.verdict[v]));
-    var hit = num(k + '.violations'), runs = num(k + '.attack_runs');
-    if (hit != null && runs != null) {
-      card.appendChild(el('div', 'big', hit + ' ' + C.of + ' ' + runs));
-      card.appendChild(el('div', 'muted', C.attacks));
-    }
-    var fail = ((c.gate && c.gate.checks) || []).filter(function (x) { return x.ok === false; })[0];
-    if (v === 'FAIL' && fail) {
-      card.appendChild(el('div', 'why', C.why + ': ' + fail.label + ' ' + txt(fail.value) + ', ' +
-        (/^min_/.test(fail.name) ? C.limit_min : C.limit_max) + ' ' + txt(fail.limit)));
-    }
-    $('cards').appendChild(card);
-  });
-  (function () {
-    var f = $('facts'), br = num('benign.rate'), bn = num('benign.n'), t = num('time.to_decision');
+  function renderResults() {
+    var box = $('cards'), f = $('facts'); clear(box); clear(f);
+    cands.forEach(function (c) {
+      var k = key(c.id), v = txt(c.gate && c.gate.verdict);
+      var card = el('article', 'card');
+      card.appendChild(el('div', 'cid', c.id));
+      card.appendChild(el('div', 'def', defWords(defCodes(c))));
+      if (v === 'PASS' || v === 'FAIL') card.appendChild(el('span', 'pill ' + (v === 'PASS' ? 'good' : 'bad'), C.verdict[v]));
+      var hit = num(k + '.violations'), runs = num(k + '.attack_runs');
+      if (hit != null && runs != null) {
+        card.appendChild(el('div', 'big', hit + ' ' + C.of + ' ' + runs));
+        card.appendChild(el('div', 'muted', C.attacks));
+      }
+      var fail = ((c.gate && c.gate.checks) || []).filter(function (x) { return x.ok === false; })[0];
+      if (v === 'FAIL' && fail) {
+        card.appendChild(el('div', 'why', C.why + ': ' + fail.label + ' ' + txt(fail.value) + ', ' +
+          (/^min_/.test(fail.name) ? C.limit_min : C.limit_max) + ' ' + txt(fail.limit)));
+      }
+      box.appendChild(card);
+    });
+    var br = num('benign.rate'), bn = num('benign.n'), t = numReal('time.to_decision');
     function fact(label, value) { var s = el('div'); s.appendChild(document.createTextNode(label + ': ')); s.appendChild(el('b', null, value)); f.appendChild(s); }
     if (br) fact(C.normal, br + (bn ? ' (' + bn + ')' : ''));
     if (t) fact(C.decided_in, t);
-  })();
-
-  /* ---------- proof ---------- */
-  var PR = C.proof || {};
-  ['who', 'log', 'rules', 'risks', 'controls'].forEach(function (k) { $(k + '-title').textContent = PR[k + '_title'] || ''; });
-  function when(iso) {
-    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || '');
-    return m ? Number(m[3]) + ' ' + C.months[Number(m[2]) - 1] + ', ' + m[4] + ':' + m[5] : (iso || '');
   }
-  (function () {
+
+  /* ---------- proof: everything here comes from the exported data (DEMO), never from the live feed ---------- */
+  ['who', 'log', 'rules', 'risks', 'controls'].forEach(function (k) { $(k + '-title').textContent = PR[k + '_title'] || ''; });
+  function renderProof() {
+    ['who', 'rules', 'risks', 'controls'].forEach(function (k) { clear($(k)); });
     var es = ((D.audit || {}).entries || []).slice(-5).reverse(), ul = $('who');
     if (!es.length) ul.appendChild(el('li', 'empty', PR.none_yet));
     es.forEach(function (e) {
@@ -396,13 +449,13 @@
       li.appendChild(el('small', null, when(txt(e.time)) + ' · ' + txt(e.candidate) + ' · ' + txt(e.what)));
       ul.appendChild(li);
     });
-    var ch = (D.audit || {}).chain || {}, L_ = window.LIVE, tag = L_ && L_.nodes && L_.nodes['sl.log'] && L_.nodes['sl.log'].tag;
-    var ok = ch.ok === true || tag === 'intact' ? true : (ch.ok === false || tag === 'broken' ? false : null);
+    var ch = (D.audit || {}).chain || {}, word = num('chain.status');
+    var ok = ch.ok === true || word === 'intact' ? true : (ch.ok === false || word === 'broken' ? false : null);
     var p = $('log'); p.textContent = ok === true ? PR.log_ok : ok === false ? PR.log_bad : PR.log_none;
-    if (ok === null) p.className = 'empty';
-    var rules = $('rules'); (PR.rules || []).forEach(function (r) { rules.appendChild(el('p', null, r)); });
+    p.className = ok === null ? 'empty' : '';
+    (PR.rules || []).forEach(function (r) { $('rules').appendChild(el('p', null, r)); });
     var roles = ((D.policy || {}).roles) || {}, eng = txt(roles.engineers), rev = txt(roles.reviewers);
-    if (eng && rev) $('roles').textContent = cap(eng) + ' ' + PR.engineer + ' ' + cap(rev) + ' ' + PR.reviewer;
+    $('roles').textContent = eng && rev ? cap(eng) + ' ' + PR.engineer + ' ' + cap(rev) + ' ' + PR.reviewer : '';
     var rk = ((D.assurance || {}).risks || []).filter(function (r) { return /open/i.test(r.status_text || ''); }), ru = $('risks');
     if (!rk.length) ru.appendChild(el('li', 'empty', PR.no_risks));
     rk.forEach(function (r) {
@@ -410,20 +463,140 @@
       ru.appendChild(li);
     });
     var sel = cands.filter(function (c) { return c.id === G.selected; })[0] || cands[cands.length - 1], cu = $('controls');
-    var words = sel ? defWords(defCodes(sel)).split(' + ').filter(function (w) { return w !== C.defences.none; }) : [];
+    var words = sel ? defWords(defCodes(sel)).split(' + ').filter(function (w) { return w && w !== C.defences.none; }) : [];
     if (!words.length) cu.appendChild(el('li', 'empty', PR.controls_none));
     words.forEach(function (w) { cu.appendChild(el('li', null, w)); });
-  })();
+  }
+
+  function renderData() { renderBadge(); paintChips(); renderExample(); renderResults(); renderProof(); }
+
+  /* ---------- run bar: only when this page is served by the local runner ---------- */
+  var served = /^https?:$/.test(location.protocol), api = { ok: false, token: null, status: null }, wasRunning = false, notice = '';
+  function call(method, path, body) {
+    var opt = { method: method, headers: {} };
+    if (method === 'POST') {
+      opt.headers['Content-Type'] = 'application/json'; opt.headers['X-Redline-Token'] = api.token || '';
+      opt.body = JSON.stringify(body || {});
+    }
+    return fetch('/api/' + path, opt).then(function (r) {
+      return r.json().then(function (j) { return { code: r.status, json: j || {} }; }, function () { return { code: r.status, json: {} }; });
+    });
+  }
+  var kindSel = $('run-kind'), modelSel = $('run-model'), goBtn = $('run-go'), stopBtn = $('run-stop'), runText = $('run-text');
+  goBtn.textContent = RUN.run || ''; stopBtn.textContent = RUN.stop || '';
+  var builtKinds = '', builtModels = '';
+  function modelTag(m) { return typeof m === 'string' ? m : (m && (m.tag || m.name || m.id || m.model)) || ''; }
+  function buildChoices(S) {
+    var kinds = (S.kinds || Object.keys(RUN.kinds || {})).filter(function (k) { return RUN.kinds[k]; });
+    var kk = kinds.join('|');
+    if (kk !== builtKinds) {
+      var keep = kindSel.value; clear(kindSel);
+      kinds.forEach(function (k) { var o = el('option', null, RUN.kinds[k]); o.value = k; kindSel.appendChild(o); });
+      if (keep && kinds.indexOf(keep) >= 0) kindSel.value = keep;
+      builtKinds = kk;
+    }
+    var tags = (S.models || []).map(modelTag).filter(Boolean), mm = tags.join('|');
+    if (mm !== builtModels) {
+      var keepM = modelSel.value; clear(modelSel);
+      tags.forEach(function (t) { var o = el('option', null, t); o.value = t; modelSel.appendChild(o); });
+      if (keepM && tags.indexOf(keepM) >= 0) modelSel.value = keepM;
+      builtModels = mm;
+    }
+    modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full');
+  }
+  function progressText() {
+    var Lf = liveFeed(), t = anyRunning() && Lf.tiles;
+    if (t && t.n && t.list && t.list.length) return t.list.length + ' ' + C.of + ' ' + t.n + ' ' + RUN.runs_done;
+    return '';
+  }
+  function paintRun() {
+    var S = api.status; if (!S) return;
+    buildChoices(S);
+    var running = !!S.running, last = S.last, line;
+    if (running && S.kind && RUN.kinds[S.kind]) kindSel.value = S.kind;
+    if (running && S.model) modelSel.value = S.model;
+    modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full');
+    goBtn.disabled = running || !kindSel.value; stopBtn.disabled = !running;
+    kindSel.disabled = modelSel.disabled = running;
+    if (running) {
+      var what = RUN.kinds[S.kind] || '', prog = progressText();
+      line = RUN.running + (what ? ': ' + what : '') + (S.model ? ' · ' + S.model : '') + (prog ? ' · ' + prog : '');
+    } else if (notice) line = notice;
+    else if (last && last.exit_code === 0) line = last.export_status === 'ok' ? RUN.finished : RUN.finished_no_export + (last.export_text ? ' ' + last.export_text : '');
+    else if (last) line = RUN.failed + (last.export_text ? ' ' + last.export_text : '');
+    else line = RUN.idle;
+    runText.textContent = line;
+    runText.className = 'runtext' + (!running && !notice && last && last.exit_code !== 0 ? ' bad' : '');
+  }
+  function pollStatus() {
+    call('GET', 'status').then(function (r) {
+      if (r.code !== 200) return;
+      var S = r.json; api.status = S;
+      if (wasRunning && !S.running) {
+        notice = '';
+        if (S.last && S.last.export_status === 'ok') refreshData();
+      }
+      wasRunning = !!S.running;
+      if (S.running) notice = '';
+      paintRun(); renderBadge(); paintChips();
+    }, function () {});
+  }
+  kindSel.addEventListener('change', function () { modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full'); });
+  goBtn.addEventListener('click', function () {
+    var kind = kindSel.value, body = { kind: kind };
+    if (kind === 'live-short' || kind === 'live-full') {
+      if (!modelSel.value) { notice = RUN.no_model; paintRun(); return; }
+      body.model = modelSel.value;
+    }
+    if (kind === 'models') body.parallel = 1;
+    if ((kind === 'live-full' || kind === 'models') && !window.confirm(RUN.confirm_long)) return;
+    notice = ''; goBtn.disabled = true; runText.textContent = RUN.starting;
+    call('POST', 'run', body).then(function (r) {
+      if (r.code !== 202) notice = RUN.could_not + (r.json.error ? ' ' + r.json.error : '');
+      pollStatus();
+    }, function () { notice = RUN.could_not; paintRun(); });
+  });
+  stopBtn.addEventListener('click', function () {
+    stopBtn.disabled = true; runText.textContent = RUN.stopping;
+    call('POST', 'stop', {}).then(pollStatus, pollStatus);
+  });
+  if (served) {
+    call('GET', 'session').then(function (r) {
+      if (r.code !== 200 || !r.json.token) return;
+      api.ok = true; api.token = r.json.token; $('runbar').hidden = false; fit();
+      pollStatus(); setInterval(pollStatus, 2000);
+    }, function () {});
+  } else {
+    var fl = $('fileline'); fl.textContent = RUN.file_line || ''; fl.hidden = !RUN.file_line;
+  }
+
+  /* After a run ends with a good export: load the new data/demo.js and draw the three views again in place. */
+  function refreshData() {
+    var s = document.createElement('script');
+    s.src = 'data/demo.js?r=' + Date.now();
+    s.onload = function () { s.remove(); bind(); renderData(); paintNodes(); show(currentView); };
+    s.onerror = function () { s.remove(); };
+    document.body.appendChild(s);
+  }
 
   /* ---------- keys, cover, polling ---------- */
   document.addEventListener('keydown', function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey || e.key === 'Shift') return;
+    var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'SELECT' || tag === 'BUTTON') { if (!coverUp) return; }
     var wasCover = coverUp; hideCover();
-    var i = VIEWS.indexOf(['', 'live', 'results', 'proof'][Number(e.key)] || '');
     if (e.key.length === 1 && e.key >= '1' && e.key <= '3') show(VIEWS[Number(e.key) - 1]);
     else if (wasCover) fit();
   });
   $('cover').addEventListener('click', function () { hideCover(); fit(); });
+
+  var lastRunning = null;
+  function paint() {
+    paintNodes(); renderBadge(); paintChips();
+    var r = anyRunning();
+    if (r !== lastRunning) { lastRunning = r; renderExample(); }
+    paintRun();
+  }
   setInterval(function () {
     var s = document.createElement('script');
     s.src = 'data/live.js?r=' + Date.now();
@@ -431,8 +604,10 @@
     document.body.appendChild(s);
   }, 1000);
 
+  bind();
   var m = /v=(live|results|proof)/.exec(location.hash || '');
   if (m) hideCover();
+  renderData();
   show(m ? m[1] : 'live');
   paint();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
