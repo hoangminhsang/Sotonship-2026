@@ -13,10 +13,15 @@ role changes are themselves a governance action, so this module makes them safe:
 Note the invariant this does *not* touch: :func:`lab.governance.decision.decide`
 always refuses ``reviewer == submitted_by``. Editing roles changes who can review
 in general; it can never let someone approve their *own* candidate.
+
+Every name comparison here uses :func:`lab.governance.decision._norm` (case
+and surrounding spaces ignored), the same normaliser the decision rules use.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
+from lab.governance.decision import _norm
 
 # Role groups a rule owner may edit (the rule_owner itself is not list-editable
 # here; changing ownership is a bigger, deliberate act left to the file).
@@ -44,7 +49,7 @@ def change_role(
     removing a non-member), or it would leave no reviewer.
     """
     roles = policy.setdefault("roles", {})
-    if actor != roles.get("rule_owner"):
+    if _norm(actor) != _norm(roles.get("rule_owner")):
         raise RoleError(f"REFUSED: only the rule owner may change roles ({actor!r} is not)")
     if role not in EDITABLE:
         raise RoleError(f"REFUSED: cannot edit role group {role!r} (editable: {', '.join(EDITABLE)})")
@@ -53,15 +58,16 @@ def change_role(
 
     members = list(roles.get(role, []))
     if action == "add":
-        if person in members:
+        if _norm(person) in {_norm(m) for m in members}:
             raise RoleError(f"REFUSED: {person} is already in {role}")
         members.append(person)
     else:  # remove
-        if person not in members:
+        remaining = [m for m in members if _norm(m) != _norm(person)]
+        if len(remaining) == len(members):
             raise RoleError(f"REFUSED: {person} is not in {role}")
-        if role == "reviewers" and [m for m in members if m != person] == []:
+        if role == "reviewers" and remaining == []:
             raise RoleError("REFUSED: cannot remove the last reviewer (someone must be able to decide)")
-        members = [m for m in members if m != person]
+        members = remaining
 
     roles[role] = sorted(members)
     now = now or datetime.now(timezone.utc)
@@ -77,5 +83,5 @@ def change_role(
 
 
 def has_role(policy: dict, person: str, role: str) -> bool:
-    """Whether ``person`` currently holds ``role``."""
-    return person in policy.get("roles", {}).get(role, [])
+    """Whether ``person`` currently holds ``role`` (case and spaces ignored)."""
+    return _norm(person) in {_norm(m) for m in policy.get("roles", {}).get(role, [])}

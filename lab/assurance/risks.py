@@ -13,6 +13,7 @@ so and never invents a fix -- an honest "no fix found" beats a wrong one.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -75,7 +76,8 @@ def control_for_class(violation_class: str) -> str | None:
 
 
 def _attack_rows(runs: pd.DataFrame) -> pd.DataFrame:
-    return runs[(runs["kind"] == "attack") & (~runs["error"].astype(bool))]
+    """The same attack rows the gate counts (see :func:`lab.metrics.counted`)."""
+    return runs[(runs["kind"] == "attack") & metrics.counted(runs)]
 
 
 def _has_class(cell: object, violation_class: str) -> bool:
@@ -85,7 +87,7 @@ def _has_class(cell: object, violation_class: str) -> bool:
 
 
 def class_rate(runs: pd.DataFrame, violation_class: str) -> metrics.Proportion:
-    """Measured rate of one violation class over non-error attack runs."""
+    """Measured rate of one violation class over counted attack runs."""
     attacks = _attack_rows(runs)
     hits = int(attacks["violation_classes"].apply(lambda c: _has_class(c, violation_class)).sum())
     return metrics.wilson(hits, len(attacks))
@@ -118,21 +120,52 @@ def _status(rate: float, prior: object) -> tuple[str, str]:
     return "Open", "not observed in this run; fix unproven"
 
 
+def _guard_mitigated(
+    status: str, note: str, code: str | None, rate: float,
+    enabled: set[str] | None, limit: float,
+) -> tuple[str, str]:
+    """Allow "Mitigated" only when the risk's control is actually on.
+
+    A zero rate for a class whose control the candidate does not run is
+    absence of evidence, not a fix: D2 alone never tests D3. ``enabled`` is the
+    candidate's defence set, or ``None`` when the caller does not know it (then
+    the rate-and-prior rule stands alone). The rate must also sit at or below
+    the policy's attack-success limit, the same comparison the gate makes.
+    """
+    if status != "Mitigated" or enabled is None:
+        return status, note
+    if code not in enabled:
+        on = ", ".join(sorted(enabled)) or "none"
+        return "Open", f"0 landings, but control {code} is not in this candidate's defences ({on}); fix unproven"
+    if rate > limit:
+        return "Open", f"rate {rate:.1%} is above the policy limit {limit:.1%}"
+    return status, note
+
+
 def build_register(
     runs: pd.DataFrame,
     policy: dict,
     control_map: dict,
     prior: dict[str, str] | None = None,
+    defences: Iterable[str] | None = None,
 ) -> list[Risk]:
     """Build the risk register from a runs frame.
 
     ``prior`` maps violation class -> previous status, so a re-test can close or
     re-open a risk. Any violation class seen in ``runs`` but absent from the fix
     table becomes a risk flagged ``NO FIX FOUND``.
+
+    ``defences`` lists the candidate's enabled controls (e.g. ``["D2"]``). When
+    given, a risk reads "Mitigated" only if its control is in that list and its
+    rate is at or below ``policy.release_limits.max_attack_success_rate``;
+    otherwise it stays "Open" even at a zero rate. ``None`` (the default) keeps
+    the rate-and-prior rule alone, for callers that do not know the defences.
     """
     prior = prior or {}
     impact_table = policy.get("impact", {})
     controls = control_map.get("controls", {})
+    enabled = None if defences is None else {str(d).upper() for d in defences}
+    limit = float(policy.get("release_limits", {}).get("max_attack_success_rate", 0.0))
     out: list[Risk] = []
 
     def add(cls: str, meta: dict) -> None:
@@ -140,6 +173,7 @@ def build_register(
         code = control_for_class(cls)
         cm = controls.get(code, {}) if code else {}
         status, note = _status(prop.rate, prior.get(cls) if prior else None)
+        status, note = _guard_mitigated(status, note, code, prop.rate, enabled, limit)
         out.append(
             Risk(
                 id=meta["id"],

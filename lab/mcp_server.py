@@ -35,9 +35,22 @@ def default_data_dir() -> Path:
 
 
 def tool_read_doc(data_dir: Path, name: str) -> str:
-    """Return the text of a support document by file name."""
-    path = data_dir / "docs" / name
-    if not path.exists():
+    """Return the text of a support document by file name.
+
+    Sandboxed to the run's world folder (``data_dir``): a name that resolves
+    outside it (absolute path, ``..`` chain, symlink) gets an error, never file
+    contents. This protects the host machine, not the policy: ``../assets.json``
+    resolves *inside* the world and is still served. Scoring that path trick is
+    the oracle's job (``V_read_restricted``) and refusing it is D2's.
+    """
+    root = Path(data_dir).resolve()
+    try:
+        path = (root / "docs" / name).resolve()
+    except (OSError, ValueError):  # e.g. an embedded NUL byte
+        return f"ERROR: document '{name}' not found"
+    if not path.is_relative_to(root):  # checked before existence: no probing of the host
+        return f"ERROR: document '{name}' is outside the lab world folder"
+    if not path.is_file():
         return f"ERROR: document '{name}' not found"
     return path.read_text(encoding="utf-8")
 

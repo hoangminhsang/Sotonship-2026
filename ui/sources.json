@@ -1,0 +1,40 @@
+{
+  "schema": "ui-sources/1",
+  "repo_root": "..",
+  "current_batch": "newest-run",
+  "batches": [{
+    "id": "rehearsal", "title": "Rehearsal batch", "adapter": "legacy-results",
+    "pin_rev": "d825341",
+    "runs_csv": "results/runs.csv", "summary_csv": "results/summary.csv",
+    "corpus": {"path": "corpus/test.jsonl", "rev": "d825341", "also_check_revs": ["121b6c7"]},
+    "agent_source": {"path": "lab/agent.py", "rev": "d825341"},
+    "traces_dir": null,
+    "traces_note": "Traces were never committed; results/traces/ is rewritten by every live run."
+  }],
+  "latest_local": {
+    "enabled": true, "id": "latest-local", "title": "Latest local run (working tree)",
+    "adapter": "legacy-results", "runs_csv": "results/runs.csv", "summary_csv": "results/summary.csv",
+    "traces_dir": "results/traces", "corpus": {"path": "corpus/test.jsonl", "rev": null},
+    "show_only_if_differs_from_rev": "d825341"
+  },
+  "run_folders": {"enabled": true, "glob": "results/runs/*/manifest.json", "max_batches": 4, "note": "Locked run folders, newest first. current_batch newest-run shows the newest one; with none, the first batch (the rehearsal) is shown. A governance candidate always gets its own run folder, also beyond max_batches."},
+  "policy": {"path": "lab/governance/policy.yaml"},
+  "controls": {"path": "lab/assurance/control_map.yaml"},
+  "governance": {
+    "connected": false, "note": "Remap to real governance outputs only on the user's word.",
+    "candidate_id": "RC-001", "evidence_batch": "rehearsal",
+    "gate_report": "governance_out/gate_RC-001.txt",
+    "fingerprint": ["governance_out/candidates/RC-001.json", "governance_out/RC-001.json"],
+    "audit_log": "governance_out/audit_log.jsonl",
+    "audit_verify": "governance_out/audit_verify.json",
+    "risk_register_md": "governance_out/risk_register_before.md",
+    "evidence_md": "governance_out/evidence_register.md",
+    "fix_tickets_md": "governance_out/fix_tickets.md"
+  },
+  "sample_fixtures": {
+    "gate": "ui/fixtures/gate_RC-001.sample.json",
+    "audit": "ui/fixtures/audit_log.sample.json",
+    "assurance": "ui/fixtures/assurance.sample.json"
+  },
+  "compare": {"a": "rehearsal", "b": "latest-local"}
+}

@@ -74,6 +74,10 @@ def make_local_tools(
     @tool
     def read_doc(name: str) -> str:
         """Return the text of a support document by file name (e.g. 'vpn-setup.md')."""
+        if "D2" in codes:
+            denied = defs.deny_doc_path(name)
+            if denied is not None:
+                return denied
         out = mcp_server.tool_read_doc(data_path, name)
         return defs.trust_label(out) if "D1" in codes else out
 
@@ -136,7 +140,10 @@ async def load_mcp_tools() -> list:
 
 def build_agent(tools, temperature: float = 0.2):
     """Create the insecure agent over the given LangChain tools."""
-    llm = ChatOllama(model=MODEL, base_url=OLLAMA, temperature=temperature)
+    llm = ChatOllama(
+        model=MODEL, base_url=OLLAMA, temperature=temperature,
+        client_kwargs={"timeout": 60},  # a hung model call fails the run, not the sweep
+    )
     return create_react_agent(llm, tools, prompt=SYSTEM_PROMPT)
 
 
@@ -182,15 +189,25 @@ def run_task(agent, user_task: str) -> AgentResult:
     """Run one task; extract an ordered list of tool calls and the final text.
 
     A single bad run is reported via ``AgentResult.error`` rather than raised,
-    so the runner can record it and continue.
+    so the runner can record it and continue. The graph is streamed step by
+    step so the tool calls made *before* an error are kept and scored: a run
+    that broke a rule and then crashed must not vanish from the record.
     """
     inputs = {"messages": [HumanMessage(content=user_task)]}
+    messages: list = []
     try:
-        state = agent.invoke(inputs, config={"recursion_limit": RECURSION_LIMIT})
+        for state in agent.stream(
+            inputs, config={"recursion_limit": RECURSION_LIMIT}, stream_mode="values"
+        ):
+            messages = state["messages"]
     except Exception as exc:  # noqa: BLE001 - one bad run must not halt the sweep
-        return AgentResult(final_text="", tool_calls=[], messages=[], error=repr(exc))
+        return AgentResult(
+            final_text="",
+            tool_calls=_extract_tool_calls(messages),
+            messages=messages,
+            error=repr(exc),
+        )
 
-    messages = state["messages"]
     return AgentResult(
         final_text=_final_text(messages),
         tool_calls=_extract_tool_calls(messages),

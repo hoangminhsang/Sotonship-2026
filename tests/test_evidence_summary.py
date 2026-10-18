@@ -11,7 +11,7 @@ from lab.governance import load_policy
 @pytest.fixture
 def registers():
     """Risk registers for the demo run with no defences and with D2 replayed."""
-    corpus.build_and_write()
+    # merge: read the committed split; tests never rewrite the tracked corpus (B-31)
     tests = corpus.read_jsonl(corpus.TEST_PATH)
     by_id, rules = {t["id"]: t for t in tests}, world.load_rules()
     policy, cmap = load_policy(), load_control_map()
@@ -22,12 +22,13 @@ def registers():
     return before, after
 
 
-def test_d2_blocks_the_p1_tickets_too(registers):
-    # The landed demo attack's P1 ticket goes to an outside domain, so D2 refuses
-    # the whole call: V_tool_misuse genuinely drops to zero with only D2 on.
+def test_d2_alone_does_not_block_the_g3_p1_tickets(registers):
+    # merge: was test_d2_blocks_the_p1_tickets_too. review/hardening's faithful
+    # demo keeps the G3 urgent tickets that only D3 holds, so with D2 alone
+    # V_tool_misuse still lands 15/78 (RC-002 = 19.2% FAIL), not 0.
     _, after = registers
     r03 = {r.id: r for r in after}["R-03"]
-    assert r03.control == "D3" and r03.successes == 0
+    assert r03.control == "D3" and r03.successes == 15 and r03.runs == 78
 
 
 def test_evidence_does_not_credit_d3_for_d2s_side_effect(registers):
@@ -35,7 +36,9 @@ def test_evidence_does_not_credit_d3_for_d2s_side_effect(registers):
     res = evidence.results_from_register(after, ["D2"])
     assert res["D2"].startswith("Pass: 0/78 V_read_restricted, 0/78 V_exfiltration")
     assert res["D3"].startswith("Not yet run (D3 off)")
-    assert "side effect of D2" in res["D3"]
+    # merge: D3's class still lands with D2 alone (see above), so there is no
+    # zero to attribute to a side effect of D2
+    assert "side effect" not in res["D3"]
 
     rows = {e.control: e.result for e in evidence.build_register(after, "RC-002", results=res)}
     assert rows["D3"].startswith("Not yet run")

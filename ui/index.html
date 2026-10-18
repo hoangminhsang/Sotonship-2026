@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="connect-src 'self'; font-src data:; img-src data:; object-src 'none'">
+<title>Redline</title>
+<link rel="stylesheet" href="fonts.css">
+<style>
+  :root { --bg:#f7f7f5; --paper:#f2f2f0; --card:#fff; --line:#e6e6e1; --ink:#1b1b1b; --soft:#6b6b66; --faint:#a3a39c;
+          --bad:#b42318; --bad-bg:#fdeeec; --good:#067647; --good-bg:#e8f6ee; --run:#2f5fd0; --run-bg:#e8eefc;
+          --serif:"Cormorant Garamond", Garamond, "Iowan Old Style", Georgia, serif;
+          --sans:Inter, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { margin:0; background:var(--bg); }
+  body { color:var(--ink); font:400 22px/1.45 var(--sans); -webkit-font-smoothing:antialiased; }
+  h1, h2, h3, p { margin:0; font-weight:400; }
+  button { font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; }
+
+  /* ---------- cover: same look as the details page ---------- */
+  #cover { position:fixed; inset:0; z-index:50; background:var(--paper); display:flex; flex-direction:column;
+           justify-content:center; align-items:flex-start; padding:0 120px 40px; outline:none; cursor:pointer; }
+  #cover-name { font:300 56px/1.1 var(--serif); margin:0 0 14px; color:var(--ink); }
+  #cover-what { font:400 26px/1.4 var(--sans); color:#333; }
+  #cover-rule { position:relative; width:240px; height:2px; background:var(--ink); margin:30px 0; }
+  #cover-rule::before, #cover-rule::after { content:""; position:absolute; top:-9px; width:2px; height:20px; background:var(--ink); }
+  #cover-rule::before { left:0; } #cover-rule::after { right:0; }
+  #cover-tagline { font:italic 300 26px/1.3 var(--serif); color:var(--ink); max-width:1200px; }
+  #cover-team { font:500 26px/1.3 var(--sans); margin-top:36px; }
+  #cover-track { font-size:22px; color:#555; margin-top:6px; }
+  #cover-hint { font-size:22px; color:#666; position:absolute; left:120px; bottom:56px; }
+
+  /* ---------- frame ---------- */
+  main { max-width:1840px; margin:0 auto; padding:24px 56px 32px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap; }
+  .brand { font:400 30px/1 var(--serif); letter-spacing:.01em; }
+  .badge { font-size:20px; color:var(--soft); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:8px 18px; }
+  nav { display:flex; gap:8px; margin:14px 0 16px; }
+  nav button { font-size:22px; font-weight:500; color:var(--soft); padding:10px 26px; border-radius:999px; border:1px solid transparent; }
+  nav button:hover { color:var(--ink); }
+  nav button[aria-selected="true"] { background:var(--card); color:var(--ink); border-color:var(--line); }
+  nav button:focus-visible { outline:2px solid var(--run); outline-offset:2px; }
+  .view[hidden] { display:none; }
+  h2.title { font-size:26px; font-weight:500; margin:0 0 18px; }
+
+  /* ---------- live run: the canvas ---------- */
+  .canvas-wrap { background:var(--card); border:1px solid var(--line); border-radius:24px; padding:14px 28px 4px; overflow:hidden;
+                 background-image:radial-gradient(#e9e9e4 1.2px, transparent 1.2px); background-size:26px 26px; }
+  #fit { width:100%; }
+  #board { position:relative; width:1700px; height:424px; transform-origin:0 0; }
+  #wires { position:absolute; inset:0; width:1700px; height:424px; overflow:visible; }
+  #wires path { fill:none; stroke:#c9c9c2; stroke-width:2.5; stroke-linecap:round; }
+  #wires path.lit { stroke:var(--run); stroke-dasharray:10 10; animation:flow .6s linear infinite; }
+  #wires path.done { stroke:var(--good); }
+  #wires text { font:500 18px var(--sans); fill:var(--soft); }
+  #dot { fill:var(--run); }
+  .glabel { position:absolute; top:6px; font-size:20px; color:var(--soft); font-weight:500; }
+  .glabel::after { content:""; display:block; height:1px; background:var(--line); margin-top:8px; }
+  .node { position:absolute; width:230px; height:140px; background:var(--card); border:1px solid var(--line); border-radius:22px;
+          display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; text-align:center;
+          transition:border-color .4s, box-shadow .4s; }
+  .node svg { width:86px; height:64px; fill:none; stroke:var(--ink); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
+  .node .lbl { font-size:21px; font-weight:500; padding:0 10px; line-height:1.25; }
+  .node.idle svg, .node.idle .lbl { opacity:.55; }
+  .node.running { border-color:transparent; box-shadow:0 0 0 8px rgba(47,95,208,.10), 0 12px 38px rgba(47,95,208,.22); }
+  .node.running::before { content:""; position:absolute; inset:-3px; border-radius:25px; padding:3px; pointer-events:none;
+    background:conic-gradient(from var(--ang, 0deg), var(--run) 0deg, rgba(47,95,208,.12) 150deg, rgba(47,95,208,.12) 230deg, var(--run) 360deg);
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor;
+    mask:linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); animation:spin 1.3s linear infinite; }
+  .node.done { border-color:var(--good); box-shadow:0 0 0 4px rgba(6,118,71,.08); }
+  .node.error { border-color:var(--bad); box-shadow:0 0 0 4px rgba(180,35,24,.08); }
+  .node.skipped { border-style:dashed; border-color:var(--faint); }
+  .node.skipped svg, .node.skipped .lbl { opacity:.55; }
+  .node .warn { position:absolute; top:12px; right:12px; width:26px; height:26px; border-radius:50%; background:var(--bad-bg); color:var(--bad);
+                display:none; align-items:center; justify-content:center; }
+  .node.error .warn { display:flex; }
+  .warn svg { width:14px; height:14px; stroke:var(--bad); stroke-width:3.2; opacity:1; }
+  @property --ang { syntax:"<angle>"; inherits:false; initial-value:0deg; }
+  @keyframes spin { to { --ang:360deg; } }
+  @keyframes flow { to { stroke-dashoffset:-20; } }
+  .node .tick { position:absolute; top:12px; right:12px; width:26px; height:26px; border-radius:50%; background:var(--good-bg); color:var(--good);
+                display:none; align-items:center; justify-content:center; }
+  .node.done .tick { display:flex; }
+  .tick svg { width:14px; height:14px; stroke:var(--good); stroke-width:3.2; opacity:1; }
+
+  .lower { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(0, 1fr); gap:24px; margin-top:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:22px 30px; }
+  .card h3 { font-size:22px; font-weight:500; color:var(--soft); margin-bottom:14px; }
+  .ex { display:grid; grid-template-columns:260px minmax(0, 1fr); gap:10px 22px; align-items:baseline; font-size:22px; }
+  .ex dt { color:var(--soft); } .ex dd { margin:0; overflow-wrap:anywhere; }
+  .ex q { quotes:"\201C" "\201D"; }
+  .pill { display:inline-block; font-weight:500; border-radius:999px; padding:4px 16px; font-size:22px; }
+  .pill.bad { color:var(--bad); background:var(--bad-bg); } .pill.good { color:var(--good); background:var(--good-bg); }
+  .chips { display:flex; flex-direction:column; gap:12px; }
+  .chip { display:flex; justify-content:space-between; align-items:center; gap:16px; border:1px solid var(--line); border-radius:14px; padding:10px 16px; }
+  .chip b { font-weight:500; }
+  .empty { color:var(--soft); }
+
+  /* ---------- results ---------- */
+  .cards { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:24px; }
+  .cid { font-size:20px; color:var(--soft); }
+  .def { font-size:26px; margin:4px 0 20px; }
+  .big { font-size:48px; font-weight:500; margin-top:22px; line-height:1.1; }
+  .muted { color:var(--soft); }
+  .why { margin-top:18px; color:var(--bad); }
+  .facts { display:flex; gap:48px; flex-wrap:wrap; margin-top:28px; font-size:24px; }
+  .facts b { font-weight:500; }
+
+  /* ---------- proof ---------- */
+  .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:24px; }
+  ul.plain { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:14px; }
+  ul.plain li small { display:block; color:var(--soft); font-size:20px; }
+  .rules p { font-size:26px; margin-bottom:8px; }
+  .roles { margin-top:18px; color:var(--soft); }
+
+  @media (max-width: 1100px) { .lower, .cards, .grid2 { grid-template-columns:1fr; } main { padding:24px 20px 40px; } }
+  @media (prefers-reduced-motion: reduce) { .node { transition:none; } .scan::after { animation:none; } .node.running::before, #wires path.lit { animation:none; } .msg, .dots i { animation:none !important; } .stream-body { scroll-behavior:auto; } }
+
+  /* ---------- live run: the stream under the flowchart ---------- */
+  .stream { background:#F1F0EE; border:1px solid #E4E2DE; border-radius:20px; margin-top:16px; height:470px; display:flex; flex-direction:column; overflow:hidden; transition:background-color 500ms ease, border-color 500ms ease; }
+  .stream.dark { background:#1A0F0A; border-color:#2B1D15; }
+  .stream-head { padding:18px 6% 0; color:#8A8580; font:400 15px/1.3 var(--sans); letter-spacing:.18em; text-transform:uppercase; flex:none; transition:color 500ms ease; }
+  .stream.dark .stream-head { color:#6E625A; }
+  .stream-body { flex:1; min-height:0; position:relative; }
+  .sc { --i:#1C1A18; --s:#8A8580; position:absolute; inset:0; display:grid; grid-template-columns:minmax(0, 1.1fr) minmax(0, 1fr); align-items:center; gap:2%; padding:0 4% 14px 6%; opacity:1; transition:opacity 400ms ease; }
+  .sc.dark { --i:#B8ADA4; --s:#6E625A; }
+  .sc.out { opacity:0; }
+  .sc-text { min-width:0; }
+  .sc-eb { font:400 15px/1.2 var(--sans); letter-spacing:.18em; text-transform:uppercase; color:var(--s); margin-bottom:14px; }
+  .sc-hl { font:400 44px/1.12 var(--serif); font-variant-numeric:lining-nums; color:var(--i); overflow-wrap:anywhere; }
+  .sc-hl b { font-weight:600; color:#000; } .sc.dark .sc-hl b { color:#D8CEC5; }
+  .sc-hl.mono { font:500 30px/1.25 ui-monospace, Menlo, Consolas, monospace; letter-spacing:.02em; }
+  .sc-cap { font:400 20px/1.4 var(--sans); color:var(--s); margin-top:14px; }
+  .sc-art { min-width:0; }
+  .sc-art svg { display:block; width:100%; max-width:440px; max-height:330px; height:auto; margin:0 auto; fill:none; stroke:var(--i); stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .sc-art path.soft { stroke:var(--s); } .sc-art path.strong { stroke-width:2.8; }
+  .sc-wait { position:absolute; left:6%; top:50%; transform:translateY(-50%); font:400 36px/1.2 var(--serif); color:#8A8580; }
+  @media (prefers-reduced-motion: reduce) { .sc, .stream { transition:none; } }
+  .msg { display:flex; gap:16px; align-items:flex-start; animation:slidein .45s ease both; }
+  .msg .ico { flex:none; width:52px; height:52px; border-radius:50%; background:var(--bg); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; }
+  .ico svg { width:30px; height:30px; fill:none; stroke:var(--ink); stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+  .ico.bad { background:var(--bad-bg); border-color:var(--bad); } .ico.bad svg { stroke:var(--bad); }
+  .ico.good { background:var(--good-bg); border-color:var(--good); } .ico.good svg { stroke:var(--good); }
+  .bub { background:var(--bg); border-radius:18px; padding:10px 20px 12px; max-width:1200px; font-size:22px; overflow-wrap:anywhere; }
+  .bub .who { display:block; font-size:20px; color:var(--soft); margin-bottom:2px; }
+  .bub .mono, .mono { font:500 20px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  .bub .hid { color:var(--bad); background:var(--bad-bg); border-radius:10px; padding:2px 10px; }
+  .bub .tagline { display:inline-block; font-size:20px; color:var(--bad); font-weight:500; margin-right:10px; }
+  .bub.bad { background:var(--bad-bg); color:var(--bad); } .bub.good { background:var(--good-bg); color:var(--good); }
+  .bub .sub { display:block; font-size:20px; color:var(--soft); }
+  .bub .pill { font-size:20px; padding:2px 14px; }
+  .msg.row { align-items:center; gap:14px; padding-left:68px; font-size:21px; animation-duration:.3s; }
+  .msg.row .id { font-weight:500; }
+  .msg.row .pill { font-size:20px; padding:1px 14px; }
+  .pill.neutral { color:var(--soft); background:var(--bg); border:1px solid var(--line); }
+  .msg.more { padding-left:68px; color:var(--soft); font-size:21px; }
+  .dots { display:inline-flex; gap:7px; align-items:center; height:34px; }
+  .dots i { width:10px; height:10px; border-radius:50%; background:var(--faint); animation:blink 1s infinite ease-in-out; }
+  .dots i:nth-child(2) { animation-delay:.2s; } .dots i:nth-child(3) { animation-delay:.4s; }
+  .scan { position:relative; overflow:hidden; }
+  .scan::after { content:""; position:absolute; left:0; right:0; height:3px; background:var(--run); top:0; animation:scanline 1.1s ease-in-out 2; }
+  .caret::after { content:"\2502"; color:var(--faint); }
+  @keyframes slidein { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+  @keyframes blink { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
+  @keyframes scanline { 0% { top:0; } 50% { top:calc(100% - 3px); } 100% { top:0; } }
+
+  /* ---------- run bar and small labels ---------- */
+  .runbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:20px; padding:10px 16px; margin-bottom:16px; }
+  .runbar select { font:inherit; font-size:21px; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:8px 14px; }
+  .btn { font-size:21px; font-weight:500; border:1px solid var(--line); border-radius:999px; padding:8px 24px; background:var(--card); }
+  .btn.primary { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .btn:focus-visible, .runbar select:focus-visible { outline:2px solid var(--run); outline-offset:2px; }
+  .runtext { color:var(--soft); font-size:21px; margin-left:8px; }
+  .runtext.bad { color:var(--bad); }
+  .fileline { color:var(--soft); font-size:20px; margin:0 0 16px; }
+  .canvas-wrap { position:relative; }
+  .mini { position:absolute; top:16px; right:22px; z-index:2; font-size:18px; color:var(--soft); background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:4px 14px; }
+  .src { color:var(--soft); font-size:20px; margin:-8px 0 14px; }
+  .src:empty { display:none; }
+</style>
+</head>
+<body>
+<section id="cover" tabindex="-1" aria-label="Redline cover">
+  <h1 id="cover-name"></h1>
+  <p id="cover-what"></p>
+  <div id="cover-rule" aria-hidden="true"></div>
+  <p id="cover-tagline"></p>
+  <p id="cover-team"></p>
+  <p id="cover-track"></p>
+  <p id="cover-hint"></p>
+</section>
+
+<main>
+  <header>
+    <div class="brand" id="brand"></div>
+    <div class="badge" id="badge"></div>
+  </header>
+  <nav id="tabs" role="tablist"></nav>
+
+  <section class="view" id="view-live">
+    <p class="fileline" id="fileline" hidden></p>
+    <div class="runbar" id="runbar" hidden>
+      <select id="run-kind" aria-label="Run"></select>
+      <select id="run-model" aria-label="Model" hidden></select>
+      <button type="button" class="btn primary" id="run-go"></button>
+      <button type="button" class="btn" id="run-stop"></button>
+      <span class="runtext" id="run-text" role="status"></span>
+    </div>
+    <div class="canvas-wrap"><span class="mini" id="live-badge" hidden></span><div id="fit"><div id="board"><svg id="wires" viewBox="0 0 1700 424"></svg></div></div></div>
+    <div class="lower" id="lower">
+      <div class="card" id="happened"><h3 id="happened-title"></h3><p class="src" id="ex-src"></p><dl class="ex" id="ex"></dl></div>
+      <div class="card"><h3 id="chips-title"></h3><div class="chips" id="chips"></div></div>
+    </div>
+    <div class="stream" id="stream" hidden><div class="stream-head" id="stream-head"></div><div class="stream-body" id="stream-body" aria-live="polite"></div></div>
+  </section>
+
+  <section class="view" id="view-results" hidden>
+    <div class="cards" id="cards"></div>
+    <div class="facts" id="facts"></div>
+  </section>
+
+  <section class="view" id="view-proof" hidden>
+    <div class="grid2">
+      <div class="card"><h3 id="who-title"></h3><ul class="plain" id="who"></ul></div>
+      <div class="card"><h3 id="log-title"></h3><p id="log" style="font-size:26px"></p>
+        <div class="rules" style="margin-top:28px"><h3 id="rules-title"></h3><div id="rules"></div><p class="roles" id="roles"></p></div></div>
+      <div class="card"><h3 id="risks-title"></h3><ul class="plain" id="risks"></ul></div>
+      <div class="card"><h3 id="controls-title"></h3><ul class="plain" id="controls"></ul></div>
+    </div>
+  </section>
+</main>
+
+<script src="data/demo.js"></script>
+<script src="copy.js"></script>
+<script src="pipeline-glyphs.js"></script>
+<script src="data/live.js"></script>
+<script>
+(function () {
+  var CP = window.COPY || {}, C = CP.page || {}, P = CP.product || {}, H = C.happened || {}, PR = C.proof || {}, RUN = C.run || {};
+  var D, N, G, cands, batches;
+  var SVGNS = ['ht', 'tp:', '//www.w3.org/2000/svg'].join('');  /* built so the page holds no network URL */
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function sv(tag, attrs) { var e = document.createElementNS(SVGNS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function key(id) { return id.toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function txt(f) { return f && f.text != null ? String(f.text) : ''; }
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+
+  /* The page reads the exported data (DEMO). bind() is called again after a new export. */
+  function bind() {
+    D = window.DEMO || {}; N = D.numbers || {}; G = D.governance || {}; cands = G.candidates || [];
+    batches = D.batches || [];
+    if (!Array.isArray(batches)) batches = Object.keys(batches).map(function (k) { return batches[k]; });
+  }
+  function num(k) { var v = N[k]; return v && v.status !== 'PENDING' ? v.text : null; }
+  function numReal(k) { var v = N[k]; return v && v.status === 'REAL' ? v.text : null; }
+  function batchOf(c) { return batches.filter(function (x) { return x.id === c.evidence_batch; })[0]; }
+  function defCodes(c) { var b = batchOf(c); return b && b.defences && b.defences.status !== 'PENDING' ? b.defences.text : ''; }
+  function defWords(t) {
+    var parts = [], W = C.defences;
+    if (/D1/.test(t)) parts.push(W.labels);
+    if (/D2/.test(t)) parts.push(W.code);
+    if (/D3/.test(t)) parts.push(W.human);
+    return parts.length ? parts.join(' + ') : (t ? W.none : '');
+  }
+  function dateOnly(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+    return m ? Number(m[3]) + ' ' + C.months[Number(m[2]) - 1] : '';
+  }
+  function when(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || '');
+    return m ? Number(m[3]) + ' ' + C.months[Number(m[2]) - 1] + ', ' + m[4] + ':' + m[5] : (iso || '');
+  }
+
+  /* ---------- the live feed (data/live.js, written by the bridge) ---------- */
+  function liveFeed() { return window.LIVE || null; }
+  function liveWord() { var L = liveFeed(); return (L && ((L.label && L.label.word) || L.mode)) || ''; }
+  function anyRunning() { var L = liveFeed(); return !!L && L.state === 'running'; }
+  /* The rail of LIVE may stand in for the exported verdicts only while a real run (LIVE, REPLAY or SAVED) is in
+     progress. A scripted feed never replaces what the real export says. */
+  function liveInProgress() { return anyRunning() && /^(LIVE|REPLAY|SAVED)$/.test(liveWord()); }
+
+  /* This page draws the run only after it has seen a run start (LIVE.state 'running') or started one itself.
+     An old finished run in data/live.js never lights the chart on load. */
+  var seen = false, baseline = false, baseUid = '', lastNodes = null, lastEdges = null;
+  function fresh() {
+    var L = liveFeed();
+    if (!L) return null;
+    if (!seen && L.state === 'running') seen = true;
+    if (!seen) return null;
+    if (baseline) {
+      var u = (L.source && L.source.uid) || '';
+      if (L.state === 'running' || u !== baseUid) baseline = false; else return null;
+    }
+    return L;
+  }
+  function startedHere() {
+    var L = liveFeed();
+    seen = true; baseline = true; baseUid = (L && L.source && L.source.uid) || ''; lastNodes = null; lastEdges = null;
+  }
+
+  /* ---------- cover ---------- */
+  $('cover-name').textContent = P.name || 'Redline';
+  $('cover-what').textContent = P.what || '';
+  $('cover-tagline').textContent = P.tagline || '';
+  $('cover-team').textContent = (P.team_line || '').replace('{team}', P.team || '');
+  $('cover-track').textContent = P.track || '';
+  $('cover-hint').textContent = (CP.cover || {}).hint || '';
+  var coverUp = true;
+  function hideCover() { if (!coverUp) return; coverUp = false; $('cover').hidden = true; }
+  $('brand').textContent = P.name || 'Redline';
+
+  /* ---------- tabs ---------- */
+  var VIEWS = ['live', 'results', 'proof'];
+  VIEWS.forEach(function (v) {
+    var b = el('button', null, (C.tabs || {})[v]); b.type = 'button'; b.setAttribute('role', 'tab'); b.id = 'tab-' + v;
+    b.addEventListener('click', function () { show(v); });
+    $('tabs').appendChild(b);
+  });
+  var currentView = 'live';
+  function show(v) {
+    currentView = v;
+    VIEWS.forEach(function (n) {
+      $('view-' + n).hidden = n !== v;
+      $('tab-' + n).setAttribute('aria-selected', n === v ? 'true' : 'false');
+    });
+    try { history.replaceState(null, '', '#v=' + v); } catch (e) {}
+    fit();
+  }
+
+  /* ---------- the badge: one honest label ---------- */
+  function renderBadge() {
+    var badge = C.badge_none, L = liveFeed();
+    if (anyRunning()) {
+      /* while a run is in progress the badge shows that run's own label */
+      var w = liveWord();
+      badge = w === 'SCRIPTED' ? C.badge_scripted : w === 'REPLAY' ? C.badge_replay : C.badge_real;
+      if (L.model && w !== 'SCRIPTED') badge += ' · ' + L.model;
+    } else if (cands.length) {
+      var mode = G.mode || '', date = (cands[0].run_id || '').slice(0, 8);
+      date = date.length === 8 ? date.slice(0, 4) + '-' + date.slice(4, 6) + '-' + date.slice(6) : '';
+      badge = mode === 'LIVE' || mode === 'SAVED' ? C.badge_real : C.badge_scripted;
+      if (mode === 'LIVE' || mode === 'SAVED') badge += [num('headline.model'), date].filter(Boolean).map(function (s) { return ' · ' + s; }).join('');
+    }
+    $('badge').textContent = badge;
+    /* a scripted feed on the canvas is labelled on the Live run view itself */
+    var Lc = fresh(), mini = $('live-badge'), scripted = !!Lc && liveWord() === 'SCRIPTED';   /* an old run's file adds no second badge */
+    mini.hidden = !scripted; mini.textContent = scripted ? C.scripted_badge : '';
+  }
+
+  /* ---------- live run: the canvas ---------- */
+  var X = function (i) { return i * 294; }, Y1 = 60, Y2 = 262, NW = 230, NH = 140;
+  var POS = {  /* column, row */
+    'rt.attack': [0, 1], 'rt.record': [1, 1], 'rt.check': [2, 1], 'sl.gate': [3, 1], 'sl.review': [4, 1], 'sl.log': [5, 1],
+    'll.risks': [5, 2], 'fix.ticket': [3, 2]
+  };
+  var steps = C.steps || [], board = $('board'), wires = $('wires'), nodeEls = {}, wireEls = {};
+  function pos(id) { var p = POS[id]; return { x: X(p[0]), y: p[1] === 1 ? Y1 : Y2 }; }
+  steps.forEach(function (s) {
+    var p = pos(s.id), box = el('div', 'node idle');
+    box.style.left = p.x + 'px'; box.style.top = p.y + 'px';
+    var svg = sv('svg', { viewBox: '0 0 120 90' }); svg.innerHTML = (window.GLYPHS || {})[s.id] || '';
+    box.appendChild(svg); box.appendChild(el('div', 'lbl', s.label));
+    var tk = el('div', 'tick'), ts = sv('svg', { viewBox: '0 0 16 16' });
+    ts.appendChild(sv('path', { d: 'M3 8.5 L6.5 12 L13 4.5', fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    tk.appendChild(ts); box.appendChild(tk);
+    var wn = el('div', 'warn'), ws = sv('svg', { viewBox: '0 0 16 16' });
+    ws.appendChild(sv('path', { d: 'M8 3 V9 M8 12.5 V13', fill: 'none', 'stroke-linecap': 'round' }));
+    wn.appendChild(ws); box.appendChild(wn);
+    board.appendChild(box); nodeEls[s.id] = box;
+  });
+  var GL = C.groups || {};
+  function glabel(text, col0, cols) {
+    var g = el('div', 'glabel', text); g.style.left = X(col0) + 'px'; g.style.width = (cols * 294 - 64) + 'px'; board.appendChild(g);
+  }
+  glabel(GL.red, 0, 3); glabel(GL.gate, 3, 3);
+  function R(id) { var p = pos(id); return [p.x + NW, p.y + NH / 2]; }
+  function L_(id) { var p = pos(id); return [p.x, p.y + NH / 2]; }
+  function B(id) { var p = pos(id); return [p.x + NW / 2, p.y + NH]; }
+  function T(id) { var p = pos(id); return [p.x + NW / 2, p.y]; }
+  function hcurve(a, b) { var d = (b[0] - a[0]) / 2; return 'M' + a[0] + ' ' + a[1] + ' C' + (a[0] + d) + ' ' + a[1] + ' ' + (b[0] - d) + ' ' + b[1] + ' ' + b[0] + ' ' + b[1]; }
+  function addWire(to, d) { var p = sv('path', { d: d }); wires.appendChild(p); wireEls[to] = p; }
+  [['rt.attack', 'rt.record'], ['rt.record', 'rt.check'], ['rt.check', 'sl.gate'], ['sl.gate', 'sl.review'], ['sl.review', 'sl.log']].forEach(function (e) {
+    addWire(e[1], hcurve(R(e[0]), L_(e[1])));
+  });
+  (function () {
+    var a = B('sl.log'), b = T('ll.risks');
+    addWire('ll.risks', 'M' + a[0] + ' ' + a[1] + ' C' + a[0] + ' ' + (a[1] + 40) + ' ' + b[0] + ' ' + (b[1] - 40) + ' ' + b[0] + ' ' + b[1]);
+    addWire('fix.ticket', hcurve(L_('ll.risks'), R('fix.ticket')));
+    var f = L_('fix.ticket'), t = B('rt.attack');
+    addWire('rt.attack', 'M' + f[0] + ' ' + f[1] + ' C' + (f[0] - 380) + ' ' + f[1] + ' ' + t[0] + ' ' + (t[1] + 150) + ' ' + t[0] + ' ' + t[1]);
+    var lab = sv('text', { x: 700, y: Y2 + NH / 2 - 16, 'text-anchor': 'middle' }); lab.textContent = C.loop_label || ''; wires.appendChild(lab);
+  })();
+  var dot = sv('circle', { id: 'dot', r: 7, cx: -50, cy: -50 }); wires.appendChild(dot);
+
+  /* The flowchart shows eight boxes; a box can stand for several bridge nodes. */
+  var GROUP = { 'rt.check': ['rt.check', 'rt.rate'], 'sl.gate': ['sl.fingerprint', 'sl.gate'],
+                'll.risks': ['ll.risks', 'll.controls', 'll.evidence', 'll.trace', 'll.summary'] };
+  function one(n) {
+    var st = n && n.state;
+    return st === 'pass' || st === 'fail' ? 'done' : (st === 'running' || st === 'done' || st === 'error' || st === 'skipped' ? st : 'idle');
+  }
+  function stateOf(id, nodes) {
+    if (!nodes) return 'idle';
+    var sts = (GROUP[id] || [id]).map(function (i) { return one(nodes[i]); });
+    if (sts.indexOf('running') >= 0) return 'running';
+    if (sts.indexOf('error') >= 0) return 'error';
+    if (sts.every(function (x) { return x === 'skipped'; })) return 'skipped';
+    if (sts.every(function (x) { return x === 'done' || x === 'skipped'; })) return 'done';
+    return 'idle';
+  }
+  /* the wire into a box is green when the bridge says its edge is done */
+  var EDGE_KEY = { 'rt.record': 'rt.attack>rt.record', 'rt.check': 'rt.record>rt.check', 'sl.gate': 'sl.fingerprint>sl.gate',
+                   'sl.review': 'sl.gate>sl.review', 'sl.log': 'sl.review>sl.log', 'fix.ticket': 'll.summary>fix.ticket',
+                   'rt.attack': 'fix.ticket>rt.attack' };
+  var SRC = { 'rt.record': 'rt.attack', 'rt.check': 'rt.record', 'sl.gate': 'rt.check', 'sl.review': 'sl.gate', 'sl.log': 'sl.review',
+              'll.risks': 'sl.log', 'fix.ticket': 'll.risks', 'rt.attack': 'fix.ticket' };
+  var runningId = null;
+  function paintNodes() {
+    var Lf = fresh();
+    if (Lf && Lf.state !== 'waiting' && Lf.nodes) { lastNodes = Lf.nodes; lastEdges = Lf.edges || {}; }
+    var nodes = lastNodes, edges = lastEdges || {}, states = {};
+    runningId = null;
+    steps.forEach(function (s) { states[s.id] = stateOf(s.id, nodes); });
+    steps.forEach(function (s) {
+      var st = states[s.id];
+      nodeEls[s.id].className = 'node ' + st;
+      if (st === 'running' && !runningId && s.id !== 'rt.attack') runningId = s.id;
+      var w = wireEls[s.id];
+      if (!w) return;
+      var cls = '';
+      if (st === 'running' && s.id !== 'rt.attack') cls = 'lit';
+      else if (nodes) {
+        var k = EDGE_KEY[s.id];
+        if (k ? edges[k] === 'done' : states[SRC[s.id]] === 'done') cls = 'done';
+      }
+      w.setAttribute('class', cls);
+    });
+  }
+
+  /* one dot, only on the wire into the step that runs; none with reduced motion */
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var t0 = 0;
+  function tick(now) {
+    var w = runningId && wireEls[runningId];
+    if (w && !reduce) {
+      var len = w.getTotalLength(), f = ((now - t0) % 1800) / 1800, pt = w.getPointAtLength(len * f);
+      dot.setAttribute('cx', pt.x); dot.setAttribute('cy', pt.y);
+    } else { dot.setAttribute('cx', -50); dot.setAttribute('cy', -50); }
+    requestAnimationFrame(tick);
+  }
+  if (!reduce) requestAnimationFrame(function (n) { t0 = n; tick(n); });
+
+  function fit() {
+    var box = $('fit'), s = Math.min(1.12, box.clientWidth / 1700);
+    if (!box.clientWidth) return;
+    board.style.transform = 'scale(' + s + ')';
+    box.style.height = Math.round(424 * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+
+  /* ---------- result chips: the exported verdicts ---------- */
+  $('chips-title').textContent = C.chips_title || '';
+  function paintChips() {
+    var box = $('chips'), Lf = liveFeed(); clear(box);
+    var rows;
+    if (liveInProgress() && Lf.rail && Lf.rail.length) rows = Lf.rail.map(function (r) { return { id: r.id, v: r.verdict }; });
+    else rows = cands.map(function (c) { return { id: c.id, v: txt(c.gate && c.gate.verdict) }; });
+    rows.forEach(function (r) {
+      var row = el('div', 'chip'); row.appendChild(el('b', null, r.id));
+      if (r.v === 'PASS' || r.v === 'FAIL') row.appendChild(el('span', 'pill ' + (r.v === 'PASS' ? 'good' : 'bad'), C.chip[r.v]));
+      else row.appendChild(el('span', 'muted', C.state.idle));
+      box.appendChild(row);
+    });
+  }
+
+  /* ---------- What just happened: one real run from the data. Nothing is invented. ---------- */
+  function pickRun() {
+    var order = [], seen = {};
+    cands.forEach(function (c) { var b = batchOf(c); if (b && !seen[b.id]) { seen[b.id] = 1; order.push(b); } });
+    batches.forEach(function (b) { if (!seen[b.id]) { seen[b.id] = 1; order.push(b); } });
+    function find(test) {
+      for (var i = 0; i < order.length; i++) {
+        var runs = order[i].runs || {}, ks = Object.keys(runs);
+        for (var j = 0; j < ks.length; j++) if (test(runs[ks[j]])) return { run: runs[ks[j]], batch: order[i] };
+      }
+      return null;
+    }
+    return find(function (r) { return r.kind === 'attack' && r.violated; }) ||
+           find(function (r) { return r.kind === 'attack' && (r.tool_calls || []).some(function (t) { return t.blocked; }); });
+  }
+  function renderExample() {
+    var box = $('ex'), src = $('ex-src'); clear(box); src.textContent = '';
+    $('happened-title').textContent = H.title || '';
+    var pick = pickRun(), card = $('happened');
+    card.hidden = !pick; card.parentNode.style.gridTemplateColumns = pick ? '' : '1fr';
+    if (!pick) return;
+    var run = pick.run, b = pick.batch;
+    /* say which run this is, unless it is the run the badge names */
+    var same = cands.some(function (c) { return c.evidence_batch === b.id; }) && !anyRunning();
+    if (!same) {
+      var d = dateOnly(b.produced && b.produced.raw);
+      src.textContent = (b.id === 'rehearsal' ? H.from_rehearsal : H.from_earlier) + (d ? ', ' + d : '');
+    }
+    function row(k, v) { box.appendChild(el('dt', null, k)); var dd = el('dd'); if (typeof v === 'string') dd.textContent = v; else dd.appendChild(v); box.appendChild(dd); }
+    var task = txt(run.user_task);
+    if (task) row(H.asked, '“' + task + '”');
+    var pl = run.planted;
+    if (pl && pl.status === 'match' && txt(pl.text)) {
+      row(H.hidden, '“' + txt(pl.text).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim() + '”');
+    }
+    var calls = run.tool_calls || [], hit = calls.filter(function (t) { return t.flagged; })[0] || calls.filter(function (t) { return t.blocked; })[0];
+    if (hit) row(H.did, hit.text);
+    var res = el('span');
+    if (run.violated) {
+      var lab = (run.classes || []).map(function (c) { return c.label; }).join(', ');
+      res.appendChild(el('span', 'pill bad', H.broke + (lab ? ': ' + lab : '')));
+      res.appendChild(document.createTextNode('  ' + (H.caught || '')));
+    } else res.appendChild(el('span', 'pill good', H.blocked));
+    row('', res);
+  }
+
+  /* ---------- results ---------- */
+  function renderResults() {
+    var box = $('cards'), f = $('facts'); clear(box); clear(f);
+    cands.forEach(function (c) {
+      var k = key(c.id), v = txt(c.gate && c.gate.verdict);
+      var card = el('article', 'card');
+      card.appendChild(el('div', 'cid', c.id));
+      card.appendChild(el('div', 'def', defWords(defCodes(c))));
+      if (v === 'PASS' || v === 'FAIL') card.appendChild(el('span', 'pill ' + (v === 'PASS' ? 'good' : 'bad'), C.verdict[v]));
+      var hit = num(k + '.violations'), runs = num(k + '.attack_runs');
+      if (hit != null && runs != null) {
+        card.appendChild(el('div', 'big', hit + ' ' + C.of + ' ' + runs));
+        card.appendChild(el('div', 'muted', C.attacks));
+      }
+      var fail = ((c.gate && c.gate.checks) || []).filter(function (x) { return x.ok === false; })[0];
+      if (v === 'FAIL' && fail) {
+        card.appendChild(el('div', 'why', C.why + ': ' + fail.label + ' ' + txt(fail.value) + ', ' +
+          (/^min_/.test(fail.name) ? C.limit_min : C.limit_max) + ' ' + txt(fail.limit)));
+      }
+      box.appendChild(card);
+    });
+    var br = num('benign.rate'), bn = num('benign.n'), t = numReal('time.to_decision');
+    function fact(label, value) { var s = el('div'); s.appendChild(document.createTextNode(label + ': ')); s.appendChild(el('b', null, value)); f.appendChild(s); }
+    if (br) fact(C.normal, br + (bn ? ' (' + bn + ')' : ''));
+    if (t) fact(C.decided_in, t);
+  }
+
+  /* ---------- proof: everything here comes from the exported data (DEMO), never from the live feed ---------- */
+  ['who', 'log', 'rules', 'risks', 'controls'].forEach(function (k) { $(k + '-title').textContent = PR[k + '_title'] || ''; });
+  function renderProof() {
+    ['who', 'rules', 'risks', 'controls'].forEach(function (k) { clear($(k)); });
+    var es = ((D.audit || {}).entries || []).slice(-5).reverse(), ul = $('who');
+    if (!es.length) ul.appendChild(el('li', 'empty', PR.none_yet));
+    es.forEach(function (e) {
+      var li = el('li'); li.appendChild(el('b', null, cap(txt(e.who)) + ' · ' + (e.event_label || '')));
+      li.appendChild(el('small', null, when(txt(e.time)) + ' · ' + txt(e.candidate) + ' · ' + txt(e.what)));
+      ul.appendChild(li);
+    });
+    var ch = (D.audit || {}).chain || {}, word = num('chain.status');
+    var ok = ch.ok === true || word === 'intact' ? true : (ch.ok === false || word === 'broken' ? false : null);
+    var p = $('log'); p.textContent = ok === true ? PR.log_ok : ok === false ? PR.log_bad : PR.log_none;
+    p.className = ok === null ? 'empty' : '';
+    (PR.rules || []).forEach(function (r) { $('rules').appendChild(el('p', null, r)); });
+    var roles = ((D.policy || {}).roles) || {}, eng = txt(roles.engineers), rev = txt(roles.reviewers);
+    $('roles').textContent = eng && rev ? cap(eng) + ' ' + PR.engineer + ' ' + cap(rev) + ' ' + PR.reviewer : '';
+    var rk = ((D.assurance || {}).risks || []).filter(function (r) { return /open/i.test(r.status_text || ''); }), ru = $('risks');
+    if (!rk.length) ru.appendChild(el('li', 'empty', PR.no_risks));
+    rk.forEach(function (r) {
+      var li = el('li', null, r.title); li.appendChild(el('small', null, PR.controlled_by + ' ' + (defWords(r.control || '') || r.control)));
+      ru.appendChild(li);
+    });
+    var sel = cands.filter(function (c) { return c.id === G.selected; })[0] || cands[cands.length - 1], cu = $('controls');
+    var words = sel ? defWords(defCodes(sel)).split(' + ').filter(function (w) { return w && w !== C.defences.none; }) : [];
+    if (!words.length) cu.appendChild(el('li', 'empty', PR.controls_none));
+    words.forEach(function (w) { cu.appendChild(el('li', null, w)); });
+  }
+
+  function renderData() { renderBadge(); paintChips(); renderExample(); renderResults(); renderProof(); }
+
+  /* ---------- the stream: what passes through the agent, told as a line-art scene player ---------- */
+  var S = C.stream || {};
+  var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sStage = $('stream-body'), sPanel = $('stream');
+  var sD, sNext, sCur, sLive, sDark, sLogCap;
+  function sFresh() { sD = { pin: null, runs: [], fp: null, gate: null, audit: null, chain: null, frozen: false }; sNext = 0; sCur = null; sLive = false; sDark = false; sLogCap = null; }
+  sFresh();
+  function lab(group, code) {
+    var m = (window.DEMO && window.DEMO.labels && window.DEMO.labels[group]) || {};
+    return m[code] || code;
+  }
+  function later(g, ms, fn) { setTimeout(function () { if (g === sGen) fn(); }, ms); }
+  function cleanHidden(t) { return String(t).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim(); }
+  function trimTo(t, n) { t = String(t).replace(/\s+/g, ' ').trim(); if (t.length <= n) return t; var c = t.slice(0, n); var i = c.lastIndexOf(' '); return (i > n / 2 ? c.slice(0, i) : c) + '…'; }
+  function setDark(on) { sDark = !!on; sPanel.classList.toggle('dark', sDark); }
+  var EASE = 'cubic-bezier(.65,0,.35,1)';
+
+  /* one thing at a time: text fades up (or fades and un-blurs on the dark scene), drawings draw themselves */
+  function fadeUp(g, node, at, dur, blur) {
+    if (reduce) return;
+    node.style.opacity = 0; node.style.transform = blur ? 'none' : 'translateY(8px)'; if (blur) node.style.filter = 'blur(6px)';
+    later(g, Math.max(at, 20), function () {
+      void node.offsetWidth;
+      node.style.transition = 'opacity ' + dur + 'ms ease-out, transform ' + dur + 'ms ease-out, filter ' + dur + 'ms ease-out';
+      node.style.opacity = 1; node.style.transform = 'none'; node.style.filter = 'none';
+    });
+  }
+  /* items: [{ d: path, at: ms, dur: ms, cls: 'soft' | 'strong' }]; returns the svg and a function that starts the drawing */
+  function makeArt(g, items, vb, t0) {
+    var svg = sv('svg', { viewBox: vb, 'aria-hidden': 'true' }), ps = [], end = 0;
+    items.forEach(function (it) { var p = sv('path', { d: it.d }); if (it.cls) p.setAttribute('class', it.cls); svg.appendChild(p); ps.push(p); });
+    return {
+      svg: svg,
+      arm: function () {
+        items.forEach(function (it, i) {
+          var p = ps[i], len = 0, dur = it.dur || 600;
+          try { len = p.getTotalLength(); } catch (e) { len = 0; }
+          end = Math.max(end, it.at + dur);
+          if (reduce || !len) return;
+          p.style.strokeDasharray = len + ' ' + len; p.style.strokeDashoffset = len; p.style.opacity = 0;
+          later(g, t0 + it.at, function () {
+            void p.getBoundingClientRect();
+            p.style.opacity = 1; p.style.transition = 'stroke-dashoffset ' + dur + 'ms ' + EASE; p.style.strokeDashoffset = 0;
+          });
+        });
+        return t0 + end;
+      }
+    };
+  }
+
+  /* o: { eb, hl: [[text, emphasised]], chars, mono, cap, dark, art: { vb, items } } */
+  function buildScene(g, o) {
+    var sc = el('div', 'sc' + (o.dark ? ' dark' : '')), tx = el('div', 'sc-text'), ar = el('div', 'sc-art');
+    var eb = el('div', 'sc-eb', o.eb), hl = el('div', 'sc-hl' + (o.mono ? ' mono' : '')), cap = o.cap ? el('div', 'sc-cap', '— ' + o.cap) : null;
+    var end = 0, hlDur = o.dark ? 700 : 500, charEls = [];
+    if (o.chars) {
+      String(o.chars).split('').forEach(function (ch) { var s = el('span', null, ch); charEls.push(s); hl.appendChild(s); });
+    } else {
+      o.hl.forEach(function (p) { if (p[1]) hl.appendChild(el('b', null, p[0])); else hl.appendChild(document.createTextNode(p[0])); });
+    }
+    tx.appendChild(eb); tx.appendChild(hl); if (cap) tx.appendChild(cap);
+    sc.appendChild(tx); sc.appendChild(ar);
+    var art = o.art ? makeArt(g, o.art.items, o.art.vb, 450) : null;
+    if (art) ar.appendChild(art.svg);
+    sStage.appendChild(sc);
+    fadeUp(g, eb, 0, 500, false); end = 500;
+    if (charEls.length) {
+      charEls.forEach(function (s, i) { fadeUp(g, s, 200 + i * 70, 400, false); });
+      end = Math.max(end, 200 + charEls.length * 70 + 400);
+    } else { fadeUp(g, hl, 200, hlDur, !!o.dark); end = Math.max(end, 200 + hlDur); }
+    if (art) end = Math.max(end, art.arm());
+    if (cap) { var at = Math.max(1000, 200 + hlDur + 150); fadeUp(g, cap, at, 500, false); end = Math.max(end, at + 500); }
+    return { el: sc, ms: end, cap: cap };
+  }
+
+  /* ---- the drawings: hairline paths on a 400 x 280 sheet, drawn one stroke after another ---- */
+  var VB = '0 0 400 280';
+  function sheetArt(mark) {
+    var it = [{ d: 'M110 24 H246 L288 66 V256 H110 Z', at: 0, dur: 700 }, { d: 'M246 24 V66 H288', at: 300, dur: 300 }];
+    var lines = [['M134 96 H264', 96], ['M134 124 H250', 124], ['M134 152 H264', 152], ['M134 180 H264', 180], ['M134 208 H236', 208], ['M134 234 H210', 234]];
+    lines.forEach(function (l, i) {
+      if (mark && i === 3) return;
+      it.push({ d: l[0], at: mark ? 600 + i * 90 : 600 + i * 160, dur: 450, cls: 'soft' });
+    });
+    if (mark) {
+      it.push({ d: 'M134 180 H264', at: 1300, dur: 500, cls: 'strong' });
+      it.push({ d: 'M300 164 H310 V196 H300', at: 1950, dur: 450 });
+      it.push({ d: 'M310 180 H330', at: 2300, dur: 250 });
+    }
+    return { vb: VB, items: it };
+  }
+  function agentArt() {
+    return { vb: VB, items: [
+      { d: 'M24 104 H116 V190 H24 Z', at: 0, dur: 600 }, { d: 'M70 104 V80', at: 300, dur: 250 }, { d: 'M10 130 V164', at: 450, dur: 250 }, { d: 'M130 130 V164', at: 600, dur: 250 },
+      { d: 'M48 136 V148', at: 750, dur: 200 }, { d: 'M92 136 V148', at: 900, dur: 200 }, { d: 'M46 170 H94', at: 1050, dur: 300 },
+      { d: 'M146 147 H258', at: 1250, dur: 700 }, { d: 'M242 131 L260 147 L242 163', at: 1850, dur: 300 },
+      { d: 'M286 120 H378 V222 H286 Z', at: 2200, dur: 600 }, { d: 'M304 120 V98 C304 60 360 60 360 98 V120', at: 2850, dur: 450 },
+      { d: 'M338 164 A9 9 0 1 1 320 164 A9 9 0 1 1 338 164', at: 3350, dur: 350 }, { d: 'M329 173 V196', at: 3750, dur: 250 }
+    ] };
+  }
+  function shieldArt(bad) {
+    var it = [{ d: 'M200 28 L292 62 V142 C292 200 250 238 200 260 C150 238 108 200 108 142 V62 Z', at: 0, dur: 800 }];
+    if (bad) { it.push({ d: 'M164 112 L236 184', at: 1000, dur: 450 }); it.push({ d: 'M236 112 L164 184', at: 1600, dur: 450 }); }
+    else it.push({ d: 'M158 148 L188 178 L246 112', at: 1000, dur: 600 });
+    return { vb: VB, items: it };
+  }
+  function gridArt(runs) {
+    var n = Math.min(runs.length, 48), rows = Math.max(1, Math.ceil(n / 12)), it = [];
+    for (var i = 0; i < n; i++) {
+      var x = (i % 12) * 31 + 1, y = Math.floor(i / 12) * 31 + 1;
+      it.push({ d: 'M' + x + ' ' + y + ' h22 v22 h-22 Z', at: i * 60, dur: 400 });
+      if (runs[i]) it.push({ d: 'M' + x + ' ' + y + ' l22 22 M' + (x + 22) + ' ' + y + ' l-22 22', at: i * 60 + 300, dur: 350, cls: 'strong' });
+    }
+    return { vb: '0 0 374 ' + (rows * 31), items: it };
+  }
+  function fingerArt() {
+    var it = [], rs = [24, 44, 64, 84, 104], legs = [64, 74, 58, 70, 52];
+    rs.forEach(function (r, i) { it.push({ d: 'M' + (200 - r) + ' ' + (140 + legs[i]) + ' V140 A' + r + ' ' + r + ' 0 0 1 ' + (200 + r) + ' 140 V' + (140 + legs[i] - 10), at: i * 220, dur: 700 }); });
+    it.push({ d: 'M200 140 V222', at: 1200, dur: 500, cls: 'soft' });
+    return { vb: VB, items: it };
+  }
+  function gateArt(closed) {
+    var it = [{ d: 'M80 244 H320', at: 0, dur: 450 }, { d: 'M110 244 V66', at: 300, dur: 450 }, { d: 'M290 244 V66', at: 550, dur: 450 }];
+    if (closed) {
+      it.push({ d: 'M110 104 H290', at: 900, dur: 550 }); it.push({ d: 'M110 154 H290', at: 1250, dur: 550 });
+      it.push({ d: 'M150 104 L190 154', at: 1650, dur: 300, cls: 'soft' }); it.push({ d: 'M230 104 L270 154', at: 1850, dur: 300, cls: 'soft' });
+    } else {
+      it.push({ d: 'M110 104 L262 40', at: 900, dur: 650 }); it.push({ d: 'M110 104 L84 118', at: 1500, dur: 250 });
+    }
+    return { vb: VB, items: it };
+  }
+  function chainArt() {
+    var it = [];
+    [14, 112, 210, 308].forEach(function (x, i) {
+      it.push({ d: 'M' + x + ' 106 H' + (x + 76) + ' V174 H' + x + ' Z', at: i * 500, dur: 450 });
+      it.push({ d: 'M' + (x + 14) + ' 128 H' + (x + 60) + ' M' + (x + 14) + ' 148 H' + (x + 42), at: i * 500 + 250, dur: 300, cls: 'soft' });
+      if (i < 3) it.push({ d: 'M' + (x + 76) + ' 140 H' + (x + 98), at: i * 500 + 380, dur: 200 });
+    });
+    return { vb: VB, items: it };
+  }
+
+  /* ---- the scenes: each get() returns what it needs to draw, or null when a field is missing ---- */
+  function hiddenId(p) { var m = p && p.hidden ? /[A-Z]{2,}-\d+/.exec(String(p.hidden)) : null; return m ? m[0] : null; }
+  function logCap() {
+    var a = sD.audit || {}, parts = [];
+    if (a.entry != null) parts.push(S.entry_n + ' ' + a.entry);
+    if (a.hash12) parts.push(S.hash + ' ' + a.hash12);
+    if (a.scripted) parts.push(S.reviewer_tag);
+    var t = parts.join(' · ');
+    if (sD.chain && sD.chain.ok === true) t += (t ? ' — ' : '') + S.chain_intact;
+    return t;
+  }
+  var SCENES = [
+    { get: function () {
+      var p = sD.pin; if (!p) return null;
+      var h = p.doc ? [[S.read + ' ', 0], [String(p.doc), 1]] : (p.user_task ? [[trimTo(p.user_task, 40), 0]] : null);
+      return h ? { eb: S.eb_task, hl: h, art: sheetArt(false) } : null;
+    } },
+    { get: function () {
+      var p = sD.pin, t = p && p.hidden ? cleanHidden(p.hidden) : ''; if (!t) return null;
+      var m = /[A-Z]{2,}-\d+/.exec(t), h;
+      if (m) {
+        var before = t.slice(0, m.index).trim().replace(/(\s+(asset|record|entry|item|file|the|a|an))+$/i, '');
+        var simple = /^[A-Za-z ]+$/.test(before) && before.split(/\s+/).length <= 3;
+        h = simple && before ? [[before + ' ', 0], [m[0], 1]] : [[m[0], 1]];
+      } else h = [[trimTo(t, 40), 0]];
+      return { eb: S.eb_hidden, hl: h, cap: S.hidden_cap, art: sheetArt(true) };
+    } },
+    { get: function () {
+      var p = sD.pin; if (!p || !p.tool_calls) return null;
+      var calls = String(p.tool_calls).match(/[A-Za-z_][\w.]*\([^()]*\)/g) || [], id = hiddenId(p);
+      var pick = calls.filter(function (c) { return id && c.indexOf(id) > -1; })[0] || calls[0] || trimTo(p.tool_calls, 40);
+      return { eb: S.eb_agent, mono: true, hl: [[pick, 0]], art: agentArt() };
+    } },
+    { get: function () {
+      var p = sD.pin; if (!p || typeof p.violated !== 'boolean') return null;
+      if (p.violated) {
+        var c = (p.classes || [])[0], l = c ? String(lab('classes', c)) : '';
+        return { eb: S.eb_verdict, dark: true, hl: [[S.caught_word, 1]], cap: l ? l.charAt(0).toLowerCase() + l.slice(1) : null, art: shieldArt(true) };
+      }
+      return { eb: S.eb_verdict, hl: [[S.held_pre + ' ', 0], [S.held_word, 1]], cap: S.held_cap, art: shieldArt(false) };
+    } },
+    { get: function () {
+      var N = (window.LIVE && window.LIVE.nodes) || {}, rate = N['rt.rate'] || {}, att = N['rt.attack'] || {};
+      var after = !!(sD.fp || sD.gate || sD.audit), rs = rate.state;
+      var fact = (sD.gate && sD.gate.rate) || rate.fact || ((after || rs === 'skipped' || rs === 'error') ? att.fact : '');
+      if (!fact) return null;
+      fact = String(fact);
+      var m = /^(\S+\s+of\s+\S+)\s*(?:·|-|–)\s*(.+)$/.exec(fact);
+      return { eb: S.eb_batch, hl: m ? [[m[1], 1]] : [[trimTo(fact, 40), 1]], cap: m ? m[2] : null, art: gridArt(sD.runs) };
+    } },
+    { get: function () {
+      var f = sD.fp; if (!f || !f.identity12) return null;
+      return { eb: S.eb_finger, chars: String(f.identity12), mono: true, art: fingerArt() };
+    } },
+    { get: function () {
+      var gt = sD.gate; if (!gt || !gt.verdict) return null;
+      var cl = ((window.DEMO || {}).labels || {}).checks || {};
+      return { eb: S.eb_gate, hl: [[S.gate_pre + ' ', 0], [gt.verdict + '.', 1]], cap: gt.reason ? String(cl[gt.reason] || gt.reason) : null, art: gateArt(gt.verdict !== 'PASS') };
+    } },
+    { get: function () {
+      if (!sD.audit) return null;
+      return { eb: S.eb_log, hl: [[S.log_pre + ' ', 0], [S.log_word, 1]], cap: logCap() || null, art: chainArt(), log: true };
+    } }
+  ];
+
+  /* the player: one scene at a time, in order, once per run. The last one stays on screen. */
+  function kick() {
+    if (sLive) return;
+    var k = sNext, spec = null;
+    while (k < SCENES.length) {
+      spec = SCENES[k].get();
+      if (spec) break;
+      var ahead = false;
+      for (var j = k + 1; j < SCENES.length; j++) if (SCENES[j].get()) { ahead = true; break; }
+      if (!ahead) return;      /* the data is not here yet: keep what is on screen */
+      k++;
+    }
+    if (!spec) return;
+    sNext = k + 1; sLive = true;
+    var g = sGen, old = sCur, FO = reduce ? 0 : 400, GAP = reduce ? 0 : 250;
+    function go() {
+      var w = $('stream-wait'); if (w) w.remove();
+      var b = buildScene(g, spec); sCur = b.el; sLogCap = spec.log ? b.cap : null;
+      later(g, b.ms + 1250, function () { sLive = false; kick(); });
+    }
+    if (old) {
+      if (!!spec.dark !== sDark) setDark(spec.dark);     /* the background crossfades while the old scene fades out */
+      old.classList.add('out');
+      later(g, FO, function () { if (old.parentNode) old.parentNode.removeChild(old); sCur = null; });
+      later(g, FO + GAP, go);
+    } else {
+      if (!!spec.dark !== sDark) setDark(spec.dark);
+      go();
+    }
+  }
+
+  /* play() takes one queued feed item into the run data and wakes the player */
+  function play(g, it) {
+    var d = it.d || {};
+    /* every scene tells the story of the pinned example's candidate: later passes do not overwrite it */
+    var pc = sD.pin && sD.pin.cand;
+    if (it.type === 'pin') sD.pin = d;
+    else if (it.type === 'fingerprint') { if (!sD.fp) sD.fp = d; }
+    else if (it.type === 'gate') {
+      if (sD.gate || (pc && d.cand && d.cand !== pc)) sD.frozen = !!sD.gate;
+      else sD.gate = d;
+    }
+    else if (it.type === 'audit') { if (!sD.frozen) sD.audit = d; }
+    else if (it.type === 'chain') { sD.chain = d; if (sLogCap) sLogCap.textContent = '— ' + logCap(); }
+    kick();
+    return 0;
+  }
+  function pump() {
+    if (sBusy) return;
+    var it = sQueue.shift();
+    if (!it) return;
+    sBusy = true;
+    var g = sGen, wait = play(g, it);
+    setTimeout(function () { if (g !== sGen) return; sBusy = false; pump(); }, wait);
+  }
+  function samePin(a, b) {
+    if (!a || !b) return false;
+    if (a.seq != null && b.seq != null && a.seq === b.seq) return true;
+    return a.test_id != null && a.test_id === b.test_id && a.cand === b.cand && a.rep === b.rep;
+  }
+  function resetStream() { sGen++; sQueue = []; sBusy = false; sMax = -1; sPinned = false; clear(sStage); sFresh(); sPanel.classList.remove('dark'); }
+  function paintStream() {
+    var L = fresh(), on = !!L;
+    $('lower').hidden = on; $('stream').hidden = !on;
+    if (!on) return;
+    var uid = (L.source && L.source.uid) || '';
+    if (uid !== sUid) { resetStream(); sUid = uid; }
+    $('stream-head').textContent = liveWord() === 'SCRIPTED' ? S.head_scripted : (L.model ? S.head_model + ': ' + L.model : '');
+    var feed = (Array.isArray(L.feed) ? L.feed : []).filter(function (x) { return x && typeof x.seq === 'number'; });
+    var top = feed.reduce(function (m, x) { return x.seq > m ? x.seq : m; }, -1);
+    if (top > -1 && top < sMax) { resetStream(); sUid = uid; }   /* seq went backwards: a new run */
+    var pin = L.feed_pin;
+    if (pin && !sPinned) { sPinned = true; sQueue.unshift({ type: 'pin', d: pin }); }
+    var items = feed.filter(function (x) { return x.seq > sMax; }).sort(function (a, b) { return a.seq - b.seq; });
+    items.forEach(function (x) {
+      sMax = x.seq;
+      if (x.type === 'run' && x.kind === 'attack' && (!pin || !pin.cand || x.cand === pin.cand)) {   /* the cells: the pinned candidate's pass only */
+        if (x.cand !== sD.cand && sD.runs.length) sD.runs = [];
+        sD.cand = x.cand; sD.runs.push(x.violated === true);
+      }
+      if (x.type === 'run' && samePin(x, pin)) return;
+      if (x.type === 'run') return;
+      sQueue.push({ type: x.type, d: x });
+    });
+    if (!sCur && !sLive && !$('stream-wait')) {
+      var w = el('div', 'sc-wait', S.waiting); w.id = 'stream-wait'; sStage.appendChild(w);
+    }
+    pump(); kick();
+  }
+
+  /* ---------- run bar: only when this page is served by the local runner ---------- */
+  var served = /^https?:$/.test(location.protocol), api = { ok: false, token: null, status: null }, wasRunning = false, notice = '';
+  function call(method, path, body) {
+    var opt = { method: method, headers: {} };
+    if (method === 'POST') {
+      opt.headers['Content-Type'] = 'application/json'; opt.headers['X-Redline-Token'] = api.token || '';
+      opt.body = JSON.stringify(body || {});
+    }
+    return fetch('/api/' + path, opt).then(function (r) {
+      return r.json().then(function (j) { return { code: r.status, json: j || {} }; }, function () { return { code: r.status, json: {} }; });
+    });
+  }
+  var kindSel = $('run-kind'), modelSel = $('run-model'), goBtn = $('run-go'), stopBtn = $('run-stop'), runText = $('run-text');
+  goBtn.textContent = RUN.run || ''; stopBtn.textContent = RUN.stop || '';
+  var builtKinds = '', builtModels = '';
+  function modelTag(m) { return typeof m === 'string' ? m : (m && (m.tag || m.name || m.id || m.model)) || ''; }
+  function buildChoices(S) {
+    var kinds = (S.kinds || Object.keys(RUN.kinds || {})).filter(function (k) { return RUN.kinds[k]; });
+    var kk = kinds.join('|');
+    if (kk !== builtKinds) {
+      var keep = kindSel.value; clear(kindSel);
+      kinds.forEach(function (k) { var o = el('option', null, RUN.kinds[k]); o.value = k; kindSel.appendChild(o); });
+      if (keep && kinds.indexOf(keep) >= 0) kindSel.value = keep;
+      builtKinds = kk;
+    }
+    var tags = (S.models || []).map(modelTag).filter(Boolean), mm = tags.join('|');
+    if (mm !== builtModels) {
+      var keepM = modelSel.value; clear(modelSel);
+      tags.forEach(function (t) { var o = el('option', null, t); o.value = t; modelSel.appendChild(o); });
+      if (keepM && tags.indexOf(keepM) >= 0) modelSel.value = keepM;
+      builtModels = mm;
+    }
+    modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full');
+  }
+  function progressText() {
+    var Lf = liveFeed(), t = anyRunning() && Lf.tiles;
+    if (t && t.n && t.list && t.list.length) {   /* count finished runs only: idle and running tiles are not done */
+      var done = t.list.filter(function (x) { return x && x[1] !== 'idle' && x[1] !== 'running'; }).length;
+      return done + ' ' + C.of + ' ' + t.n + ' ' + RUN.runs_done;
+    }
+    return '';
+  }
+  function paintRun() {
+    var S = api.status; if (!S) return;
+    buildChoices(S);
+    var running = !!S.running, last = S.last, line;
+    if (running && S.kind && RUN.kinds[S.kind]) kindSel.value = S.kind;
+    if (running && S.model) modelSel.value = S.model;
+    modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full');
+    goBtn.disabled = running || !kindSel.value; stopBtn.disabled = !running;
+    kindSel.disabled = modelSel.disabled = running;
+    if (running) {
+      var what = RUN.kinds[S.kind] || '', prog = progressText();
+      line = RUN.running + (what ? ': ' + what : '') + (S.model ? ' · ' + S.model : '') + (prog ? ' · ' + prog : '');
+    } else if (notice) line = notice;
+    else if (last && last.exit_code === 0) line = last.export_status === 'ok' ? RUN.finished : RUN.finished_no_export + (last.export_text ? ' ' + last.export_text : '');
+    else if (last && last.exit_code === 130) line = RUN.stopped || RUN.failed;
+    else if (last) line = RUN.failed + (last.export_text ? ' ' + last.export_text : '');
+    else line = RUN.idle;
+    runText.textContent = line;
+    runText.className = 'runtext' + (!running && !notice && last && last.exit_code !== 0 && last.exit_code !== 130 ? ' bad' : '');
+  }
+  function pollStatus() {
+    call('GET', 'status').then(function (r) {
+      if (r.code !== 200) return;
+      var S = r.json; api.status = S;
+      if (wasRunning && !S.running) {
+        notice = '';
+        if (S.last && S.last.export_status === 'ok') refreshData();
+      }
+      wasRunning = !!S.running;
+      if (S.running) notice = '';
+      paintRun(); renderBadge(); paintChips();
+    }, function () {});
+  }
+  kindSel.addEventListener('change', function () { modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full'); });
+  goBtn.addEventListener('click', function () {
+    var kind = kindSel.value, body = { kind: kind };
+    if (kind === 'live-short' || kind === 'live-full') {
+      if (!modelSel.value) { notice = RUN.no_model; paintRun(); return; }
+      body.model = modelSel.value;
+    }
+    if (kind === 'models') body.parallel = 1;
+    if ((kind === 'live-full' || kind === 'models') && !window.confirm(RUN.confirm_long)) return;
+    notice = ''; goBtn.disabled = true; runText.textContent = RUN.starting;
+    call('POST', 'run', body).then(function (r) {
+      if (r.code !== 403) return r;   /* the bridge restarted: take its new token and try once more */
+      return call('GET', 'session').then(function (s) {
+        if (s.code === 200 && s.json && s.json.token) { api.token = s.json.token; return call('POST', 'run', body); }
+        return r;
+      }, function () { return r; });
+    }).then(function (r) {
+      if (r.code !== 202) notice = RUN.could_not + (r.json.error ? ' ' + r.json.error : ''); else { startedHere(); paint(); }
+      pollStatus();
+    }, function () { notice = RUN.could_not; paintRun(); });
+  });
+  stopBtn.addEventListener('click', function () {
+    stopBtn.disabled = true; runText.textContent = RUN.stopping;
+    call('POST', 'stop', {}).then(pollStatus, pollStatus);
+  });
+  if (served) {
+    call('GET', 'session').then(function (r) {
+      if (r.code !== 200 || !r.json.token) return;
+      api.ok = true; api.token = r.json.token; $('runbar').hidden = false; fit();
+      pollStatus(); setInterval(pollStatus, 2000);
+    }, function () {});
+  } else {
+    var fl = $('fileline'); fl.textContent = RUN.file_line || ''; fl.hidden = !RUN.file_line;
+  }
+
+  /* After a run ends with a good export: load the new data/demo.js and draw the three views again in place. */
+  function refreshData() {
+    var s = document.createElement('script');
+    s.src = 'data/demo.js?r=' + Date.now();
+    s.onload = function () { s.remove(); bind(); renderData(); paintNodes(); show(currentView); };
+    s.onerror = function () { s.remove(); };
+    document.body.appendChild(s);
+  }
+
+  /* ---------- keys, cover, polling ---------- */
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.key === 'Shift') return;
+    var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'SELECT' || tag === 'BUTTON') { if (!coverUp) return; }
+    var wasCover = coverUp; hideCover();
+    if (e.key.length === 1 && e.key >= '1' && e.key <= '3') show(VIEWS[Number(e.key) - 1]);
+    else if (wasCover) fit();
+  });
+  $('cover').addEventListener('click', function () { hideCover(); fit(); });
+
+  var lastRunning = null;
+  function paint() {
+    paintNodes(); renderBadge(); paintChips(); paintStream();
+    var r = anyRunning();
+    if (r !== lastRunning) { lastRunning = r; renderExample(); }
+    paintRun();
+  }
+  setInterval(function () {
+    var s = document.createElement('script');
+    s.src = 'data/live.js?r=' + Date.now();
+    s.onload = s.onerror = function () { s.remove(); paint(); };
+    document.body.appendChild(s);
+  }, 1000);
+
+  bind();
+  var m = /v=(live|results|proof)/.exec(location.hash || '');
+  if (m) hideCover();
+  renderData();
+  show(m ? m[1] : 'live');
+  paint();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+})();
+</script>
+</body>
+</html>

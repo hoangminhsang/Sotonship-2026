@@ -1,0 +1,174 @@
+/* Redline pipeline screen (screen 6): pipeline.css
+   Loaded after app.css; it only uses app.css tokens (--paper, --ink, --tc-bg, --tc-fg, --fo-bg,
+   --fo-fg, --sec, --label, --lede, --hatch, --serif, --sans). Sections:
+   1 screen frame, 2 mode chip and status line, 3 rail, 4 tile strip, 5 board and nodes,
+   6 node states, 7 wires and wire labels, 8 reduced motion.
+   Kept calm on purpose: medium type (nothing above 40px on this screen), one fact line per node,
+   thin wires, no icons beside the state word.
+   Coordinates are stage pixels (the 1920 x 1080 stage is the positioned ancestor); the content
+   area is x 120-1800, y 150-1016. Inside #p-board the origin is (120, 150).
+   State is never colour alone: frame style (dotted, dashed, solid), a pattern (hatch strip for
+   scripted data) and a word. Alarm and ok fills only for REAL fail and REAL pass.
+   Strokes that carry state are 3px; wires are thin. */
+
+/* ---------- 1 screen frame ---------- */
+/* Only the title stays in the flow; everything else is placed by stage coordinates.
+   --p-shift is the height of the SAMPLE banner row (app.css) when it is shown: the whole
+   picture moves down by that much, and the source line gives way to the footer. */
+#screen-6:not([hidden]) { display: block; }
+#screen-6 { --p-shift: 0px; }
+#stage:has(> #banner:not([hidden])) #screen-6 { --p-shift: 57px; }
+#stage:has(> #banner:not([hidden])) #p-src { display: none; }
+#screen-6 .screen-title { font-size: 40px; line-height: 1.1; white-space: nowrap; }
+#p-mode, #p-rail, #p-status, #p-board, #p-tiles, #p-src { position: absolute; margin: 0; padding: 0; }
+
+/* ---------- 2 mode chip and status line ---------- */
+#p-mode { left: 120px; top: calc(200px + var(--p-shift)); max-width: 860px; height: 28px; display: flex; align-items: center; }
+.p-chip {
+  display: inline-flex; align-items: center; height: 28px; box-sizing: border-box; max-width: 100%;
+  padding: 0 12px; font: 500 22px/1 var(--sans); color: var(--ink);
+  background: var(--paper); border: 3px solid var(--ink); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the data cue of app.css (an underline on SAMPLE values) is not wanted on the chip itself */
+#p-mode .p-chip { text-decoration: none; }
+.p-chip[data-status="PENDING"] { border-style: dotted; }
+.p-chip[data-status="SAMPLE"] { border-style: dashed; padding-left: 0; }
+.p-chip[data-status="SAMPLE"]::before {
+  content: ""; align-self: stretch; flex: 0 0 20px; margin-right: 12px;
+  background: var(--hatch); border-right: 3px solid var(--ink);
+}
+#p-status {
+  left: 120px; top: calc(238px + var(--p-shift)); width: 780px; height: 34px; font: 400 26px/34px var(--sans);
+  color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* a long end-of-run line (the export command, or why the run stopped) takes the full width
+   and hides the tile strip, so that the command is never cut */
+#p-status[data-wide] {
+  width: 1680px; height: 60px; z-index: 2; background: var(--paper); line-height: 30px;
+  white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere;
+}
+#p-status[data-wide] ~ #p-tiles { visibility: hidden; }
+#p-src {
+  left: 120px; top: calc(972px + var(--p-shift)); width: 1680px; height: 30px; font: 400 22px/30px var(--sans); color: var(--sec);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---------- 3 rail: RC-001 > RC-002 > RC-003 ---------- */
+#p-rail { left: 1000px; top: calc(160px + var(--p-shift)); width: 800px; height: 65px; display: flex; gap: 24px; list-style: none; }
+.p-rc {
+  position: relative; flex: 1 1 0; min-width: 0; height: 65px; box-sizing: border-box; display: flex;
+  flex-direction: column; padding: 4px 10px 0; border: 3px dotted var(--sec); background: var(--paper);
+  color: var(--ink);
+}
+.p-rc[data-state="running"] { border-style: dashed; border-color: var(--ink); }
+.p-rc[data-state="done"], .p-rc[data-state="fail"], .p-rc[data-state="pass"], .p-rc[data-state="scripted"] {
+  border-style: solid; border-color: var(--ink);
+}
+.p-rc[data-state="error"], .p-rc[data-state="skipped"] { border-color: var(--ink); }
+.p-rc[data-fill="fail"] { background: var(--tc-bg); border-color: var(--tc-bg); color: var(--tc-fg); }
+.p-rc[data-fill="pass"] { background: var(--fo-bg); border-color: var(--fo-bg); color: var(--fo-fg); }
+.p-rc.is-sample { padding-left: 24px; background: var(--hatch) 0 0 / 14px 100% no-repeat, var(--paper); }
+.p-rc1 { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font: 500 22px/25px var(--sans); white-space: nowrap; }
+.p-rc2 { font: 400 22px/25px var(--sans); color: var(--lede); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-rc[data-fill] .p-rc2 { color: inherit; }
+.p-rc[data-state="idle"] { color: var(--sec); }
+.p-rc[data-state="idle"] .p-rc2 { color: var(--sec); }
+/* the link from one candidate to the next: dotted until the first one is done */
+.p-rc + .p-rc::before {
+  content: ""; position: absolute; left: -24px; top: 31px; width: 14px; height: 0; border-top: 2px dotted var(--sec);
+}
+.p-rc + .p-rc::after {
+  content: ""; position: absolute; left: -10px; top: 25px; width: 0; height: 0;
+  border-left: 10px solid var(--sec); border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+}
+.p-rc[data-from="done"]::before { border-top: 2px solid var(--ink); }
+.p-rc[data-from="done"]::after { border-left-color: var(--ink); }
+
+/* ---------- 4 tile strip ---------- */
+#p-tiles { left: 920px; top: calc(238px + var(--p-shift)); width: 880px; height: 32px; display: flex; align-items: center; gap: 14px; }
+.p-tl-cand { flex: 0 0 auto; font: 500 22px/1 var(--sans); color: var(--ink); }
+.p-tl-grid { flex: 1 1 0; min-width: 0; height: 32px; display: flex; flex-wrap: wrap; align-content: center; gap: 2px; overflow: hidden; }
+.p-tile { flex: 0 0 auto; box-sizing: border-box; border: 2px solid var(--ink); background: var(--paper); }
+.p-tile[data-state="idle"] { border: 1px solid rgba(17, 17, 17, .35); }
+.p-tile[data-state="running"] {
+  border: 2px dashed var(--ink);
+  background: linear-gradient(var(--ink), var(--ink)) center / 40% 40% no-repeat, var(--paper);
+}
+.p-tile[data-state="unscored"] { border: 2px solid var(--sec); }
+.p-tile[data-state="broke"] { background: var(--tc-bg); border-color: var(--tc-bg); }
+#p-tiles:not([data-status="REAL"]) .p-tile[data-state="broke"] {
+  background: var(--hatch), var(--paper); border: 2px dashed var(--ink);
+}
+.p-tile[data-state="blocked"] {
+  border-width: 3px;
+  background: linear-gradient(-45deg, transparent 42%, var(--ink) 42% 58%, transparent 58%), var(--paper);
+}
+.p-tile[data-state="error"] {
+  background: repeating-linear-gradient(45deg, var(--ink) 0 2px, transparent 2px 5px), var(--paper);
+}
+.p-tile[data-state="handled"] { background: radial-gradient(circle, var(--fo-bg) 0 28%, transparent 30%), var(--paper); }
+.p-tile[data-state="not_handled"] { border-style: dashed; }
+
+/* ---------- 5 board and nodes ---------- */
+#p-board { left: 120px; top: calc(150px + var(--p-shift)); width: 1680px; height: 866px; pointer-events: none; }
+#p-wires { position: absolute; left: 0; top: 0; width: 1680px; height: 866px; overflow: visible; }
+#p-nodes { position: absolute; left: 0; top: 0; width: 1680px; height: 866px; margin: 0; padding: 0; list-style: none; }
+.p-elabels { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+
+/* a node: glyph and state word on top, the caption under them, one fact line at the bottom */
+.p-node {
+  position: absolute; width: 300px; height: 170px; box-sizing: border-box; margin: 0; padding: 6px 10px;
+  display: flex; flex-direction: column; overflow: hidden;
+  border: 3px dotted var(--sec); background: var(--paper); color: var(--ink);
+}
+.p-top { flex: 0 0 62px; display: flex; align-items: flex-start; gap: 14px; height: 62px; }
+.p-glyph {
+  flex: 0 0 80px; width: 80px; height: 60px; display: block; overflow: visible; color: inherit;
+  fill: none; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter;
+}
+.p-glyph .f-ink { stroke-width: 3; }
+.p-glyph .f-thin { stroke-width: 1.8; }
+.p-glyph .f-dash { stroke-width: 2; stroke-dasharray: 4 4; }
+.p-node.is-drawing .f-dash { visibility: hidden; }
+
+.p-state { flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding-top: 3px; font: 500 22px/26px var(--sans); white-space: nowrap; overflow: hidden; }
+.p-script { font-weight: 400; }
+.p-cap {
+  flex: 1 1 auto; min-height: 0; margin-top: 2px; font: 400 22px/26px var(--sans); letter-spacing: -.01em; color: var(--ink);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+}
+.p-fact {
+  flex: 0 0 26px; font: 400 22px/26px var(--sans); color: var(--lede);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---------- 6 node states ---------- */
+.p-node[data-state="idle"], .p-node[data-state="skipped"] { color: var(--sec); }
+.p-node[data-state="idle"] .p-cap, .p-node[data-state="skipped"] .p-cap { color: var(--sec); }
+.p-node[data-state="running"] { border-style: dashed; border-color: var(--ink); }
+.p-node[data-state="done"], .p-node[data-state="fail"], .p-node[data-state="pass"], .p-node[data-state="scripted"] {
+  border-style: solid; border-color: var(--ink);
+}
+.p-node[data-state="error"] { border-style: dotted; border-color: var(--ink); }
+/* REAL fail and REAL pass: the only solid alarm and ok fills */
+.p-node[data-fill="fail"] { background: var(--tc-bg); border-color: var(--tc-bg); color: var(--tc-fg); }
+.p-node[data-fill="pass"] { background: var(--fo-bg); border-color: var(--fo-bg); color: var(--fo-fg); }
+.p-node[data-fill] .p-cap, .p-node[data-fill] .p-fact { color: inherit; }
+/* scripted data: a hatch strip down the left edge, and the word Scripted in the state line */
+.p-node.is-sample { padding-left: 16px; background: var(--hatch) 0 0 / 10px 100% no-repeat, var(--paper); }
+
+/* ---------- 7 wires and wire labels ---------- */
+.p-e-base { fill: none; stroke: var(--sec); stroke-width: 1.5; stroke-dasharray: 2 4; stroke-linejoin: miter; }
+.p-e-head { fill: var(--sec); stroke: none; }
+.p-edge[data-state="done"] .p-e-base { stroke: var(--ink); stroke-dasharray: none; }
+.p-edge[data-state="done"] .p-e-head { fill: var(--ink); }
+.p-e-dash { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linejoin: miter; stroke-dasharray: 0 99999; }
+.p-elabel { position: absolute; font: 400 22px/1 var(--sans); color: var(--label); white-space: nowrap; padding: 3px 8px; }
+.p-elabel.is-mask { background: var(--paper); }
+.p-elabel[data-state="done"] { color: var(--ink); }
+
+/* ---------- 8 reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .p-e-dash { display: none; }
+}

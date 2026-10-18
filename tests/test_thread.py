@@ -11,7 +11,7 @@ from lab.governance import load_policy
 @pytest.fixture
 def study():
     """Runs with no defences (RC-001), the D2 re-test (RC-002), and its register."""
-    corpus.build_and_write()
+    # merge: read the committed split; tests never rewrite the tracked corpus (B-31)
     tests = corpus.read_jsonl(corpus.TEST_PATH)
     by_id, rules = {t["id"]: t for t in tests}, world.load_rules()
     policy, cmap = load_policy(), load_control_map()
@@ -74,7 +74,7 @@ def _rec(defences, created_at, mode="DEMO"):
 @pytest.fixture
 def runs_by_defence():
     """Demo runs scored with no defences, D2 replayed, and D3 replayed."""
-    corpus.build_and_write()
+    # merge: read the committed split; tests never rewrite the tracked corpus (B-31)
     tests = corpus.read_jsonl(corpus.TEST_PATH)
     by_id, rules = {t["id"]: t for t in tests}, world.load_rules()
     base = demo.demo_traces(tests)

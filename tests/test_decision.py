@@ -1,11 +1,14 @@
 """Tests for roles, Approve/Block/Override and the re-test rule."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
 from lab.governance import candidate, decision, load_policy
+
+# A fixed "now" so the expiry rules are deterministic whenever the suite runs.
+NOW = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -16,7 +19,7 @@ def policy() -> dict:
 def _decide(policy, **kw):
     base = dict(
         candidate_id="RC-003", submitted_by="tom", verdict_passed=True,
-        policy=policy, reviewer="sarah", action="APPROVE",
+        policy=policy, reviewer="sarah", action="APPROVE", now=NOW,
     )
     base.update(kw)
     return decision.decide(**base)
@@ -66,12 +69,15 @@ def test_override_ok_with_everything(policy):
 
 def test_override_expiry_in_the_past_refused(policy):
     kw = dict(action="OVERRIDE", verdict_passed=False, reason="low harm", today=date(2026, 10, 17))
-    with pytest.raises(decision.DecisionError, match="REFUSED: expiry '2020-01-01' is in the past"):
+    # Merge note: our refusal text and our rule (the expiry must be after today) are kept.
+    with pytest.raises(decision.DecisionError,
+                       match=r"REFUSED: OVERRIDE expiry 2020-01-01 must be a future date \(today is 2026-10-17\)"):
         _decide(policy, expiry="2020-01-01", **kw)
-    with pytest.raises(decision.DecisionError, match="is in the past"):
+    with pytest.raises(decision.DecisionError, match="must be a future date"):
         _decide(policy, expiry="2026-10-16", **kw)
-    # Expiring today is still allowed (override_expired treats it as live until tomorrow).
-    assert _decide(policy, expiry="2026-10-17", **kw)["expiry"] == "2026-10-17"
+    with pytest.raises(decision.DecisionError, match="must be a future date"):  # today is refused too
+        _decide(policy, expiry="2026-10-17", **kw)
+    assert _decide(policy, expiry="2026-10-18", **kw)["expiry"] == "2026-10-18"
 
 
 def test_override_expiry_must_be_a_date(policy):
@@ -84,6 +90,54 @@ def test_override_expiry_detected():
     event = {"decision": "OVERRIDE", "expiry": "2026-10-24"}
     assert decision.override_expired(event, today=date(2026, 10, 25))
     assert not decision.override_expired(event, today=date(2026, 10, 23))
+
+
+# --- Fix 4C: the submitter can never approve or override their own candidate --
+
+def test_submitter_cannot_override_own_candidate(policy):
+    with pytest.raises(decision.DecisionError, match="cannot review"):
+        _decide(policy, reviewer="tom", action="OVERRIDE", verdict_passed=False,
+                reason="low harm", expiry="2026-10-24")
+
+
+@pytest.mark.parametrize("alias", ["Tom", "TOM", " tom "])
+def test_submitter_alias_cannot_approve_own_candidate(policy, alias):
+    # Even if a spelling variant of the submitter was made a reviewer, it is
+    # still the same person: identity comparisons ignore case and spaces.
+    policy["roles"]["reviewers"].append(alias)
+    with pytest.raises(decision.DecisionError, match="cannot review"):
+        _decide(policy, reviewer=alias)
+
+
+def test_reviewer_membership_ignores_case_and_spaces(policy):
+    event = _decide(policy, reviewer=" Sarah ")
+    assert event["decision"] == "APPROVE"
+
+
+# --- Decisions extra: B-04 expiry in the future, B-25 exact format, B-26 action=None
+
+def test_override_expiry_must_be_in_the_future(policy):
+    today = datetime(2026, 10, 24, 9, 0, tzinfo=timezone.utc)
+    with pytest.raises(decision.DecisionError, match="future"):  # today is not enough
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r",
+                expiry="2026-10-24", now=today)
+    with pytest.raises(decision.DecisionError, match="future"):  # past
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r",
+                expiry="2026-10-01", now=today)
+    ok = _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r",
+                 expiry="2026-10-25", now=today)
+    assert ok["expiry"] == "2026-10-25"
+
+
+@pytest.mark.parametrize("bad", ["20261024", "2026-1-5", "24/10/2026", "2026-10-24T00:00", "2026-13-01"])
+def test_override_expiry_needs_exact_iso_format(policy, bad):
+    with pytest.raises(decision.DecisionError, match="YYYY-MM-DD"):
+        _decide(policy, action="OVERRIDE", verdict_passed=False, reason="r", expiry=bad)
+
+
+def test_missing_action_is_a_decision_error(policy):
+    with pytest.raises(decision.DecisionError, match="unknown action"):
+        _decide(policy, action=None)
 
 
 def _fp(**kw):

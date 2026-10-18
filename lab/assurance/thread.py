@@ -204,6 +204,8 @@ def trace_finding(
     prior_runs: pd.DataFrame | None = None,
     prior: dict | None = None,
     tickets: list[FixTicket] | None = None,
+    register: list[Risk] | None = None,
+    prior_register: list[Risk] | None = None,
 ) -> Thread:
     """Trace one finding for a chosen candidate, optionally against an older prior.
 
@@ -219,10 +221,16 @@ def trace_finding(
 
     Status always comes from the candidate's register (built against the prior,
     as the risk register is); warnings are extra lines and never change it.
+    ``register`` / ``prior_register`` let a caller pass the registers it already
+    shows (e.g. the menu app's, built with each candidate's defences) so the
+    traced status matches its risk screen; by default they are built here.
     """
-    prior_reg = build_register(prior_runs, policy, control_map) if prior_runs is not None else None
-    register = build_register(candidate_runs, policy, control_map,
-                              prior=prior_from(prior_reg) if prior_reg is not None else None)
+    prior_reg = prior_register
+    if prior_reg is None and prior_runs is not None:
+        prior_reg = build_register(prior_runs, policy, control_map)
+    if register is None:
+        register = build_register(candidate_runs, policy, control_map,
+                                  prior=prior_from(prior_reg) if prior_reg is not None else None)
 
     compare = []
     if prior_runs is not None:

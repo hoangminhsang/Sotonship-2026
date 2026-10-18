@@ -20,9 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
-from lab import agent, world
+from lab import agent, run_folder, world
 
 ROOT = Path(__file__).resolve().parent.parent
+# Legacy flat trace folder. Runs no longer write here (see lab.run_folder);
+# kept only for clear_traces()/load_traces() used by old notebooks.
 TRACES = ROOT / "results" / "traces"
 
 
@@ -99,6 +101,11 @@ def run_split(
     digest: str | None = None,
     make_agent: Callable | None = None,
     defences: tuple[str, ...] = (),
+    *,
+    candidate: str = "adhoc",
+    split: str | None = None,
+    runs_root: Path | str | None = None,
+    run_id: str | None = None,
 ) -> Iterator[dict]:
     """Run every test in a split ``reps`` times, yielding one trace per run.
 
@@ -108,45 +115,60 @@ def run_split(
 
     ``defences`` (e.g. ``("D2",)``) builds the agent over guarded tools for an
     *after*-study run; empty is the unguarded *before* study.
+
+    Every call writes into its own folder ``results/runs/<run_id>/`` (see
+    :mod:`lab.run_folder`): the manifest with the model digest goes down before
+    the first model call, each trace is written once, and the folder is locked
+    (CSVs built, hashes recorded, files read-only) when the sweep ends -- also
+    when it is interrupted. Nothing under ``results/`` is ever deleted or
+    overwritten. ``candidate`` and ``split`` only label the folder.
     """
-    TRACES.mkdir(parents=True, exist_ok=True)
     digest = model_digest() if digest is None else digest
     build_agent = make_agent or (
         lambda world_dir, temp: _default_make_agent(world_dir, temp, defences)
     )
+    run_dir = run_folder.create(
+        list(split_records), model=agent.MODEL, model_digest=digest, driver="native",
+        reps=reps, temperature=temperature, seed=seed, candidate=candidate,
+        defences=defences, split=split, runs_root=runs_root, run_id=run_id,
+    )
 
-    for test in split_records:
-        for rep in range(1, reps + 1):
-            with tempfile.TemporaryDirectory(prefix="lab-world-") as tmp:
-                world_dir = build_world_dir(test, Path(tmp))
-                ag, _store = build_agent(world_dir, temperature)
-                t0 = time.time()
-                started = datetime.now(timezone.utc).isoformat()
-                result = agent.run_task(ag, test["user_task"])
-                trace = {
-                    "test_id": test["id"],
-                    "kind": test["kind"],
-                    "goal": test.get("goal"),
-                    "technique": test.get("technique", "none"),
-                    "place": test.get("place", "none"),
-                    "rep": rep,
-                    "model": agent.MODEL,
-                    "model_digest": digest,
-                    "temperature": temperature,
-                    "seed": seed,
-                    "user_task": test["user_task"],
-                    "expect_ticket": test.get("expect_ticket", False),
-                    "expect_asset": test.get("expect_asset"),
-                    "defences": list(defences),
-                    "tool_calls": result.tool_calls,
-                    "final_text": result.final_text,
-                    "error": result.error,
-                    "started_at": started,
-                    "duration_s": round(time.time() - t0, 2),
-                }
-                out = TRACES / f"{test['id']}__rep{rep}.json"
-                out.write_text(json.dumps(trace, indent=2), encoding="utf-8")
-                yield trace
+    try:
+        for test in split_records:
+            for rep in range(1, reps + 1):
+                with tempfile.TemporaryDirectory(prefix="lab-world-") as tmp:
+                    world_dir = build_world_dir(test, Path(tmp))
+                    ag, _store = build_agent(world_dir, temperature)
+                    t0 = time.time()
+                    started = datetime.now(timezone.utc).isoformat()
+                    result = agent.run_task(ag, test["user_task"])
+                    trace = {
+                        "test_id": test["id"],
+                        "kind": test["kind"],
+                        "goal": test.get("goal"),
+                        "technique": test.get("technique", "none"),
+                        "place": test.get("place", "none"),
+                        "rep": rep,
+                        "run_id": run_dir.name,
+                        "driver": "native",
+                        "model": agent.MODEL,
+                        "model_digest": digest,
+                        "temperature": temperature,
+                        "seed": seed,
+                        "user_task": test["user_task"],
+                        "expect_ticket": test.get("expect_ticket", False),
+                        "expect_asset": test.get("expect_asset"),
+                        "defences": list(defences),
+                        "tool_calls": result.tool_calls,
+                        "final_text": result.final_text,
+                        "error": result.error,
+                        "started_at": started,
+                        "duration_s": round(time.time() - t0, 2),
+                    }
+                    run_folder.write_trace(run_dir, trace)
+                    yield trace
+    finally:
+        run_folder.lock_run(run_dir)
 
 
 def _default_make_agent(world_dir: Path, temperature: float, defences: tuple[str, ...] = ()):
@@ -156,14 +178,18 @@ def _default_make_agent(world_dir: Path, temperature: float, defences: tuple[str
 
 
 def clear_traces() -> None:
-    """Remove all existing traces so a re-run starts clean (idempotent cells)."""
+    """Legacy: empty the old flat ``results/traces/`` folder.
+
+    Not on any run path any more -- runs write to ``results/runs/<run_id>/``
+    and saved runs are never deleted. Only touches the legacy folder.
+    """
     if TRACES.exists():
         shutil.rmtree(TRACES)
     TRACES.mkdir(parents=True, exist_ok=True)
 
 
 def load_traces() -> list[dict]:
-    """Load every trace JSON into a list."""
+    """Legacy: load every trace JSON from the old flat folder into a list."""
     return [
         json.loads(p.read_text(encoding="utf-8"))
         for p in sorted(TRACES.glob("*.json"))

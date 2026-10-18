@@ -378,6 +378,20 @@ jupyter lab
 
 ---
 
+## Run the dashboard (Redline release gate)
+
+The dashboard shows the release gate working: a flowchart of the pipeline on top, and the example that passes
+through the agent underneath. Its own guide is `ui/README.md`.
+
+1. Start the local server: `python ui/bridge.py --serve`. It serves the page on this computer only.
+2. Open the address it prints (`http://127.0.0.1:8765/`) and press any key on the cover.
+3. On "Live run", choose "Scripted demo (no model)" and press **Run**. It takes about 20 seconds.
+   No model is called in this mode, and the page says so. A live run needs Ollama and a model from `config/models.txt`.
+4. Optional: in a second terminal, run `python ui/watch.py` to see the same run as plain lines.
+
+The Results and Proof tabs show the last finished run. The audit log is tamper-evident: `python scripts/verify_log.py PATH` (the run folder's audit log)
+checks its hash chain.
+
 ## Where the results go
 
 | Location | What it is |

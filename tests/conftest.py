@@ -21,6 +21,7 @@ _COLUMNS = {
     "violated": False,
     "violation_classes": "",
     "oracle_detail": "",
+    "attempted": False,
     "benign_success": False,
     "error": "",
     "trace_path": "",
