@@ -396,10 +396,25 @@ def set_digest(repo: Path, digest: str) -> None:
         p.write_text(json.dumps(obj), encoding="utf-8")
 
 
+def tag_json_files(repo: Path, tag: str | None) -> None:
+    """Set (or, for tag=None, remove) "mode" in run_index.json and audit_verify.json, when the CLI wrote them."""
+    for name in ("run_index.json", "audit_verify.json"):
+        p = repo / "governance_out" / name
+        if not p.is_file():
+            continue
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        if tag:
+            obj["mode"] = tag
+        else:
+            obj.pop("mode", None)
+        p.write_text(json.dumps(obj), encoding="utf-8")
+
+
 def relabel(repo: Path, tag: str | None, digest: str | None = None) -> None:
     """Re-tag the whole CLI output copy. Only the mode logic is under test: the scripted numbers stay."""
     tag_gates(repo, tag)
     tag_markdown(repo, tag)
+    tag_json_files(repo, tag)
     if digest:
         set_digest(repo, digest)
 
@@ -463,6 +478,7 @@ def test_legacy_batch_without_start_times_still_marks_scripted_traces(ex, repo):
 
 def test_run_index_comes_first_then_the_gate_then_the_md_files(ex, repo):
     run_index = repo / "governance_out" / "run_index.json"
+    run_index.unlink(missing_ok=True)                      # newer CLI versions write one; this test makes its own
     relabel(repo, "SCRIPTED")
     tag_gates(repo, "SAVED", only="gate_RC-001.txt")
     assert _mode(ex, repo) == "SAVED"                      # the gate before the md files
@@ -678,6 +694,7 @@ def test_a_tampered_chain_is_shown_as_not_ok_with_its_position(ex, repo):
 
 
 def test_without_a_verify_file_the_chain_stays_pending(ex, repo):
+    (repo / "governance_out" / "audit_verify.json").unlink(missing_ok=True)   # newer CLI versions write it
     ctx, chain = _chain(ex, repo)
     assert chain["ok"] is None and chain["text"] is None and chain["reason"] == ex.VERIFY_TERMINAL_ONLY
     assert chain["source_file"] is None
@@ -694,3 +711,23 @@ def test_a_contradicting_verify_file_is_reported_and_leaves_the_rest_of_the_audi
     assert audit_block["chain"]["ok"] is None and len(audit_block["entries"]) >= 5
     assert any(w["level"] == "integrity" and "Audit verify" in w["text"] and "contradicts" in w["text"]
                for w in ctx.warnings), ctx.warnings
+
+
+# --------------------------------------------------------------------------- #
+# Guard: the fatal rules of validate_demo stay (lane D does not touch them).
+# --------------------------------------------------------------------------- #
+def _minimal_demo(ex, text: str) -> dict:
+    return {"schema": ex.SCHEMA, "exported_at": "2026-10-18T06:00:00+01:00", "allow_sample": False,
+            "sample_present": False, "warnings": [], "provenance": [], "datasets": [], "batches": [],
+            "current_batch": None, "console": {"note": text}, "policy": {}, "audit": {}, "assurance": {},
+            "controls": {}, "compare": {}, "labels": {}}
+
+
+def test_validate_demo_still_refuses_absolute_paths_and_user_names(ex, tmp_path, monkeypatch):
+    ctx = make_ctx(ex, tmp_path)
+    monkeypatch.setattr(ex.getpass, "getuser", lambda: "tester-name")
+    clean = ex.validate_demo(ctx, _minimal_demo(ex, "proof in results/runs/x/runs.csv"))
+    assert not [p for p in clean if "path" in p or "user name" in p], clean
+    for path in ("/Users/someone/x/runs.csv", "/home/someone/x/runs.csv", "/private/tmp/x/runs.csv", "C:\\\\work\\\\runs.csv"):
+        assert "an absolute path would be written" in ex.validate_demo(ctx, _minimal_demo(ex, path)), path
+    assert "the local user name would be written" in ex.validate_demo(ctx, _minimal_demo(ex, "owner tester-name"))
