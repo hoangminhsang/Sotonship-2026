@@ -498,9 +498,22 @@ def ticket_rows(tickets) -> list[dict]:
             for t in tickets]
 
 
+def _display_path(path) -> str:
+    """A proof file as the evidence register shows it.
+
+    Repo-relative POSIX when the file is inside the repo (so a register can be shared and still resolve);
+    a file outside the repo keeps the path it was given, as before. Never invents a path.
+    """
+    try:
+        return Path(path).resolve().relative_to(REPO.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+
+
 def evidence_rows(rows) -> list[dict]:
+    # A repo-relative proof_file is relative to the repo, not to the folder the CLI was started in.
     return [{"control": e.control, "proof_needed": e.proof_needed,
-             "proof_file": progress.display_path(e.proof_file, REPO), "result": e.result} for e in rows]
+             "proof_file": _path_text(e.proof_file), "result": e.result} for e in rows]
 
 
 def controls_used(rows) -> list[str]:
@@ -1026,7 +1039,8 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
         rep.say(reg_md)
 
         measured = evidence.control_results(runs, [r.control for r in register if r.control], defences=codes)
-        ev_rows = evidence.build_register(register, retest_candidate=cid, results=measured, proof_file=str(proof))
+        ev_rows = evidence.build_register(register, retest_candidate=cid, results=measured,
+                                         proof_file="(no runs file)" if proof is None else _display_path(proof))
         ev_md = evidence.to_markdown(ev_rows)
         rep.write(f"evidence_register_{cid}.md", ev_md)
         prog.emit_lazy("evidence", lambda: {"rows": evidence_rows(ev_rows), "controls_used": controls_used(ev_rows)})
