@@ -3525,7 +3525,7 @@ def build_demo(ctx: Ctx) -> dict:
     if folder:
         gov_eff = effective_governance(ctx, folder, how)
     if gov_eff:
-        runs = scan_run_folders(ctx, rf.get("glob") or RUN_GLOB)
+        runs = safe(ctx, "Run folders", scan_run_folders, ctx, rf.get("glob") or RUN_GLOB) or []
         for c in gov_eff["candidates"]:
             rd = candidate_run_dir(ctx, c, runs, candidate_digest(ctx, folder, c["id"]))
             if rd is None:

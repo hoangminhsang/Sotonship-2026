@@ -1504,6 +1504,17 @@ def test_a_finished_run_is_preferred_over_an_unfinished_newer_one(ex, run_repo, 
     assert by_id["RC-002"]["run_id"] == dirs["RC-002"].name and by_id["RC-002"]["gate"]["status"] == ex.REAL
 
 
+def test_a_bad_run_folder_glob_is_a_warning_not_a_crash(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod)
+    sources = {"schema": ex.SOURCES_SCHEMA, "repo_root": ".", "current_batch": "newest-run", "batches": [],
+               "run_folders": {"enabled": True, "glob": "/etc/*/manifest.json"}, "governance": {"pick": "newest-real"}}
+    ctx = ex.Ctx(ex.parse_args(["--no-git", "--gov", GOV_DIR]), run_repo.root / "sources.json", sources, run_repo.root)
+    ex.init_git(ctx)
+    demo = ex.build_demo(ctx)
+    assert demo["governance"]["selected"] == "RC-003"
+    assert any(w["level"] == "integrity" and "Run folders" in w["text"] for w in demo["warnings"]), demo["warnings"]
+
+
 def test_a_run_of_another_model_is_not_taken_for_the_candidate(ex, run_repo, cli_mod):
     make_multi(run_repo, cli_mod, run_index=False, digest="sha256:" + "ee" * 32)   # the candidate file names another model
     _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
