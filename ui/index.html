@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,97 +7,361 @@
 <title>Redline</title>
 <link rel="stylesheet" href="fonts.css">
 <style>
-  :root { --bg:#f7f7f5; --card:#fff; --line:#e6e6e1; --ink:#1b1b1b; --soft:#6b6b66;
-          --bad:#b42318; --bad-bg:#fdeeec; --good:#067647; --good-bg:#e8f6ee; --run:#1d4ed8; }
+  :root { --bg:#f7f7f5; --paper:#f2f2f0; --card:#fff; --line:#e6e6e1; --ink:#1b1b1b; --soft:#6b6b66; --faint:#a3a39c;
+          --bad:#b42318; --bad-bg:#fdeeec; --good:#067647; --good-bg:#e8f6ee; --run:#2f5fd0; --run-bg:#e8eefc;
+          --serif:"Cormorant Garamond", Garamond, "Iowan Old Style", Georgia, serif;
+          --sans:Inter, -apple-system, "Segoe UI", system-ui, sans-serif; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font-family:Inter, system-ui, sans-serif; font-size:22px; }
-  main { max-width:1500px; margin:0 auto; padding:56px 64px; }
-  header { display:flex; justify-content:space-between; align-items:baseline; gap:24px; flex-wrap:wrap; }
-  .brand { font-size:24px; font-weight:600; color:var(--soft); }
-  h1 { font-size:40px; font-weight:600; margin:8px 0 0; }
-  .badge { font-size:20px; color:var(--soft); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:8px 16px; }
-  .cards { display:grid; grid-template-columns:repeat(3, 1fr); gap:24px; margin-top:48px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:28px; }
+  [hidden] { display:none !important; }
+  html, body { margin:0; background:var(--bg); }
+  body { color:var(--ink); font:400 22px/1.45 var(--sans); -webkit-font-smoothing:antialiased; }
+  h1, h2, h3, p { margin:0; font-weight:400; }
+  button { font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; }
+
+  /* ---------- cover: same look as the details page ---------- */
+  #cover { position:fixed; inset:0; z-index:50; background:var(--paper); display:flex; flex-direction:column;
+           justify-content:center; align-items:flex-start; padding:0 120px 40px; outline:none; cursor:pointer; }
+  #cover-name { font:300 56px/1.1 var(--serif); margin:0 0 14px; color:var(--ink); }
+  #cover-what { font:400 26px/1.4 var(--sans); color:#333; }
+  #cover-rule { position:relative; width:240px; height:2px; background:var(--ink); margin:30px 0; }
+  #cover-rule::before, #cover-rule::after { content:""; position:absolute; top:-9px; width:2px; height:20px; background:var(--ink); }
+  #cover-rule::before { left:0; } #cover-rule::after { right:0; }
+  #cover-tagline { font:italic 300 26px/1.3 var(--serif); color:var(--ink); max-width:1200px; }
+  #cover-team { font:500 26px/1.3 var(--sans); margin-top:36px; }
+  #cover-track { font-size:22px; color:#555; margin-top:6px; }
+  #cover-hint { font-size:22px; color:#666; position:absolute; left:120px; bottom:56px; }
+
+  /* ---------- frame ---------- */
+  main { max-width:1840px; margin:0 auto; padding:36px 56px 48px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:24px; flex-wrap:wrap; }
+  .brand { font:400 30px/1 var(--serif); letter-spacing:.01em; }
+  .badge { font-size:20px; color:var(--soft); background:var(--card); border:1px solid var(--line); border-radius:999px; padding:8px 18px; }
+  nav { display:flex; gap:8px; margin:20px 0 22px; }
+  nav button { font-size:22px; font-weight:500; color:var(--soft); padding:10px 26px; border-radius:999px; border:1px solid transparent; }
+  nav button:hover { color:var(--ink); }
+  nav button[aria-selected="true"] { background:var(--card); color:var(--ink); border-color:var(--line); }
+  nav button:focus-visible { outline:2px solid var(--run); outline-offset:2px; }
+  .view[hidden] { display:none; }
+  h2.title { font-size:26px; font-weight:500; margin:0 0 18px; }
+
+  /* ---------- live run: the canvas ---------- */
+  .canvas-wrap { background:var(--card); border:1px solid var(--line); border-radius:24px; padding:20px 28px 16px; overflow:hidden;
+                 background-image:radial-gradient(#e9e9e4 1.2px, transparent 1.2px); background-size:26px 26px; }
+  #fit { width:100%; }
+  #board { position:relative; width:1700px; height:424px; transform-origin:0 0; }
+  #wires { position:absolute; inset:0; width:1700px; height:424px; overflow:visible; }
+  #wires path { fill:none; stroke:#c9c9c2; stroke-width:2.5; stroke-linecap:round; }
+  #wires path.lit { stroke:var(--run); }
+  #wires text { font:500 18px var(--sans); fill:var(--soft); }
+  #dot { fill:var(--run); }
+  .glabel { position:absolute; top:6px; font-size:20px; color:var(--soft); font-weight:500; }
+  .glabel::after { content:""; display:block; height:1px; background:var(--line); margin-top:8px; }
+  .node { position:absolute; width:230px; height:140px; background:var(--card); border:1px solid var(--line); border-radius:22px;
+          display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; text-align:center;
+          transition:border-color .4s, box-shadow .4s; }
+  .node svg { width:86px; height:64px; fill:none; stroke:var(--ink); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
+  .node .lbl { font-size:21px; font-weight:500; padding:0 10px; line-height:1.25; }
+  .node.idle svg, .node.idle .lbl { opacity:.55; }
+  .node.running { border-color:var(--run); box-shadow:0 0 0 8px rgba(47,95,208,.13), 0 12px 38px rgba(47,95,208,.28); }
+  .node .tick { position:absolute; top:12px; right:12px; width:26px; height:26px; border-radius:50%; background:var(--good-bg); color:var(--good);
+                display:none; align-items:center; justify-content:center; }
+  .node.done .tick { display:flex; }
+  .tick svg { width:14px; height:14px; stroke:var(--good); stroke-width:3.2; opacity:1; }
+
+  .lower { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(0, 1fr); gap:24px; margin-top:24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:26px 30px; }
+  .card h3 { font-size:22px; font-weight:500; color:var(--soft); margin-bottom:16px; }
+  .ex { display:grid; grid-template-columns:260px minmax(0, 1fr); gap:10px 22px; align-items:baseline; font-size:22px; }
+  .ex dt { color:var(--soft); } .ex dd { margin:0; overflow-wrap:anywhere; }
+  .ex q { quotes:"\201C" "\201D"; }
+  .pill { display:inline-block; font-weight:500; border-radius:999px; padding:4px 16px; font-size:22px; }
+  .pill.bad { color:var(--bad); background:var(--bad-bg); } .pill.good { color:var(--good); background:var(--good-bg); }
+  .chips { display:flex; flex-direction:column; gap:12px; }
+  .chip { display:flex; justify-content:space-between; align-items:center; gap:16px; border:1px solid var(--line); border-radius:14px; padding:10px 16px; }
+  .chip b { font-weight:500; }
+  .empty { color:var(--soft); }
+
+  /* ---------- results ---------- */
+  .cards { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:24px; }
   .cid { font-size:20px; color:var(--soft); }
-  .def { font-size:24px; margin:6px 0 20px; min-height:58px; }
-  .verdict { display:inline-block; font-size:24px; font-weight:600; border-radius:999px; padding:6px 16px; }
-  .verdict.FAIL { color:var(--bad); background:var(--bad-bg); }
-  .verdict.PASS { color:var(--good); background:var(--good-bg); }
-  .big { font-size:48px; font-weight:600; margin-top:20px; }
-  .muted { color:var(--soft); font-size:22px; }
-  .normal { margin-top:24px; font-size:24px; }
-  .why { margin-top:16px; font-size:22px; color:var(--bad); }
-  .def { min-height:0; }
-  h2 { font-size:26px; font-weight:600; margin:56px 0 20px; }
-  .steps { display:grid; grid-template-columns:repeat(5, 1fr); gap:16px; }
-  .step { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; text-align:center; transition:border-color .4s, box-shadow .4s; }
-  .step svg { width:80px; height:60px; fill:none; stroke:var(--ink); stroke-width:2.5; stroke-linecap:square; }
-  .step .lbl { font-size:22px; margin-top:8px; }
-  .step .st { font-size:20px; color:var(--soft); margin-top:4px; }
-  .step.running { border-color:var(--run); box-shadow:0 0 0 3px #dbe5ff; }
-  .step.running .st { color:var(--run); }
-  .step.done .st { color:var(--good); }
-  .decision { margin-top:40px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px 28px; font-size:24px; }
-  .decision b { font-weight:600; }
-  @media (prefers-reduced-motion: reduce) { .step { transition:none; } }
+  .def { font-size:26px; margin:4px 0 20px; }
+  .big { font-size:48px; font-weight:500; margin-top:22px; line-height:1.1; }
+  .muted { color:var(--soft); }
+  .why { margin-top:18px; color:var(--bad); }
+  .facts { display:flex; gap:48px; flex-wrap:wrap; margin-top:28px; font-size:24px; }
+  .facts b { font-weight:500; }
+
+  /* ---------- proof ---------- */
+  .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:24px; }
+  ul.plain { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:14px; }
+  ul.plain li small { display:block; color:var(--soft); font-size:20px; }
+  .rules p { font-size:26px; margin-bottom:8px; }
+  .roles { margin-top:18px; color:var(--soft); }
+
+  @media (max-width: 1100px) { .lower, .cards, .grid2 { grid-template-columns:1fr; } main { padding:24px 20px 40px; } }
+  @media (prefers-reduced-motion: reduce) { .node { transition:none; } }
 </style>
 </head>
 <body>
+<section id="cover" tabindex="-1" aria-label="Redline cover">
+  <h1 id="cover-name"></h1>
+  <p id="cover-what"></p>
+  <div id="cover-rule" aria-hidden="true"></div>
+  <p id="cover-tagline"></p>
+  <p id="cover-team"></p>
+  <p id="cover-track"></p>
+  <p id="cover-hint"></p>
+</section>
+
 <main>
   <header>
-    <div><div class="brand" id="brand"></div><h1 id="title"></h1></div>
+    <div class="brand" id="brand"></div>
     <div class="badge" id="badge"></div>
   </header>
-  <section class="cards" id="cards"></section>
-  <div class="normal" id="normal"></div>
-  <h2 id="steps-title"></h2>
-  <section class="steps" id="steps"></section>
-  <div class="decision" id="decision"></div>
+  <nav id="tabs" role="tablist"></nav>
+
+  <section class="view" id="view-live">
+    <div class="canvas-wrap"><div id="fit"><div id="board"><svg id="wires" viewBox="0 0 1700 424"></svg></div></div></div>
+    <div class="lower">
+      <div class="card" id="happened"><h3 id="happened-title"></h3><dl class="ex" id="ex"></dl></div>
+      <div class="card"><h3 id="chips-title"></h3><div class="chips" id="chips"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="view-results" hidden>
+    <div class="cards" id="cards"></div>
+    <div class="facts" id="facts"></div>
+  </section>
+
+  <section class="view" id="view-proof" hidden>
+    <div class="grid2">
+      <div class="card"><h3 id="who-title"></h3><ul class="plain" id="who"></ul></div>
+      <div class="card"><h3 id="log-title"></h3><p id="log" style="font-size:26px"></p>
+        <div class="rules" style="margin-top:28px"><h3 id="rules-title"></h3><div id="rules"></div><p class="roles" id="roles"></p></div></div>
+      <div class="card"><h3 id="risks-title"></h3><ul class="plain" id="risks"></ul></div>
+      <div class="card"><h3 id="controls-title"></h3><ul class="plain" id="controls"></ul></div>
+    </div>
+  </section>
 </main>
+
 <script src="data/demo.js"></script>
 <script src="copy.js"></script>
 <script src="pipeline-glyphs.js"></script>
+<script src="data/live.js"></script>
 <script>
 (function () {
-  var D = window.DEMO || {}, C = (window.COPY || {}).page || {}, P = (window.COPY || {}).product || {};
+  var D = window.DEMO || {}, CP = window.COPY || {}, C = CP.page || {}, P = CP.product || {};
   var N = D.numbers || {}, G = D.governance || {};
-  var NS = ['ht', 'tp:', '//www.w3.org/2000/svg'].join('');  /* built so the page holds no network URL */
+  var SVGNS = ['ht', 'tp:', '//www.w3.org/2000/svg'].join('');  /* built so the page holds no network URL */
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function sv(tag, attrs) { var e = document.createElementNS(SVGNS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
   function num(k) { var v = N[k]; return v && v.status !== 'PENDING' ? v.text : null; }
   function key(id) { return id.toLowerCase().replace(/[^a-z0-9]/g, ''); }
-
-  $('brand').textContent = (P.name || 'Redline') + (P.team ? ' · ' + P.team : '');
-  $('title').textContent = C.title || '';
-
-  /* One honesty badge: real run or scripted demo, the model and the run date. */
-  var cands = G.candidates || [], mode = G.mode || '';
-  var badge = C.badge_none;
-  if (cands.length) {
-    var date = (cands[0].run_id || '').slice(0, 8);
-    date = date.length === 8 ? date.slice(0, 4) + '-' + date.slice(4, 6) + '-' + date.slice(6) : '';
-    badge = (mode === 'LIVE' || mode === 'SAVED' ? C.badge_real : C.badge_scripted) +
-            [num('headline.model'), date].filter(Boolean).map(function (s) { return ' · ' + s; }).join('');
-  }
-  $('badge').textContent = badge;
-
-  /* One card per release candidate. */
+  function txt(f) { return f && f.text != null ? String(f.text) : ''; }
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  var cands = G.candidates || [];
   var batches = D.batches || [];
   if (!Array.isArray(batches)) batches = Object.keys(batches).map(function (k) { return batches[k]; });
-  function defences(c) {
-    var b = batches.filter(function (x) { return x.id === c.evidence_batch; })[0];
-    var t = b && b.defences && b.defences.status !== 'PENDING' ? b.defences.text : '';
-    var parts = [];
-    if (/D2/.test(t)) parts.push(C.defences.code);
-    if (/D3/.test(t)) parts.push(C.defences.human);
-    return parts.length ? parts.join(' + ') : (t ? C.defences.none : '');
+  function batchOf(c) { return batches.filter(function (x) { return x.id === c.evidence_batch; })[0]; }
+  function defCodes(c) { var b = batchOf(c), t = b && b.defences && b.defences.status !== 'PENDING' ? b.defences.text : ''; return t; }
+  function defWords(t) {
+    var parts = [], D2 = C.defences;
+    if (/D1/.test(t)) parts.push(D2.labels);
+    if (/D2/.test(t)) parts.push(D2.code);
+    if (/D3/.test(t)) parts.push(D2.human);
+    return parts.length ? parts.join(' + ') : (t ? D2.none : '');
   }
+
+  /* ---------- cover ---------- */
+  $('cover-name').textContent = P.name || 'Redline';
+  $('cover-what').textContent = P.what || '';
+  $('cover-tagline').textContent = P.tagline || '';
+  $('cover-team').textContent = (P.team_line || '').replace('{team}', P.team || '');
+  $('cover-track').textContent = P.track || '';
+  $('cover-hint').textContent = (CP.cover || {}).hint || '';
+  var coverUp = true;
+  function hideCover() { if (!coverUp) return; coverUp = false; $('cover').hidden = true; }
+
+  /* ---------- header and honesty badge ---------- */
+  $('brand').textContent = P.name || 'Redline';
+  (function () {
+    var badge = C.badge_none, mode = G.mode || '';
+    if (cands.length) {
+      var date = (cands[0].run_id || '').slice(0, 8);
+      date = date.length === 8 ? date.slice(0, 4) + '-' + date.slice(4, 6) + '-' + date.slice(6) : '';
+      badge = (mode === 'LIVE' || mode === 'SAVED' ? C.badge_real : C.badge_scripted);
+      if (mode === 'LIVE' || mode === 'SAVED') badge += [num('headline.model'), date].filter(Boolean).map(function (s) { return ' · ' + s; }).join('');
+    }
+    $('badge').textContent = badge;
+  })();
+
+  /* ---------- tabs ---------- */
+  var VIEWS = ['live', 'results', 'proof'];
+  VIEWS.forEach(function (v, i) {
+    var b = el('button', null, (C.tabs || {})[v]); b.type = 'button'; b.setAttribute('role', 'tab'); b.id = 'tab-' + v;
+    b.addEventListener('click', function () { show(v); });
+    $('tabs').appendChild(b);
+  });
+  function show(v) {
+    VIEWS.forEach(function (n) {
+      $('view-' + n).hidden = n !== v;
+      $('tab-' + n).setAttribute('aria-selected', n === v ? 'true' : 'false');
+    });
+    try { history.replaceState(null, '', '#v=' + v); } catch (e) {}
+    fit();
+  }
+
+  /* ---------- live run: the canvas ---------- */
+  var W = 294, X = function (i) { return i * W; }, Y1 = 60, Y2 = 262, NW = 230, NH = 140;
+  var POS = {  /* column, row */
+    'rt.attack': [0, 1], 'rt.record': [1, 1], 'rt.check': [2, 1], 'sl.gate': [3, 1], 'sl.review': [4, 1], 'sl.log': [5, 1],
+    'll.risks': [5, 2], 'fix.ticket': [3, 2]
+  };
+  var steps = C.steps || [], board = $('board'), wires = $('wires'), nodeEls = {}, wireEls = {};
+  function pos(id) { var p = POS[id]; return { x: X(p[0]), y: p[1] === 1 ? Y1 : Y2 }; }
+  steps.forEach(function (s) {
+    var p = pos(s.id), box = el('div', 'node idle');
+    box.style.left = p.x + 'px'; box.style.top = p.y + 'px';
+    var svg = sv('svg', { viewBox: '0 0 120 90' }); svg.innerHTML = (window.GLYPHS || {})[s.id] || '';
+    box.appendChild(svg); box.appendChild(el('div', 'lbl', s.label));
+    var tick = el('div', 'tick'), ts = sv('svg', { viewBox: '0 0 16 16' });
+    ts.appendChild(sv('path', { d: 'M3 8.5 L6.5 12 L13 4.5', fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    tick.appendChild(ts); box.appendChild(tick);
+    board.appendChild(box); nodeEls[s.id] = box;
+  });
+  var G_ = C.groups || {};
+  function glabel(text, col0, cols, row) {
+    var g = el('div', 'glabel', text); g.style.left = X(col0) + 'px'; g.style.width = (cols * W - 64) + 'px';
+    g.style.top = (row === 1 ? 6 : Y2 - 58) + 'px'; board.appendChild(g);
+  }
+  glabel(G_.red, 0, 3, 1); glabel(G_.gate, 3, 3, 1);
+  /* wires: id of the step they enter -> path */
+  function R(id) { var p = pos(id); return [p.x + NW, p.y + NH / 2]; }
+  function L(id) { var p = pos(id); return [p.x, p.y + NH / 2]; }
+  function B(id) { var p = pos(id); return [p.x + NW / 2, p.y + NH]; }
+  function T(id) { var p = pos(id); return [p.x + NW / 2, p.y]; }
+  function hcurve(a, b) { var d = (b[0] - a[0]) / 2; return 'M' + a[0] + ' ' + a[1] + ' C' + (a[0] + d) + ' ' + a[1] + ' ' + (b[0] - d) + ' ' + b[1] + ' ' + b[0] + ' ' + b[1]; }
+  function addWire(to, d) { var p = sv('path', { d: d }); wires.appendChild(p); wireEls[to] = p; }
+  [['rt.attack', 'rt.record'], ['rt.record', 'rt.check'], ['rt.check', 'sl.gate'], ['sl.gate', 'sl.review'], ['sl.review', 'sl.log']].forEach(function (e) {
+    addWire(e[1], hcurve(R(e[0]), L(e[1])));
+  });
+  (function () {
+    var a = B('sl.log'), b = T('ll.risks');
+    addWire('ll.risks', 'M' + a[0] + ' ' + a[1] + ' C' + a[0] + ' ' + (a[1] + 40) + ' ' + b[0] + ' ' + (b[1] - 40) + ' ' + b[0] + ' ' + b[1]);
+    addWire('fix.ticket', hcurve(L('ll.risks'), R('fix.ticket')));
+    var f = L('fix.ticket'), t = B('rt.attack');
+    addWire('rt.attack', 'M' + f[0] + ' ' + f[1] + ' C' + (f[0] - 380) + ' ' + f[1] + ' ' + t[0] + ' ' + (t[1] + 150) + ' ' + t[0] + ' ' + t[1]);
+    var lab = sv('text', { x: 700, y: Y2 + NH / 2 - 16, 'text-anchor': 'middle' }); lab.textContent = C.loop_label || ''; wires.appendChild(lab);
+  })();
+  var dot = sv('circle', { id: 'dot', r: 7, cx: -50, cy: -50 }); wires.appendChild(dot);
+
+  var ST = (C.state || {});
+  function stateOf(id, nodes) {
+    if (!nodes) return cands.length ? 'done' : 'idle';
+    var ids = id === 'll.risks' ? ['ll.risks', 'll.controls', 'll.evidence', 'll.trace', 'll.summary'] : [id];
+    var sts = ids.map(function (i) { return nodes[i] ? nodes[i].state : 'idle'; });
+    if (sts.indexOf('running') >= 0) return 'running';
+    if (sts.every(function (s) { return s === 'done'; })) return 'done';
+    return 'idle';
+  }
+  var runningId = null;
+  function paint() {
+    var L_ = window.LIVE, nodes = (L_ && L_.nodes) || null;
+    runningId = null;
+    steps.forEach(function (s) {
+      var st = stateOf(s.id, nodes);
+      nodeEls[s.id].className = 'node ' + st;
+      if (st === 'running' && !runningId) runningId = s.id;
+      if (wireEls[s.id]) wireEls[s.id].setAttribute('class', st === 'running' ? 'lit' : '');
+    });
+    paintChips(); paintExample();
+  }
+
+  /* one dot, only on the wire into the step that runs; none with reduced motion */
+  var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var t0 = 0;
+  function tick(now) {
+    var w = runningId && wireEls[runningId];
+    if (w && !reduce) {
+      var len = w.getTotalLength(), f = ((now - t0) % 1800) / 1800, pt = w.getPointAtLength(len * f);
+      dot.setAttribute('cx', pt.x); dot.setAttribute('cy', pt.y);
+    } else { dot.setAttribute('cx', -50); dot.setAttribute('cy', -50); }
+    requestAnimationFrame(tick);
+  }
+  if (!reduce) requestAnimationFrame(function (n) { t0 = n; tick(n); });
+
+  /* fit the 1700-wide board to its box */
+  function fit() {
+    var box = $('fit'), s = Math.min(1.12, box.clientWidth / 1700);
+    if (!box.clientWidth) return;
+    board.style.transform = 'scale(' + s + ')';
+    box.style.height = Math.round(424 * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+
+  /* three small result chips */
+  $('chips-title').textContent = C.chips_title || '';
+  function paintChips() {
+    var box = $('chips'); box.textContent = '';
+    var L_ = window.LIVE, rail = (L_ && L_.rail) || [];
+    var rows = rail.length ? rail.map(function (r) { return { id: r.id, v: r.verdict }; })
+      : cands.map(function (c) { return { id: c.id, v: txt(c.gate && c.gate.verdict) }; });
+    rows.forEach(function (r) {
+      var row = el('div', 'chip'); row.appendChild(el('b', null, r.id));
+      if (r.v === 'PASS' || r.v === 'FAIL') row.appendChild(el('span', 'pill ' + (r.v === 'PASS' ? 'good' : 'bad'), C.chip[r.v]));
+      else row.appendChild(el('span', 'muted', ST.idle));
+      box.appendChild(row);
+    });
+  }
+
+  /* What just happened: one real run from the data. Nothing is invented. */
+  function pickRun() {
+    var order = [], seen = {};
+    cands.forEach(function (c) { var b = batchOf(c); if (b && !seen[b.id]) { seen[b.id] = 1; order.push(b); } });
+    batches.forEach(function (b) { if (!seen[b.id]) { seen[b.id] = 1; order.push(b); } });
+    function find(test) {
+      for (var i = 0; i < order.length; i++) {
+        var runs = order[i].runs || {}, ks = Object.keys(runs);
+        for (var j = 0; j < ks.length; j++) if (test(runs[ks[j]])) return runs[ks[j]];
+      }
+      return null;
+    }
+    return find(function (r) { return r.kind === 'attack' && r.violated; }) ||
+           find(function (r) { return r.kind === 'attack' && (r.tool_calls || []).some(function (t) { return t.blocked; }); });
+  }
+  var painted = false;
+  function paintExample() {
+    if (painted) return; painted = true;
+    var H = C.happened || {}, run = pickRun(), box = $('ex');
+    $('happened-title').textContent = H.title || '';
+    if (!run) { $('happened').hidden = true; $('happened').parentNode.style.gridTemplateColumns = '1fr'; return; }
+    function row(k, v) { box.appendChild(el('dt', null, k)); var d = el('dd'); if (typeof v === 'string') d.textContent = v; else d.appendChild(v); box.appendChild(d); }
+    var task = txt(run.user_task);
+    if (task) row(H.asked, '“' + task + '”');
+    var pl = run.planted;
+    if (pl && pl.status === 'match' && txt(pl.text)) {
+      var hid = txt(pl.text).replace(/<!--/g, '').replace(/-->/g, '').replace(/^\s*Note:\s*/i, '').trim();
+      row(H.hidden, '“' + hid + '”');
+    }
+    var calls = run.tool_calls || [], hit = calls.filter(function (t) { return t.flagged; })[0] || calls.filter(function (t) { return t.blocked; })[0];
+    if (hit) row(H.did, hit.text);
+    var res = el('span');
+    if (run.violated) {
+      var lab = (run.classes || []).map(function (c) { return c.label; }).join(', ');
+      res.appendChild(el('span', 'pill bad', H.broke + (lab ? ': ' + lab : '')));
+      res.appendChild(document.createTextNode('  ' + (H.caught || '')));
+    } else res.appendChild(el('span', 'pill good', H.blocked));
+    row('', res);
+  }
+
+  /* ---------- results ---------- */
   cands.forEach(function (c) {
-    var k = key(c.id), v = (c.gate && c.gate.verdict && c.gate.verdict.text) || '';
+    var k = key(c.id), v = txt(c.gate && c.gate.verdict);
     var card = el('article', 'card');
     card.appendChild(el('div', 'cid', c.id));
-    card.appendChild(el('div', 'def', defences(c)));
-    if (v) card.appendChild(el('span', 'verdict ' + v, (C.verdict || {})[v] || v));
+    card.appendChild(el('div', 'def', defWords(defCodes(c))));
+    if (v === 'PASS' || v === 'FAIL') card.appendChild(el('span', 'pill ' + (v === 'PASS' ? 'good' : 'bad'), C.verdict[v]));
     var hit = num(k + '.violations'), runs = num(k + '.attack_runs');
     if (hit != null && runs != null) {
       card.appendChild(el('div', 'big', hit + ' ' + C.of + ' ' + runs));
@@ -105,36 +369,61 @@
     }
     var fail = ((c.gate && c.gate.checks) || []).filter(function (x) { return x.ok === false; })[0];
     if (v === 'FAIL' && fail) {
-      card.appendChild(el('div', 'why', C.why + ': ' + fail.label + ' ' + fail.value.text + ', ' +
-        ((window.COPY || {}).page || {}).limit_word + ' ' + fail.limit.text));
+      card.appendChild(el('div', 'why', C.why + ': ' + fail.label + ' ' + txt(fail.value) + ', ' +
+        (/^min_/.test(fail.name) ? C.limit_min : C.limit_max) + ' ' + txt(fail.limit)));
     }
     $('cards').appendChild(card);
   });
-  var br = num('benign.rate'), bn = num('benign.n');
-  if (br) $('normal').textContent = C.normal + ': ' + br + (bn ? ' (' + bn + ')' : '');
+  (function () {
+    var f = $('facts'), br = num('benign.rate'), bn = num('benign.n'), t = num('time.to_decision');
+    function fact(label, value) { var s = el('div'); s.appendChild(document.createTextNode(label + ': ')); s.appendChild(el('b', null, value)); f.appendChild(s); }
+    if (br) fact(C.normal, br + (bn ? ' (' + bn + ')' : ''));
+    if (t) fact(C.decided_in, t);
+  })();
 
-  /* The decision steps: icons from pipeline-glyphs.js, state from the bridge feed (data/live.js). */
-  $('steps-title').textContent = C.steps_title || '';
-  (C.steps || []).forEach(function (s) {
-    var box = el('div', 'step'); box.id = 'step-' + s.id.replace('.', '-');
-    var svg = document.createElementNS(NS, 'svg'); svg.setAttribute('viewBox', '0 0 120 90');
-    svg.innerHTML = (window.GLYPHS || {})[s.id] || '';
-    box.appendChild(svg);
-    box.appendChild(el('div', 'lbl', s.label));
-    box.appendChild(el('div', 'st', ''));
-    $('steps').appendChild(box);
-  });
-  function paint() {
-    var L = window.LIVE, nodes = (L && L.nodes) || null;
-    (C.steps || []).forEach(function (s) {
-      var box = $('step-' + s.id.replace('.', '-')), st = nodes && nodes[s.id] ? nodes[s.id].state : (cands.length ? 'done' : 'idle');
-      st = st === 'running' || st === 'done' ? st : 'idle';
-      box.className = 'step ' + st;
-      box.lastChild.textContent = (C.state || {})[st] || '';
-    });
+  /* ---------- proof ---------- */
+  var PR = C.proof || {};
+  ['who', 'log', 'rules', 'risks', 'controls'].forEach(function (k) { $(k + '-title').textContent = PR[k + '_title'] || ''; });
+  function when(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || '');
+    return m ? Number(m[3]) + ' ' + C.months[Number(m[2]) - 1] + ', ' + m[4] + ':' + m[5] : (iso || '');
   }
-  paint();
-  /* Re-read data/live.js once a second (classic script tag; no network calls). */
+  (function () {
+    var es = ((D.audit || {}).entries || []).slice(-5).reverse(), ul = $('who');
+    if (!es.length) ul.appendChild(el('li', 'empty', PR.none_yet));
+    es.forEach(function (e) {
+      var li = el('li'); li.appendChild(el('b', null, cap(txt(e.who)) + ' · ' + (e.event_label || '')));
+      li.appendChild(el('small', null, when(txt(e.time)) + ' · ' + txt(e.candidate) + ' · ' + txt(e.what)));
+      ul.appendChild(li);
+    });
+    var ch = (D.audit || {}).chain || {}, L_ = window.LIVE, tag = L_ && L_.nodes && L_.nodes['sl.log'] && L_.nodes['sl.log'].tag;
+    var ok = ch.ok === true || tag === 'intact' ? true : (ch.ok === false || tag === 'broken' ? false : null);
+    var p = $('log'); p.textContent = ok === true ? PR.log_ok : ok === false ? PR.log_bad : PR.log_none;
+    if (ok === null) p.className = 'empty';
+    var rules = $('rules'); (PR.rules || []).forEach(function (r) { rules.appendChild(el('p', null, r)); });
+    var roles = ((D.policy || {}).roles) || {}, eng = txt(roles.engineers), rev = txt(roles.reviewers);
+    if (eng && rev) $('roles').textContent = cap(eng) + ' ' + PR.engineer + ' ' + cap(rev) + ' ' + PR.reviewer;
+    var rk = ((D.assurance || {}).risks || []).filter(function (r) { return /open/i.test(r.status_text || ''); }), ru = $('risks');
+    if (!rk.length) ru.appendChild(el('li', 'empty', PR.no_risks));
+    rk.forEach(function (r) {
+      var li = el('li', null, r.title); li.appendChild(el('small', null, PR.controlled_by + ' ' + (defWords(r.control || '') || r.control)));
+      ru.appendChild(li);
+    });
+    var sel = cands.filter(function (c) { return c.id === G.selected; })[0] || cands[cands.length - 1], cu = $('controls');
+    var words = sel ? defWords(defCodes(sel)).split(' + ').filter(function (w) { return w !== C.defences.none; }) : [];
+    if (!words.length) cu.appendChild(el('li', 'empty', PR.controls_none));
+    words.forEach(function (w) { cu.appendChild(el('li', null, w)); });
+  })();
+
+  /* ---------- keys, cover, polling ---------- */
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.key === 'Shift') return;
+    var wasCover = coverUp; hideCover();
+    var i = VIEWS.indexOf(['', 'live', 'results', 'proof'][Number(e.key)] || '');
+    if (e.key.length === 1 && e.key >= '1' && e.key <= '3') show(VIEWS[Number(e.key) - 1]);
+    else if (wasCover) fit();
+  });
+  $('cover').addEventListener('click', function () { hideCover(); fit(); });
   setInterval(function () {
     var s = document.createElement('script');
     s.src = 'data/live.js?r=' + Date.now();
@@ -142,14 +431,11 @@
     document.body.appendChild(s);
   }, 1000);
 
-  /* One decision line. */
-  var d = $('decision'), latest = ((D.console || {}).latest_decision || {}).text;
-  var bits = [];
-  if (latest) bits.push(latest + ' (' + C.scripted_reviewer + ')');
-  var t = num('time.to_decision'); if (t) bits.push(C.decided_in + ' ' + t);
-  var a = num('audit.entries'); if (a) bits.push(a + ' ' + C.log_entries);
-  d.appendChild(el('b', null, C.decision + ': '));
-  d.appendChild(document.createTextNode(bits.length ? bits.join(' · ') : C.pending));
+  var m = /v=(live|results|proof)/.exec(location.hash || '');
+  if (m) hideCover();
+  show(m ? m[1] : 'live');
+  paint();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
 })();
 </script>
 </body>

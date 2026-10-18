@@ -219,27 +219,68 @@ window.COPY = {
     "title": "Can this AI agent ship?",
     "badge_real": "Real model run",
     "badge_scripted": "Scripted demo",
-    "badge_none": "No run exported yet",
+    "badge_none": "No run yet",
+    "tabs": { "live": "Live run", "results": "Results", "proof": "Proof" },
     "verdict": { "PASS": "Ready to ship", "FAIL": "Blocked" },
-    "defences": { "none": "No defences", "code": "Code checks", "human": "Human approval" },
+    "chip": { "PASS": "Ready", "FAIL": "Blocked" },
+    "defences": { "none": "No defences", "labels": "Trust labels", "code": "Code checks", "human": "Human approval" },
     "attacks": "attacks broke a rule",
     "of": "of",
     "why": "Why",
-    "limit_word": "limit",
+    "limit_max": "allowed up to",
+    "limit_min": "needs at least",
     "normal": "Normal tasks completed",
-    "steps_title": "How the decision is made",
+    "decided_in": "Decided in",
+    "pending": "not available yet",
+    "groups": {
+      "red": "Red team",
+      "gate": "Can this update ship today?",
+      "risk": "Are the risks under control?"
+    },
     "steps": [
       { "id": "rt.attack", "label": "Attack the agent" },
-      { "id": "rt.check", "label": "Check every action" },
-      { "id": "sl.gate", "label": "Gate against the rules" },
+      { "id": "rt.record", "label": "Watch every tool call" },
+      { "id": "rt.check", "label": "Check the rules" },
+      { "id": "sl.gate", "label": "Release gate" },
       { "id": "sl.review", "label": "A person decides" },
-      { "id": "sl.log", "label": "Record it in a tamper-evident log" }
+      { "id": "sl.log", "label": "Tamper-evident log" },
+      { "id": "ll.risks", "label": "Risks under control?" },
+      { "id": "fix.ticket", "label": "Fix and test again" }
     ],
+    "loop_label": "test again",
     "state": { "idle": "Waiting", "running": "Running", "done": "Done" },
-    "decision": "Decision",
-    "scripted_reviewer": "scripted reviewer",
-    "decided_in": "Decided in",
-    "log_entries": "audit-log entries",
-    "pending": "not available yet"
+    "happened": {
+      "title": "What just happened",
+      "asked": "A person asked",
+      "hidden": "Hidden in the document",
+      "did": "The agent did",
+      "broke": "Rule broken",
+      "blocked": "A defence stopped the agent",
+      "held": "No rule broken",
+      "caught": "Redline caught it."
+    },
+    "chips_title": "Release candidates",
+    "proof": {
+      "who_title": "Who decided, and when",
+      "none_yet": "No decision recorded yet",
+      "log_title": "Is the log intact?",
+      "log_ok": "Checked: no edits found",
+      "log_bad": "Checked: an edit was found",
+      "log_none": "Not checked yet",
+      "rules_title": "Three rules",
+      "rules": [
+        "The machine gives evidence. A person decides.",
+        "Write it in stone.",
+        "Anything changes, test again."
+      ],
+      "engineer": "(engineer) cannot approve their own work.",
+      "reviewer": "(reviewer) decides.",
+      "risks_title": "Open risks",
+      "no_risks": "No open risks listed",
+      "controls_title": "Controls used",
+      "controls_none": "None listed",
+      "controlled_by": "Controlled by"
+    },
+    "months": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
   }
 };
