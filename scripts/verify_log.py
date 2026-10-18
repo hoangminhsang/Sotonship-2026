@@ -123,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     print(check.detail)
     code = 0
     if not check.ok:
-        print(f">>> TAMPERING DETECTED at entry #{check.bad_seq} ({check.kind}) <<<")
+        where = f" at entry #{check.bad_seq}" if check.bad_seq is not None else ""
+        print(f">>> TAMPERING DETECTED{where} ({check.kind}) <<<")
         code = 1
     elif check.entries == 0:
         print("WARNING: nothing to verify. A deleted or emptied log also looks like this.")

@@ -66,12 +66,15 @@ def decide(
     reason: str | None = None,
     expiry: str | None = None,
     now: datetime | None = None,
+    today: date | None = None,
 ) -> dict:
     """Validate a decision and return the event to append to the audit log.
 
     Raises :class:`DecisionError` when a rule is broken; the caller logs the
     refusal separately so attempts are never silently dropped. ``now`` is the
-    reference time for the OVERRIDE expiry rule (default: current UTC time).
+    decision time (default: current UTC time). ``today`` (default: the date of
+    ``now``) is what an OVERRIDE expiry is checked against: the expiry must be
+    after it, so an expiry of today or in the past is refused.
     """
     action = str(action or "").strip().upper()  # None/'' -> a clear refusal, not a traceback
     if action not in ACTIONS:
@@ -95,10 +98,11 @@ def decide(
             raise DecisionError("REFUSED: OVERRIDE needs a reason")
         if not expiry:
             raise DecisionError("REFUSED: OVERRIDE needs an expiry date (YYYY-MM-DD)")
-        if _check_date(expiry) <= now.date():
+        today = today or now.date()
+        if _check_date(expiry) <= today:
             raise DecisionError(
                 f"REFUSED: OVERRIDE expiry {expiry} must be a future date "
-                f"(today is {now.date().isoformat()})"
+                f"(today is {today.isoformat()})"
             )
 
     return {

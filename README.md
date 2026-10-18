@@ -188,7 +188,9 @@ writes — no new tests here, all deterministic and unit-tested:
   PASS/FAIL with reasons; `decision` enforces roles (the engineer can't approve
   their own work) and Approve/Block/Override; `audit` writes a hash-chained,
   append-only log and `verify_log` names the first entry that does not hold.
-  The log is tamper-evident, not tamper-proof: see "Honest limits" under
+  A small head anchor (`audit_log_head.json`, the newest `seq` + `hash`) is
+  rewritten on every append so cutting off the most recent entries is caught
+  too. The log is tamper-evident, not tamper-proof: see "Honest limits" under
   Disclosure for what it does and does not catch.
 - **Long loop (assurance).** Every violation class becomes a risk whose
   **likelihood is the measured attack rate, not a guess** (`risks`); each risk
@@ -363,19 +365,22 @@ uses these identifiers.
 - **The audit log is tamper-evident, not tamper-proof.** `verify_log` catches
   an edited entry, an inserted entry, a deleted middle entry, a reordered
   entry and a line that is no longer valid JSON, and names the position and
-  the kind. It does NOT catch three things: (1) re-chaining — edit an entry
-  and recompute every later hash, and the chain verifies as intact; (2) tail
-  truncation — delete the last one or more entries, and the chain verifies as
-  intact; (3) deleting the file — an empty or missing log verifies as 'no
-  entries (log missing or empty)'. Plain SHA-256 has no key, so anyone who can
-  write the file can rebuild the chain. The cheap anchor is
-  `audit.head(path)`, which returns `(entry_count, last_hash)`: record it
-  outside the file (the gate report, the manager summary line 'Audit log: N
-  entries, head <hash>') and compare — a different count or hash with an
-  intact chain means the log was cut or rebuilt. A real product would add an
-  HMAC with a key held by the rule owner, or a second copy of the log.
-  (Wording from the governance hardening in the review pass; `audit.head`,
-  the malformed-line check and the "no entries" message land with it.)
+  the kind. The head anchor file next to the log (`<log>_head.json`, written
+  on every append) also catches (1) tail truncation — delete the last one or
+  more entries (kind `truncated`); (2) deleting the log file while its anchor
+  stays (`truncated after entry 0`); (3) re-chaining — edit an entry and
+  recompute every later hash (kind `anchor`: the last entry no longer matches).
+  Appending onto a log that fails any of these checks is refused. It does NOT
+  catch someone who rewrites the log *and* the anchor together, or deletes
+  both: plain SHA-256 has no key, so anyone who can write the folder can
+  rebuild both. A log written before the anchor existed verifies with a caveat
+  until its next append. `audit.head(path)` returns the same
+  `(entry_count, last_hash)`: record it outside the folder too (the gate
+  report, the manager summary line 'Audit log: N entries, head <hash>') and
+  compare. A real product would add an HMAC with a key held by the rule
+  owner, or a second copy of the log (or its head) in a separately-controlled
+  place. (Wording from the governance hardening in the review pass, merged
+  with PR #2's head anchor.)
 - **A locked run folder is tamper-evident, not tamper-proof.** `verify_run`
   catches an edited, missing or extra file and an edited `manifest.json`
   (`manifest_sha256`). It does not catch deletion of the whole run folder; a
@@ -415,5 +420,8 @@ uses these identifiers.
 - **The oracle only catches rules it has.** Actions outside `data/rules.yaml`
   are not scored. A finding with no fix-table row is flagged for the rule
   owner, never silently passed.
-- **The audit log is tamper-evident, not tamper-proof.** See "Honest limits"
-  under Disclosure.
+- **The audit log is tamper-evident, not tamper-proof.** The hash chain
+  catches edits and deletions anywhere in the log, and the head anchor catches
+  truncation of the newest entries, but someone with write access to
+  `governance_out/` can rewrite the log and the anchor together (or delete
+  both). See "Honest limits" under Disclosure.
