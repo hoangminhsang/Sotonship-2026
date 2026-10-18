@@ -51,6 +51,24 @@ trace           finding, steps_n
 summary         bullets
 chain           ok, entries, head12, detail, tamper{ok, bad_seq, kind}|null
 pipeline_done   status (ok|error|interrupted), exit_code, dur_s, headline{cands[...]}, error
+
+Notes for readers of the file
+-----------------------------
+* ``run_done`` comes in every mode: LIVE as each run finishes (``run_start`` goes out just
+  before the model is called), SCRIPTED and SAVED in one burst per candidate once the runs
+  are scored.
+* A value with nothing behind it is null, never 0: ``asr``, ``asr_lo`` and ``asr_hi`` while
+  ``attack_runs`` is 0; ``benign_rate`` while ``benign_n`` is 0; ``benign_success`` on an
+  attack run; ``error`` when the run did not fail; ``duration_s`` for a scripted run.
+* ``audit.entry`` is the audit log's own entry number; the common key ``seq`` numbers the
+  progress events and is never reused.
+* ``fingerprint`` follows ``runs_done`` for every candidate, although RC-002 and RC-003 write
+  their ``RC-00N.json`` (the ``artifact`` event) before their runs.
+* RC-002 and RC-003 print gate and decision in one section; the log splits it: ``:gate`` ends
+  with the ``gate`` event, ``:decide`` holds the ``audit`` events.
+* With the tamper demo ``chain`` appears twice: the real log (``tamper`` null), then again
+  with the forged copy's result.
+* A run refused before it creates its folder (a bad ``--run`` path) writes no file at all.
 """
 from __future__ import annotations
 
