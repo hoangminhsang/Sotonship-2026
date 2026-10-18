@@ -74,9 +74,11 @@ BEAT IDS
 OUTPUT (stdout)
 
   One row per beat (id, title, words, seconds, slot, flags), the totals, the
-  beats over their slot, the id checks, then the missing keys with the beats
-  that use them. With --out the whole template is written with the numbers
-  filled (UTF-8, LF lines); the tool refuses to overwrite the template itself.
+  beats over their slot, the id checks, the missing keys with the beats that
+  use them, then the numbers filled (key = value, with its source if the
+  numbers file gives one). With --out the whole template is written with the
+  numbers filled (UTF-8, LF lines); the tool refuses to overwrite the
+  template itself.
 
 EXIT CODES
     0  every beat is within its slot, no key is missing, every id is known
@@ -163,11 +165,15 @@ def _as_text(value):
 
 
 def load_numbers(path: Path):
-    """Return (numbers, found). numbers maps key -> text; found is False if no file."""
+    """Return (numbers, sources, found).
+
+    numbers maps key -> text, sources maps key -> its source text (if given),
+    and found is False when the file does not exist.
+    """
     try:
         raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
-        return {}, False
+        return {}, {}, False
     except (OSError, UnicodeDecodeError) as exc:
         raise NumbersError(f"{path}: cannot read the numbers file ({exc})")
     try:
@@ -176,14 +182,18 @@ def load_numbers(path: Path):
         raise NumbersError(f"{path}: not valid JSON ({exc})")
     if not isinstance(data, dict):
         raise NumbersError(f"{path}: the top level must be a JSON object of key -> value")
-    numbers = {}
+    numbers, sources = {}, {}
     for key, entry in data.items():
+        source = None
         if isinstance(entry, dict):
+            source = _as_text(entry.get("source"))
             entry = entry.get("value")
         text = _as_text(entry)
         if text is not None:
             numbers[str(key)] = text
-    return numbers, True
+            if source:
+                sources[str(key)] = source
+    return numbers, sources, True
 
 
 # ---------------------------------------------------------------- beat ids
@@ -316,11 +326,12 @@ def resolve_ids(spec):
 def analyse(text: str, numbers: dict):
     """Walk the template once.
 
-    Returns (filled_text, beats, missing, open_fence_line). missing maps each
-    unfilled key to the labels of the beats that use it, in script order.
-    open_fence_line is the line number of a code fence that never closes, or 0.
+    Returns (filled_text, beats, missing, used, open_fence_line). missing maps
+    each unfilled key to the labels of the beats that use it, in script order.
+    used maps each filled key to its text, in script order. open_fence_line is
+    the line number of a code fence that never closes, or 0.
     """
-    out, beats, missing = [], [], {}
+    out, beats, missing, used = [], [], {}, {}
     beat = None
     fence, fence_line = "", 0
 
@@ -332,6 +343,7 @@ def analyse(text: str, numbers: dict):
             if beat.label not in users:
                 users.append(beat.label)
             return match.group(0)
+        used.setdefault(key, value)
         return value
 
     for number, line in enumerate(text.split("\n"), start=1):
@@ -364,7 +376,7 @@ def analyse(text: str, numbers: dict):
             out.append(filled)
             if not line.lstrip().startswith(">"):
                 beat.spoken.append(filled)
-    return "\n".join(out), beats, missing, (fence_line if fence else 0)
+    return "\n".join(out), beats, missing, used, (fence_line if fence else 0)
 
 
 def _clock(seconds: float) -> str:
@@ -376,7 +388,7 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
 
-def build_report(beats, missing, wpm, template, numbers_path, found, count, ids):
+def build_report(beats, missing, used, sources, wpm, template, numbers_path, found, count, ids):
     """Return (lines, failed) for the stdout report. ids is (list, label, note)."""
     id_list, id_label, id_note = ids
     id_set = set(id_list)
@@ -450,6 +462,12 @@ def build_report(beats, missing, wpm, template, numbers_path, found, count, ids)
             lines.append(f"  {{{{{key}}}}}  in {', '.join(users)}")
     else:
         lines.append("Missing keys: none")
+
+    if used:
+        lines.append(f"Numbers filled: {len(used)}")
+        for key, value in used.items():
+            source = sources.get(key)
+            lines.append(f"  {key} = {value}" + (f"  ({source})" if source else ""))
     return lines, bool(over or missing or unknown or repeated)
 
 
@@ -518,20 +536,20 @@ def main(argv=None) -> int:
     except (OSError, UnicodeDecodeError) as exc:
         return _fail(f"{template}: cannot read the template, it must be UTF-8 text ({exc})")
     try:
-        numbers, found = load_numbers(numbers_path)
+        numbers, sources, found = load_numbers(numbers_path)
         ids = resolve_ids(args.ids)
     except (NumbersError, IdsError) as exc:
         return _fail(str(exc))
 
-    filled, beats, missing, open_fence = analyse(text, numbers)
+    filled, beats, missing, used, open_fence = analyse(text, numbers)
     if open_fence:
         return _fail(f"{template}: the code fence opened on line {open_fence} never closes")
     if not beats:
         return _fail(f'{template}: no beats found; a beat is a heading that ends with its '
                      f'slot in seconds, for example "## problem: Problem [20s]"')
 
-    lines, failed = build_report(beats, missing, args.wpm, template, numbers_path,
-                                 found, len(numbers), ids)
+    lines, failed = build_report(beats, missing, used, sources, args.wpm, template,
+                                 numbers_path, found, len(numbers), ids)
     if out_path is not None:
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)

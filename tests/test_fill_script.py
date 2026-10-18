@@ -260,8 +260,25 @@ def test_missing_key_is_reported_left_in_place_and_exits_1(fs, capsys, tmp_path)
     assert "Missing keys: 1" in out
     assert "{{runs.total}}" in out
     assert "RC-001, Close" in out  # the beats that use it, in script order
-    assert "rc001.asr" not in out.rsplit("Missing keys", 1)[1]
+    assert "rc001.asr" not in out.rsplit("Missing keys", 1)[1].split("Numbers filled")[0]
     assert code == 1
+
+
+def test_filled_numbers_are_listed_once_in_script_order_with_their_source(fs, capsys, tmp_path):
+    tpl = beat("A", "20s", "{{b}} {{a}} {{b}}")
+    nums = {"a": {"value": "1", "source": "x.csv"}, "b": "two", "unused": "9"}
+    code, out, _ = run(fs, capsys, tmp_path, tpl, nums)
+    assert "Numbers filled: 2" in out
+    assert out.index("  b = two") < out.index("  a = 1  (x.csv)")
+    assert out.count("  b = two") == 1
+    assert "unused" not in out
+    assert out.index("Missing keys: none") < out.index("Numbers filled")
+    assert code == 0
+
+
+def test_no_numbers_block_when_nothing_was_filled(fs, capsys, tmp_path):
+    _, out, _ = run(fs, capsys, tmp_path, beat("A", "20s", words(5)), {"a": "1"})
+    assert "Numbers filled" not in out
 
 
 def test_no_numbers_file_reports_every_key_but_still_prints_the_timing(fs, capsys, tmp_path):
