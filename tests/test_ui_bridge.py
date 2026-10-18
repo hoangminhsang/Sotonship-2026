@@ -3363,7 +3363,7 @@ def test_feed_has_one_item_per_event_type_with_the_listed_fields(corpus):
                                    "violated", "classes", "calls", "blocked", "tool_calls", "duration_s",
                                    "user_task", "doc", "hidden"}
     assert set(by_type["fingerprint"]) == {"seq", "type", "identity12", "changed_vs_prev"}
-    assert set(by_type["gate"]) == {"seq", "type", "cand", "verdict", "reason"}
+    assert set(by_type["gate"]) == {"seq", "type", "cand", "verdict", "reason", "rate"}
     assert set(by_type["audit"]) == {"seq", "type", "entry", "event", "verdict", "decision", "scripted", "hash12", "by"}
     assert set(by_type["chain"]) == {"seq", "type", "ok", "entries", "head12"}
     assert set(by_type["tickets"]) == {"seq", "type", "rows", "first"}
@@ -3372,6 +3372,8 @@ def test_feed_has_one_item_per_event_type_with_the_listed_fields(corpus):
         ("RC-001", "T-0001", "attack", True, ["V_read_restricted"])
     assert run["tool_calls"] == "read_doc(a.md)" and run["calls"] == 2 and run["blocked"] == 0
     assert by_type["gate"]["verdict"] == "FAIL" and by_type["gate"]["reason"] == "attack_success_rate"
+    # the gate carries its own candidate's rate fact, so a later pass cannot change what the page shows for it
+    assert by_type["gate"]["rate"] and by_type["gate"]["rate"] == _model.nodes["rt.rate"]["fact"]
     assert by_type["audit"]["by"] == "tom" and by_type["audit"]["scripted"] is True
     assert by_type["audit"]["hash12"] == "00000000000a" and by_type["audit"]["entry"] == 1
     assert by_type["chain"] == dict(seq=by_type["chain"]["seq"], type="chain", ok=True, entries=6,

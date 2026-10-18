@@ -713,7 +713,9 @@ class LiveModel:
             first = next((r for r in _list(ev.get("reasons")) if isinstance(r, str) and r.strip()), None)
             item = {"type": "gate", "cand": _cand_of(ev) or self.cand,
                     "verdict": (str_or_none(ev.get("verdict")) or "").upper() or None,
-                    "reason": clip(first, 160) if first else None}
+                    "reason": clip(first, 160) if first else None,
+                    # this candidate's own attack-success fact, captured now: later passes overwrite the node
+                    "rate": (self.nodes.get("rt.rate") or {}).get("fact") or None}
         elif kind == "audit":
             scripted = ev.get("scripted")
             item = {"type": "audit", "entry": to_int(ev.get("entry")), "event": str_or_none(ev.get("event")),

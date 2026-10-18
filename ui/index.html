@@ -586,7 +586,7 @@
   var S = C.stream || {};
   var sGen = 0, sUid = null, sMax = -1, sQueue = [], sBusy = false, sPinned = false, sStage = $('stream-body'), sPanel = $('stream');
   var sD, sNext, sCur, sLive, sDark, sLogCap;
-  function sFresh() { sD = { pin: null, runs: [], fp: null, gate: null, audit: null, chain: null }; sNext = 0; sCur = null; sLive = false; sDark = false; sLogCap = null; }
+  function sFresh() { sD = { pin: null, runs: [], fp: null, gate: null, audit: null, chain: null, frozen: false }; sNext = 0; sCur = null; sLive = false; sDark = false; sLogCap = null; }
   sFresh();
   function lab(group, code) {
     var m = (window.DEMO && window.DEMO.labels && window.DEMO.labels[group]) || {};
@@ -766,7 +766,7 @@
     { get: function () {
       var N = (window.LIVE && window.LIVE.nodes) || {}, rate = N['rt.rate'] || {}, att = N['rt.attack'] || {};
       var after = !!(sD.fp || sD.gate || sD.audit), rs = rate.state;
-      var fact = rate.fact || ((after || rs === 'skipped' || rs === 'error') ? att.fact : '');
+      var fact = (sD.gate && sD.gate.rate) || rate.fact || ((after || rs === 'skipped' || rs === 'error') ? att.fact : '');
       if (!fact) return null;
       fact = String(fact);
       var m = /^(\S+\s+of\s+\S+)\s*(?:·|-|–)\s*(.+)$/.exec(fact);
@@ -821,10 +821,15 @@
   /* play() takes one queued feed item into the run data and wakes the player */
   function play(g, it) {
     var d = it.d || {};
+    /* every scene tells the story of the pinned example's candidate: later passes do not overwrite it */
+    var pc = sD.pin && sD.pin.cand;
     if (it.type === 'pin') sD.pin = d;
-    else if (it.type === 'fingerprint') sD.fp = d;
-    else if (it.type === 'gate') sD.gate = d;
-    else if (it.type === 'audit') sD.audit = d;
+    else if (it.type === 'fingerprint') { if (!sD.fp) sD.fp = d; }
+    else if (it.type === 'gate') {
+      if (sD.gate || (pc && d.cand && d.cand !== pc)) sD.frozen = !!sD.gate;
+      else sD.gate = d;
+    }
+    else if (it.type === 'audit') { if (!sD.frozen) sD.audit = d; }
     else if (it.type === 'chain') { sD.chain = d; if (sLogCap) sLogCap.textContent = '— ' + logCap(); }
     kick();
     return 0;
@@ -858,7 +863,7 @@
     var items = feed.filter(function (x) { return x.seq > sMax; }).sort(function (a, b) { return a.seq - b.seq; });
     items.forEach(function (x) {
       sMax = x.seq;
-      if (x.type === 'run' && x.kind === 'attack') {   /* the cells of the batch scene: this pass only, so they match its rate */
+      if (x.type === 'run' && x.kind === 'attack' && (!pin || !pin.cand || x.cand === pin.cand)) {   /* the cells: the pinned candidate's pass only */
         if (x.cand !== sD.cand && sD.runs.length) sD.runs = [];
         sD.cand = x.cand; sD.runs.push(x.violated === true);
       }
