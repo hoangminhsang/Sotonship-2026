@@ -223,6 +223,24 @@
   "prov": null,
   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
  },
+ "time.to_decision": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "time.runs": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
  "models.n": {
   "value": null,
   "text": "not available",

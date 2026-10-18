@@ -814,9 +814,84 @@ def test_a_scripted_cli_run_can_be_exported_with_allow_sample(ex, repo):
 
 
 # --------------------------------------------------------------------------- #
+# Time keys of the numbers sheet: measured from run_index.json or from the manifests, never typed.
+# --------------------------------------------------------------------------- #
+def test_durations_are_written_in_whole_units(ex):
+    cases = [(0, "0 s"), (0.4, "0 s"), (59, "59 s"), (60, "1 min 0 s"), (252, "4 min 12 s"), (3599.6, "1 h 0 min 0 s"),
+             (3725, "1 h 2 min 5 s")]
+    for seconds, text in cases:
+        assert ex.fmt_duration(seconds) == text, seconds
+
+
+def test_time_to_decision_comes_from_the_run_index_and_names_its_file(ex, tmp_path, cli_mod):
+    write_live_folder(tmp_path, cli_mod, started_at="2026-10-18T06:00:00+00:00", ended_at="2026-10-18T06:04:12+00:00")
+    (tmp_path / "lab" / "governance").mkdir(parents=True)
+    shutil.copy(ROOT / "lab" / "governance" / "policy.yaml", tmp_path / "lab" / "governance" / "policy.yaml")
+    ctx, sheet = build_sheet(ex, tmp_path)
+    e = sheet["time.to_decision"]
+    assert (e["text"], e["value"], e["status"], e["mode"]) == ("4 min 12 s", "4 min 12 s", ex.REAL, "LIVE")
+    assert "run_index.json" in e["source"] and e["prov"] in ctx.prov
+    assert ex.self_check(ctx, [ctx.prov[e["prov"]]]) == []
+    assert sheet["time.runs"]["status"] == ex.PENDING          # the run index has no per-run times
+
+
+def test_time_comes_from_the_manifests_when_the_run_index_has_no_end(ex, run_repo, cli_mod):
+    dirs = make_multi(run_repo, cli_mod)               # the run index has a start but no end
+    times = {"RC-001": ("2026-10-18T06:00:00+00:00", "2026-10-18T06:01:30+00:00"),
+             "RC-002": ("2026-10-18T06:01:40+00:00", "2026-10-18T06:03:00+00:00"),
+             "RC-003": ("2026-10-18T06:03:10+00:00", "2026-10-18T06:04:12+00:00")}
+    for cid, (start, end) in times.items():
+        _rewrite_manifest(dirs[cid], started_at=start, ended_at=end)
+    ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    sheet = demo["numbers"]
+    assert sheet["time.to_decision"]["text"] == "4 min 12 s"              # first start to last end
+    assert sheet["time.runs"]["text"] == "3 min 52 s"                      # 90 s + 80 s + 62 s of running
+    for key in ("time.to_decision", "time.runs"):
+        e = sheet[key]
+        assert (e["status"], e["mode"]) == (ex.REAL, "LIVE") and e["prov"] in {p["id"] for p in demo["provenance"]}
+        assert "manifest.json" in e["source"] and "2 more" in e["source"], e["source"]
+    assert ex.self_check(ctx, demo["provenance"]) == []
+
+
+def test_time_is_pending_when_a_run_has_no_usable_times(ex, run_repo, cli_mod):
+    dirs = make_multi(run_repo, cli_mod)
+    _rewrite_manifest(dirs["RC-001"], complete=False)              # RC-001's run did not finish: its batch is PENDING
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    assert demo["numbers"]["rc003.asr"]["status"] == ex.REAL        # the selected gate still shows
+    for key in ("time.to_decision", "time.runs"):                  # but a span over two of three runs would mislead
+        e = demo["numbers"][key]
+        assert e["status"] == ex.PENDING and e["value"] is None and e["source"] is None and e["reason"], key
+
+
+def test_time_is_pending_when_a_manifest_ends_before_it_starts(ex, run_repo, cli_mod):
+    dirs = make_multi(run_repo, cli_mod)
+    _rewrite_manifest(dirs["RC-002"], started_at="2026-10-18T06:10:00+00:00", ended_at="2026-10-18T06:00:00+00:00")
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    assert demo["numbers"]["rc003.asr"]["status"] == ex.REAL
+    for key in ("time.to_decision", "time.runs"):
+        assert demo["numbers"][key]["status"] == ex.PENDING, key
+
+
+def test_time_is_pending_for_a_run_that_ends_before_it_starts_or_is_unfinished(ex, tmp_path, cli_mod):
+    cases = (("2026-10-18T06:10:00+00:00", "2026-10-18T06:00:00+00:00", True),
+             ("2026-10-18T06:00:00+00:00", "not a time", True),
+             ("2026-10-18T06:00:00+00:00", "2026-10-18T06:04:12+00:00", False))
+    for i, (started, ended, complete) in enumerate(cases):
+        root = tmp_path / f"case{i}"
+        write_live_folder(root, cli_mod, started_at=started, ended_at=ended, complete=complete)
+        _ctx, sheet = build_sheet(ex, root)
+        assert sheet["time.to_decision"]["status"] == ex.PENDING, (started, ended, complete)
+
+
+def test_scripted_output_has_no_run_times(ex, repo):
+    _ctx, sheet = build_sheet(ex, repo, allow_sample=True, gov=GOV_FILES)
+    assert sheet["time.to_decision"]["status"] == ex.PENDING and sheet["time.runs"]["status"] == ex.PENDING
+
+
+# --------------------------------------------------------------------------- #
 # Numbers sheet: one flat table that holds every number the page and the script say.
 # --------------------------------------------------------------------------- #
-LIVE_SIZE ={"attack": 60, "benign": 30, "reps": 3}
+LIVE_SIZE = {"attack": 60, "benign": 30, "reps": 3}
 LIVE_RUN = {"RC-001": (21, 21), "RC-002": (9, 21), "RC-003": (0, 21)}   # (landed, attempted) of the attack runs
 LIVE_GOV = {"connected": True, "candidate_id": "RC-001", "evidence_batch": "b",
             "gate_report": "governance_out/gate_RC-001.txt", "fingerprint": ["governance_out/RC-001.json"],
@@ -830,7 +905,7 @@ SHEET_KEYS_FOR_THE_PAGE = ["rc001.attack_runs", "rc001.violations", "benign.rate
 def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, model: str = "qwen2.5:7b-instruct",
                       run_index: bool = True, folder: str = "governance_out", run_ids=None,
                       started_at: str = "2026-10-18T06:00:00+00:00", complete: bool = True,
-                      digest: str = "sha256:" + "ab" * 32) -> None:
+                      digest: str = "sha256:" + "ab" * 32, ended_at=None) -> None:
     """governance_out/ of a real-model run in the layout of the CLI output, with synthetic numbers.
 
     The gate text comes from the CLI's own gate_report(), the log and its verify result from the real
@@ -869,9 +944,11 @@ def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, m
     if run_index:
         cands = [dict({"id": cid}, **({"run_id": run_ids[cid]} if run_ids and cid in run_ids else {}))
                  for cid in run]
-        (out / "run_index.json").write_text(json.dumps({
-            "schema": "run-index/1", "mode": tag, "complete": complete, "started_at": started_at,
-            "reps": size["reps"], "model": model, "digest": digest, "candidates": cands}), encoding="utf-8")
+        index = {"schema": "run-index/1", "mode": tag, "complete": complete, "started_at": started_at,
+                 "reps": size["reps"], "model": model, "digest": digest, "candidates": cands}
+        if ended_at:
+            index["ended_at"] = ended_at
+        (out / "run_index.json").write_text(json.dumps(index), encoding="utf-8")
 
 
 def expected_sheet(run=None, size=None) -> dict:
@@ -1073,7 +1150,7 @@ def test_no_number_is_typed_in_the_code_that_builds_the_sheet(ex):
     tree = ast.parse((ROOT / "ui" / "export.py").read_text(encoding="utf-8"))
     names = {"build_numbers", "gate_numbers", "numbers_gate", "model_number", "reps_number", "audit_numbers",
              "num_pending", "num_entry", "num_from_field", "num_part", "number_source", "to_numbers_json",
-             "numbers_problems"}
+             "numbers_problems", "time_numbers", "manifest_times"}
     funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {f.name for f in funcs} == names
     for f in funcs:

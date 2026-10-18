@@ -1,6 +1,6 @@
 window.DEMO = {
  "schema": "ui-demo/1",
- "exported_at": "2026-10-18T10:15:17+01:00",
+ "exported_at": "2026-10-18T10:34:40+01:00",
  "allow_sample": false,
  "sample_present": false,
  "sample_banner": null,
@@ -3898,6 +3898,24 @@ window.DEMO = {
    "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
   },
   "tamper.entry": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "time.to_decision": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "time.runs": {
    "value": null,
    "text": "not available",
    "status": "PENDING",
