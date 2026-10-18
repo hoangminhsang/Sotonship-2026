@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lab import corpus
 from lab.governance import audit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -221,3 +222,101 @@ def test_help_text_states_real_defaults(gov):
     assert "--no-tamper-demo" in text
     joined = re.sub(r"\n\s+", "", text)  # argparse wraps the long absolute default path
     assert "governance_out/cli_demo" in joined
+
+
+# --------------------------------------------------------------------------- #
+# Race fix: a DEMO run reads the corpus, it never rewrites it.
+# --------------------------------------------------------------------------- #
+def _corpus_state() -> dict:
+    return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (corpus.DEV_PATH, corpus.TEST_PATH)}
+
+
+def test_demo_run_leaves_the_corpus_untouched(gov, tmp_path):
+    """Two runs at once must not rewrite corpus/*.jsonl under each other (bytes AND mtime)."""
+    before = _corpus_state()
+    assert _demo(gov, tmp_path / "gov") == 0
+    assert _corpus_state() == before
+
+
+def test_corpus_mismatch_exits_2_with_one_line_and_writes_nothing(gov, tmp_path, monkeypatch, capsys):
+    """A corpus that differs from the generator stops the run (exit 2); it is never rewritten."""
+    def mismatch(*a, **k):
+        raise corpus.CorpusMismatch("corpus file(s) ['test.jsonl'] differ from the seed-7 generator output.")
+
+    def no_rewrite(*a, **k):
+        raise AssertionError("the CLI must not rewrite the corpus")
+
+    monkeypatch.setattr(corpus, "check_matches_generator", mismatch)
+    monkeypatch.setattr(corpus, "build_and_write", no_rewrite)
+    before = _corpus_state()
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 2
+    captured = capsys.readouterr()
+    lines = [ln for ln in captured.err.splitlines() if ln.strip()]
+    assert len(lines) == 1 and "test.jsonl" in lines[0] and lines[0].startswith("error:"), captured.err
+    assert not (out / "audit_log.jsonl").exists()      # stopped before any artifact
+    assert _corpus_state() == before
+
+
+# --------------------------------------------------------------------------- #
+# main(): line-buffered stdout, and SIGTERM / SIGBREAK stop the run like Ctrl-C.
+# --------------------------------------------------------------------------- #
+def test_main_line_buffers_stdout_while_it_runs_and_puts_it_back(gov, monkeypatch):
+    import io
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    assert stream.line_buffering is False
+    seen = {}
+
+    def fake_run(args, argv=None):
+        seen["during"] = sys.stdout.line_buffering
+        return 0
+
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(gov, "run", fake_run)
+    assert gov.main(["--no-tamper-demo"]) == 0
+    assert seen["during"] is True          # a viewer reading the pipe sees each line at once
+    assert stream.line_buffering is False  # an in-process caller's stream is left as it was
+
+
+def test_main_copes_with_a_stdout_that_cannot_be_reconfigured(gov, monkeypatch):
+    import io
+
+    monkeypatch.setattr(sys, "stdout", io.StringIO())            # no reconfigure()
+    monkeypatch.setattr(gov, "run", lambda args, argv=None: 0)
+    assert gov.main(["--no-tamper-demo"]) == 0
+
+
+def test_sigterm_and_sigbreak_raise_keyboard_interrupt_only_while_main_runs(gov, monkeypatch):
+    import signal
+
+    names = [n for n in ("SIGTERM", "SIGBREAK") if hasattr(signal, n)]    # SIGBREAK: Windows only
+    assert "SIGTERM" in names
+    before = {n: signal.getsignal(getattr(signal, n)) for n in names}
+    seen = {}
+
+    def fake_run(args, argv=None):
+        seen.update({n: signal.getsignal(getattr(signal, n)) for n in names})
+        return 0
+
+    monkeypatch.setattr(gov, "run", fake_run)
+    assert gov.main(["--no-tamper-demo"]) == 0
+    for n in names:
+        handler = seen[n]
+        assert callable(handler) and handler != before[n], n
+        with pytest.raises(KeyboardInterrupt):                    # what Ctrl-C raises, so the folder gets locked
+            handler(getattr(signal, n), None)
+        assert signal.getsignal(getattr(signal, n)) == before[n], n   # put back after the run
+
+
+def test_main_off_the_main_thread_still_runs(gov, monkeypatch):
+    """signal.signal only works on the main thread; a caller on another thread must not crash."""
+    import threading
+
+    monkeypatch.setattr(gov, "run", lambda args, argv=None: 7)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(code=gov.main(["--no-tamper-demo"])))
+    thread.start()
+    thread.join(10)
+    assert result == {"code": 7}
+
