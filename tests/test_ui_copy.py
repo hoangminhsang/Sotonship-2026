@@ -26,7 +26,8 @@ COPY_JS = UI / "copy.js"
 #   who  reviewer name from data
 #   n    a count of rows that are listed on the screen, or of warnings
 #   i    how many of those warnings are about data integrity
-ALLOWED_PLACEHOLDERS = {"t", "cmd", "cand", "team", "first", "last", "who", "n", "i"}
+#   path, tag  an example model file path and an example Ollama tag, both from ui/index.html (they hold digits)
+ALLOWED_PLACEHOLDERS = {"t", "cmd", "cand", "team", "first", "last", "who", "n", "i", "path", "tag"}
 
 # The beat ids. Lane G writes its script against the same ids (fill_script.py, SCRIPT_CUT.md).
 BEAT_IDS = ["problem", "why_now", "pivot", "baseline", "duties", "tamper",
@@ -318,3 +319,27 @@ def test_app_js_never_names_a_beat():
     for beat in copy["beats"]:
         keyed = re.compile(r"""(?:\bid\s*[!=]==?\s*|\bcase\s+|\[\s*)['"]%s['"]""" % re.escape(beat["id"]))
         assert not keyed.search(source), f"app.js keys its logic on the beat {beat['id']!r}"
+
+
+# ---------------------------------------------------------------------------------------------
+# The "Test a model" view of ui/index.html (page.test).
+# ---------------------------------------------------------------------------------------------
+def test_the_test_a_model_words_are_plain_digit_free_and_keep_the_gate_apart():
+    _, copy = _load()
+    test = copy["page"]["test"]
+    assert copy["page"]["tabs"]["test"] == "Test a model"
+    for path, value in _strings(test):
+        assert value.strip(), path
+    assert not re.search(r"\d", json.dumps(test)), "a number comes from data or from the page, never from copy.js"
+    # the owner's attacks are an extra set: the words say so and never claim more than the evidence
+    assert "not part of the gate" in test["result_note"].lower()
+    assert "tamper-proof" not in json.dumps(test).lower()
+    assert "{path}" in test["source_hint"] and "{tag}" in test["source_hint"]
+    assert "python ui/bridge.py --serve" in test["offline_file"]
+
+
+def test_goal_and_place_fallback_words_are_plain():
+    _, copy = _load()
+    test = copy["page"]["test"]
+    assert test["goals"] == ["Read a restricted record", "Send data out", "Misuse a tool"]
+    assert test["places"] == ["Inside a document", "In a document comment", "In an asset's notes"]

@@ -182,6 +182,51 @@
   .mini { position:absolute; top:16px; right:22px; z-index:2; font-size:18px; color:var(--soft); background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:4px 14px; }
   .src { color:var(--soft); font-size:20px; margin:-8px 0 14px; }
   .src:empty { display:none; }
+
+  /* ---------- Test a model ---------- */
+  .tm-intro { color:var(--soft); font-size:20px; margin:0 0 16px; }
+  .tm-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); grid-template-rows:auto auto 1fr; gap:24px; align-items:start;
+             grid-template-areas:"model attacks" "run attacks" "result attacks"; }
+  #tm-model { grid-area:model; } #tm-attacks { grid-area:attacks; } #tm-run { grid-area:run; } #tm-result { grid-area:result; }
+  .tm-help { color:var(--soft); font-size:20px; margin:-4px 0 12px; }
+  .tm-label { display:block; font-size:20px; color:var(--soft); margin:14px 0 6px; }
+  .tm-field { display:block; width:100%; font:inherit; font-size:21px; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:10px 14px; }
+  textarea.tm-field { resize:vertical; line-height:1.4; }
+  .tm-field:focus-visible, .tm-check input:focus-visible { outline:2px solid var(--run); outline-offset:2px; }
+  .tm-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:16px; }
+  .tm-actions .runtext { margin-left:0; }
+  .tm-two { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:0 16px; }
+  .tm-steps { list-style:none; margin:18px 0 0; padding:0; display:flex; flex-direction:column; gap:10px; }
+  .tm-steps li { display:flex; align-items:center; gap:12px; font-size:21px; }
+  .tm-steps .dot { flex:none; width:16px; height:16px; border-radius:50%; border:2px solid var(--faint); }
+  .tm-steps .done .dot { background:var(--good); border-color:var(--good); }
+  .tm-steps .running .dot { background:var(--run-bg); border-color:var(--run); animation:blink 1s infinite ease-in-out; }
+  .tm-steps .error .dot { background:var(--bad); border-color:var(--bad); }
+  .tm-steps .state { margin-left:auto; color:var(--soft); font-size:20px; }
+  .tm-line { margin-top:14px; overflow-wrap:anywhere; }
+  .tm-line:empty { display:none; }
+  .tm-line .pill { margin-right:4px; }
+  .tm-sub { display:block; color:var(--soft); font-size:20px; margin-top:6px; }
+  .tm-err { color:var(--bad); font-size:20px; margin-top:10px; overflow-wrap:anywhere; }
+  .tm-err:empty { display:none; }
+  .tm-file { color:var(--soft); font-size:20px; margin:0 0 14px; }
+  .tm-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:12px; max-height:560px; overflow:auto; }
+  .tm-list li { border:1px solid var(--line); border-radius:14px; padding:10px 16px; }
+  .tm-list li.empty { border:0; padding:0; }
+  .tm-list b { font-weight:500; }
+  .tm-list small { display:block; color:var(--soft); font-size:20px; overflow-wrap:anywhere; }
+  .tm-list .pr { margin-top:4px; overflow-wrap:anywhere; }
+  .tm-form { margin-top:20px; border-top:1px solid var(--line); padding-top:6px; }
+  .tm-check { display:flex; align-items:center; gap:12px; margin-top:18px; font-size:22px; }
+  .tm-check input { width:22px; height:22px; margin:0; accent-color:var(--ink); }
+  .tm-res { display:flex; flex-direction:column; gap:16px; }
+  .tm-cand { border:1px solid var(--line); border-radius:14px; padding:12px 18px; }
+  .tm-kv { display:grid; grid-template-columns:minmax(0, 210px) minmax(0, 1fr); gap:6px 18px; font-size:21px; margin:8px 0 0; align-items:baseline; }
+  .tm-kv dt { color:var(--soft); } .tm-kv dd { margin:0; overflow-wrap:anywhere; }
+  .tm-note { color:var(--soft); font-size:20px; margin-top:16px; }
+  @media (max-width: 1100px) { .tm-grid { grid-template-columns:1fr; grid-template-rows:none; grid-template-areas:"model" "attacks" "run" "result"; } }
+  @media (max-width: 700px) { .tm-two, .tm-kv { grid-template-columns:1fr; } }
+  @media (prefers-reduced-motion: reduce) { .tm-steps .running .dot { animation:none; } }
   /* small or short windows (kept last so these rules win) */
   @media (max-height: 900px) { main { padding-top:14px; padding-bottom:14px; } nav { margin:8px 0 10px; } .runbar { margin-bottom:10px; padding:6px 12px; } .stream { margin-top:10px; } }
   @media (max-width: 820px) {
@@ -249,6 +294,57 @@
         <div class="rules" style="margin-top:28px"><h3 id="rules-title"></h3><div id="rules"></div><p class="roles" id="roles"></p></div></div>
       <div class="card"><h3 id="risks-title"></h3><ul class="plain" id="risks"></ul></div>
       <div class="card"><h3 id="controls-title"></h3><ul class="plain" id="controls"></ul></div>
+    </div>
+  </section>
+
+  <section class="view" id="view-test" hidden>
+    <p class="tm-intro" id="tm-intro"></p>
+    <div class="card" id="tm-offline" hidden><h3 id="tm-offline-title"></h3><p id="tm-offline-text"></p></div>
+    <div class="tm-grid" id="tm-grid" hidden>
+      <article class="card" id="tm-model">
+        <h3 id="tm-model-title"></h3>
+        <p class="tm-help" id="tm-model-help"></p>
+        <label class="tm-label" for="tm-source" id="tm-source-label"></label>
+        <input class="tm-field" type="text" id="tm-source" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1000">
+        <div class="tm-actions"><button type="button" class="btn primary" id="tm-import"></button><span class="runtext" id="tm-import-text" role="status"></span></div>
+        <ol class="tm-steps" id="tm-steps" hidden></ol>
+        <p class="tm-line" id="tm-import-result" role="status"></p>
+      </article>
+      <article class="card" id="tm-attacks">
+        <h3 id="tm-attacks-title"></h3>
+        <p class="tm-help" id="tm-attacks-help"></p>
+        <p class="tm-file" id="tm-file"></p>
+        <ul class="tm-list" id="tm-list"></ul>
+        <p class="tm-err" id="tm-list-error"></p>
+        <form class="tm-form" id="tm-form" autocomplete="off">
+          <label class="tm-label" for="tm-name" id="tm-name-label"></label>
+          <input class="tm-field" type="text" id="tm-name" maxlength="40" autocomplete="off" spellcheck="false">
+          <label class="tm-label" for="tm-goal" id="tm-goal-label"></label>
+          <select class="tm-field" id="tm-goal"></select>
+          <label class="tm-label" for="tm-place" id="tm-place-label"></label>
+          <select class="tm-field" id="tm-place"></select>
+          <label class="tm-label" for="tm-prompt" id="tm-prompt-label"></label>
+          <textarea class="tm-field" id="tm-prompt" rows="3" maxlength="500" spellcheck="false"></textarea>
+          <div class="tm-actions"><button type="submit" class="btn primary" id="tm-add"></button><span class="runtext" id="tm-add-text" role="status"></span></div>
+        </form>
+      </article>
+      <article class="card" id="tm-run">
+        <h3 id="tm-run-title"></h3>
+        <p class="tm-help" id="tm-run-help"></p>
+        <div class="tm-two">
+          <div><label class="tm-label" for="tm-model-sel" id="tm-model-label"></label><select class="tm-field" id="tm-model-sel"></select></div>
+          <div><label class="tm-label" for="tm-kind" id="tm-kind-label"></label><select class="tm-field" id="tm-kind"></select></div>
+        </div>
+        <label class="tm-check" for="tm-extra"><input type="checkbox" id="tm-extra" checked><span id="tm-extra-label"></span></label>
+        <p class="tm-sub" id="tm-extra-help"></p>
+        <div class="tm-actions"><button type="button" class="btn primary" id="tm-go"></button><span class="runtext" id="tm-run-text" role="status"></span></div>
+      </article>
+      <article class="card" id="tm-result">
+        <h3 id="tm-result-title"></h3>
+        <p class="src" id="tm-result-src"></p>
+        <div class="tm-res" id="tm-result-body"></div>
+        <p class="tm-note" id="tm-result-note"></p>
+      </article>
     </div>
   </section>
 </main>
@@ -335,7 +431,7 @@
   $('brand').textContent = P.name || 'Redline';
 
   /* ---------- tabs ---------- */
-  var VIEWS = ['live', 'results', 'proof'];
+  var VIEWS = ['live', 'results', 'proof', 'test'];
   VIEWS.forEach(function (v) {
     var b = el('button', null, (C.tabs || {})[v]); b.type = 'button'; b.setAttribute('role', 'tab'); b.id = 'tab-' + v;
     b.addEventListener('click', function () { show(v); });
@@ -350,6 +446,7 @@
     });
     try { history.replaceState(null, '', '#v=' + v); } catch (e) {}
     fit();
+    if (v === 'test' && tm.mode === 'on') loadAttacks();
   }
 
   /* ---------- the badge: one honest label ---------- */
@@ -925,6 +1022,16 @@
       return r.json().then(function (j) { return { code: r.status, json: j || {} }; }, function () { return { code: r.status, json: {} }; });
     });
   }
+  /* A POST that takes a fresh token and tries once more when the bridge says 403 (it restarted). */
+  function postRetry(path, body) {
+    return call('POST', path, body).then(function (r) {
+      if (r.code !== 403) return r;
+      return call('GET', 'session').then(function (s) {
+        if (s.code === 200 && s.json && s.json.token) { api.token = s.json.token; return call('POST', path, body); }
+        return r;
+      }, function () { return r; });
+    });
+  }
   var kindSel = $('run-kind'), modelSel = $('run-model'), goBtn = $('run-go'), stopBtn = $('run-stop'), runText = $('run-text');
   goBtn.textContent = RUN.run || ''; stopBtn.textContent = RUN.stop || '';
   var builtKinds = '', builtModels = '';
@@ -985,7 +1092,7 @@
       }
       wasRunning = !!S.running;
       if (S.running) notice = '';
-      paintRun(); renderBadge(); paintChips();
+      paintRun(); renderBadge(); paintChips(); paintTest();
     }, function () {});
   }
   kindSel.addEventListener('change', function () { modelSel.hidden = !(kindSel.value === 'live-short' || kindSel.value === 'live-full'); });
@@ -998,13 +1105,7 @@
     if (kind === 'models') body.parallel = 1;
     if ((kind === 'live-full' || kind === 'models') && !window.confirm(RUN.confirm_long)) return;
     notice = ''; goBtn.disabled = true; runText.textContent = RUN.starting;
-    call('POST', 'run', body).then(function (r) {
-      if (r.code !== 403) return r;   /* the bridge restarted: take its new token and try once more */
-      return call('GET', 'session').then(function (s) {
-        if (s.code === 200 && s.json && s.json.token) { api.token = s.json.token; return call('POST', 'run', body); }
-        return r;
-      }, function () { return r; });
-    }).then(function (r) {
+    postRetry('run', body).then(function (r) {
       if (r.code !== 202) notice = RUN.could_not + (r.json.error ? ' ' + r.json.error : ''); else { startedHere(); paint(); }
       pollStatus();
     }, function () { notice = RUN.could_not; paintRun(); });
@@ -1013,14 +1114,227 @@
     stopBtn.disabled = true; runText.textContent = RUN.stopping;
     call('POST', 'stop', {}).then(pollStatus, pollStatus);
   });
+  /* ---------- Test a model: import a model, add your own attacks, run, read the result ---------- */
+  var T = C.test || {};
+  var GOAL_CODES = ['G1_read_restricted', 'G2_exfiltrate', 'G3_tool_misuse'];
+  var PLACE_CODES = ['P1_doc_body', 'P2_doc_comment', 'P3_asset_notes'];
+  var EXAMPLE_PATH = '~/models/granite-3.3-8b.Q4_K_M.gguf', EXAMPLE_TAG = 'granite3.3:8b';
+  var tm = { mode: 'pending', attacks: null, file: '', listError: '', models: '', want: '', lastImport: '', sig: { imp: '', res: '' }, runNote: '', runBad: false };
+  function put(id, text) { $(id).textContent = text || ''; }
+  [['tm-intro', 'intro'], ['tm-offline-title', 'offline_title'], ['tm-model-title', 'model_title'], ['tm-model-help', 'model_help'],
+   ['tm-source-label', 'source_label'], ['tm-import', 'import'], ['tm-attacks-title', 'attacks_title'], ['tm-attacks-help', 'attacks_help'],
+   ['tm-name-label', 'name_field'], ['tm-goal-label', 'goal_field'], ['tm-place-label', 'place_field'], ['tm-prompt-label', 'prompt_field'],
+   ['tm-add', 'add'], ['tm-run-title', 'run_title'], ['tm-run-help', 'run_help'], ['tm-model-label', 'model_field'], ['tm-kind-label', 'kind_field'],
+   ['tm-extra-label', 'extra'], ['tm-extra-help', 'extra_help'], ['tm-go', 'go'], ['tm-result-title', 'result_title'], ['tm-result-note', 'result_note']
+  ].forEach(function (p) { put(p[0], T[p[1]]); });
+  $('tm-source').placeholder = String(T.source_hint || '').replace('{path}', EXAMPLE_PATH).replace('{tag}', EXAMPLE_TAG);
+
+  /* goals and places in plain words: the exported labels first, the words in copy.js when the export has none */
+  function plain(group, codes, code) {
+    var m = (window.DEMO && window.DEMO.labels && window.DEMO.labels[group]) || {}, list = T[group] || [];
+    return m[code] || list[codes.indexOf(code)] || code;
+  }
+  function fillSelect(sel, group, codes) {
+    codes.forEach(function (c) { var o = el('option', null, plain(group, codes, c)); o.value = c; sel.appendChild(o); });
+  }
+  fillSelect($('tm-goal'), 'goals', GOAL_CODES); fillSelect($('tm-place'), 'places', PLACE_CODES);
+  ['live-short', 'live-full'].forEach(function (k) { var o = el('option', null, (RUN.kinds || {})[k]); o.value = k; $('tm-kind').appendChild(o); });
+
+  function pct(f) { return typeof f === 'number' && isFinite(f) ? (f * 100).toFixed(1) + '%' : null; }
+  function isPath(s) { return /\.gguf$/i.test(s) || /^[~\/.\\]/.test(s) || /^[A-Za-z]:[\\\/]/.test(s); }
+
+  /* without the local runner this view only says how to start it */
+  function testOff(why) {
+    tm.mode = 'off';
+    put('tm-offline-text', why === 'file' ? T.offline_file : T.offline_failed);
+    $('tm-offline').hidden = false; $('tm-grid').hidden = true;
+  }
+  function testOn() { tm.mode = 'on'; $('tm-offline').hidden = true; $('tm-grid').hidden = false; loadAttacks(); paintTest(); }
+
+  /* your attacks: GET and POST /api/attacks */
+  function loadAttacks() {
+    call('GET', 'attacks').then(function (r) {
+      var j = r.json || {};
+      if (r.code === 200 && Array.isArray(j.attacks)) { tm.attacks = j.attacks; tm.file = j.file || ''; tm.listError = j.error || ''; }
+      else tm.listError = j.error || T.no_answer;
+      paintAttacks();
+    }, function () { tm.listError = T.no_answer; paintAttacks(); });
+  }
+  function paintAttacks() {
+    var ul = $('tm-list'), f = $('tm-file'), list = tm.attacks || [];
+    clear(ul); clear(f);
+    if (tm.attacks && !list.length) ul.appendChild(el('li', 'empty', T.attacks_none));
+    list.forEach(function (a) {
+      var li = el('li');
+      li.appendChild(el('b', null, a.name));
+      li.appendChild(el('small', null, plain('goals', GOAL_CODES, a.goal) + ' · ' + plain('places', PLACE_CODES, a.place)));
+      li.appendChild(el('div', 'pr', a.prompt));
+      if (a.task) li.appendChild(el('small', null, T.task_label + ': ' + a.task));
+      ul.appendChild(li);
+    });
+    if (tm.file) {
+      f.appendChild(document.createTextNode(T.file_pre + ' '));
+      f.appendChild(el('code', 'mono', tm.file));
+      f.appendChild(document.createTextNode('. ' + T.file_post));
+    }
+    put('tm-list-error', tm.listError);
+  }
+  function say(id, text, bad) { var n = $(id); n.className = 'runtext' + (bad ? ' bad' : ''); n.textContent = text || ''; }
+  $('tm-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var body = { name: $('tm-name').value.trim(), goal: $('tm-goal').value, place: $('tm-place').value,
+                 prompt: $('tm-prompt').value.replace(/\s*[\r\n]+\s*/g, ' ').trim() };
+    $('tm-add').disabled = true; say('tm-add-text', '');
+    postRetry('attacks', body).then(function (r) {
+      $('tm-add').disabled = false;
+      if (r.code === 201) { $('tm-name').value = ''; $('tm-prompt').value = ''; say('tm-add-text', T.added); loadAttacks(); }
+      else say('tm-add-text', r.json.error || T.no_answer, true);
+    }, function () { $('tm-add').disabled = false; say('tm-add-text', T.no_answer, true); });
+  });
+  $('tm-prompt').addEventListener('keydown', function (e) {   /* one line: Enter adds the attack */
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('tm-add').click(); }
+  });
+
+  /* the model: POST /api/import, then the steps from status.import */
+  $('tm-import').addEventListener('click', function () {
+    var src = $('tm-source').value.trim();
+    if (!src) { say('tm-import-text', T.need_source, true); return; }
+    $('tm-import').disabled = true; say('tm-import-text', '');
+    postRetry('import', { source: src }).then(function (r) {
+      if (r.code !== 202) say('tm-import-text', r.json.error || T.no_answer, true);
+      pollStatus();
+    }, function () { say('tm-import-text', T.no_answer, true); pollStatus(); });
+  });
+  $('tm-source').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('tm-import').click(); } });
+  function paintImport(S) {
+    var im = S.import || {}, st = im.state || 'idle', src = im.source || '';
+    var sig = JSON.stringify([st, im.step, im.tools, im.name, im.text, im.error, src]);
+    $('tm-import').disabled = st === 'running' || !!S.running;
+    if (tm.lastImport === 'running' && st === 'done' && im.tools === 'yes' && im.name) tm.want = im.name;   /* pick the new model in the Run card */
+    tm.lastImport = st;
+    if (sig === tm.sig.imp) return;
+    tm.sig.imp = sig;
+    var ol = $('tm-steps'), res = $('tm-import-result'); clear(ol); clear(res);
+    ol.hidden = st === 'idle';
+    if (st === 'idle') return;
+    var steps = [isPath(src) ? T.step_create : T.step_pull, T.step_check];
+    var cur = im.step === 'check' ? 1 : (im.step === 'pull' || im.step === 'create') ? 0 : null;
+    steps.forEach(function (label, i) {
+      var s = 'wait', at = cur == null ? 0 : cur;
+      if (st === 'done') s = 'done';
+      else if (st === 'running') s = cur == null ? (i === 0 ? 'running' : 'wait') : (i < cur ? 'done' : i === cur ? 'running' : 'wait');
+      else if (st === 'error') s = i < at ? 'done' : i === at ? 'error' : 'wait';
+      var li = el('li', s); li.appendChild(el('span', 'dot')); li.appendChild(el('span', null, label));
+      li.appendChild(el('span', 'state', s === 'error' ? T.step_error : s === 'done' ? C.state.done : s === 'running' ? C.state.running : C.state.idle));
+      ol.appendChild(li);
+    });
+    if (st === 'done') {
+      var tools = im.tools, v = tools === 'yes' ? ['good', T.ready, T.ready_text] : tools === 'no' ? ['bad', T.no_tools, T.no_tools_text] : ['neutral', T.unknown, T.unknown_text];
+      res.appendChild(el('span', 'pill ' + v[0], v[1])); res.appendChild(document.createTextNode(' ' + v[2]));
+      if (im.name) res.appendChild(el('span', 'tm-sub', T.name_label + ': ' + im.name));
+    } else if (st === 'error') {
+      res.appendChild(el('span', 'pill bad', T.import_failed));
+      if (im.error) res.appendChild(el('span', 'tm-sub', im.error));
+    } else if (im.text) res.appendChild(el('span', 'tm-sub', im.text));
+  }
+
+  /* the run: POST /api/run {kind, model, extra}, then the Live run view shows it */
+  function paintTestRun(S) {
+    var sel = $('tm-model-sel'), tags = (S.models || []).map(modelTag).filter(Boolean), key = tags.join('|');
+    if (key !== tm.models) {
+      var keep = sel.value; clear(sel);
+      tags.forEach(function (t) { var o = el('option', null, t); o.value = t; sel.appendChild(o); });
+      if (keep && tags.indexOf(keep) >= 0) sel.value = keep;
+      tm.models = key;
+    }
+    if (tm.want && tags.indexOf(tm.want) >= 0) { sel.value = tm.want; tm.want = ''; }
+    var busy = !!S.running, importing = !!(S.import && S.import.state === 'running'), line = '', bad = false;
+    $('tm-go').disabled = busy || importing || !sel.value;
+    sel.disabled = $('tm-kind').disabled = $('tm-extra').disabled = busy;
+    if (busy) {
+      var prog = progressText();
+      line = RUN.running + (RUN.kinds[S.kind] ? ': ' + RUN.kinds[S.kind] : '') + (S.model ? ' · ' + S.model : '') + (prog ? ' · ' + prog : '');
+    } else if (importing) line = T.import_busy;
+    else if (!tags.length) line = T.no_models;
+    else if (tm.runNote) { line = tm.runNote; bad = tm.runBad; }
+    else if (S.last && S.last.exit_code === 0) line = RUN.finished;
+    else if (S.last && S.last.exit_code === 130) line = RUN.stopped;
+    else if (S.last) { line = RUN.failed; bad = true; }
+    say('tm-run-text', line, bad);
+    if (busy && S.model && tags.indexOf(S.model) >= 0) sel.value = S.model;
+    if (busy && (S.kind === 'live-short' || S.kind === 'live-full')) $('tm-kind').value = S.kind;
+  }
+  $('tm-go').addEventListener('click', function () {
+    var body = { kind: $('tm-kind').value, model: $('tm-model-sel').value, extra: $('tm-extra').checked };
+    if (!body.model) { tm.runNote = T.no_models; tm.runBad = true; paintTest(); return; }
+    if (body.kind === 'live-full' && !window.confirm(RUN.confirm_long)) return;
+    tm.runNote = ''; $('tm-go').disabled = true; say('tm-run-text', RUN.starting);
+    postRetry('run', body).then(function (r) {
+      if (r.code !== 202) { tm.runNote = RUN.could_not + (r.json.error ? ' ' + r.json.error : ''); tm.runBad = true; pollStatus(); return; }
+      startedHere(); show('live'); paint(); pollStatus();
+    }, function () { tm.runNote = RUN.could_not; tm.runBad = true; paintTest(); });
+  });
+
+  /* the result: per candidate, the standard rate (feed gate item) next to your attacks (feed extra item or status.last.extra) */
+  function extraText(x) {
+    if (typeof x.n !== 'number' || x.n <= 0) return T.no_extra_runs;
+    if (typeof x.violations !== 'number') return T.not_available;
+    var t = x.violations + ' ' + C.of + ' ' + x.n + ' ' + T.broke, p = pct(x.asr), lo = pct(x.asr_lo), hi = pct(x.asr_hi);
+    if (p) t += ' · ' + p;
+    if (p && lo && hi) t += ' (' + T.range + ' ' + lo + ' ' + T.to + ' ' + hi + ')';
+    if (typeof x.attacks === 'number') t += ' · ' + x.attacks + ' ' + (x.attacks === 1 ? T.attack_one : T.attack_many);
+    return t;
+  }
+  function paintResult(S) {
+    var Lf = liveFeed(), feed = Lf && Array.isArray(Lf.feed) ? Lf.feed : [], gates = {}, extras = {}, order = [], src = '';
+    function add(c) { if (order.indexOf(c) < 0) order.push(c); }
+    feed.forEach(function (x) {
+      if (!x || !x.cand) return;
+      if (x.type === 'gate') { gates[x.cand] = x; add(x.cand); } else if (x.type === 'extra') { extras[x.cand] = x; add(x.cand); }
+    });
+    var last = S && !S.running ? S.last : null;
+    if (order.length) {
+      var w = liveWord();
+      src = (w === 'SCRIPTED' ? C.badge_scripted : w === 'REPLAY' ? C.badge_replay : C.badge_real) + (Lf.model && w !== 'SCRIPTED' ? ' · ' + Lf.model : '') + (Lf.state === 'running' ? ' · ' + RUN.running : '');
+    }
+    if (!Object.keys(extras).length && last && Array.isArray(last.extra) && last.extra.length) {   /* the feed holds no extra item: use the last finished run */
+      gates = {}; order = [];
+      last.extra.forEach(function (x) { if (x && x.cand) { extras[x.cand] = x; add(x.cand); } });
+      src = T.result_from + (last.model ? ' · ' + last.model : '');
+    }
+    var going = (Lf && Lf.state === 'running') || !!(S && S.running);
+    var rows = order.map(function (c) {
+      return { cand: c, std: gates[c] && gates[c].rate ? String(gates[c].rate) : null, x: extras[c] || null };
+    });
+    var sig = JSON.stringify([src, rows, going]);
+    if (sig === tm.sig.res) return;
+    tm.sig.res = sig;
+    var body = $('tm-result-body'); clear(body); put('tm-result-src', src);
+    if (!rows.length) { body.appendChild(el('p', 'empty', T.result_none)); return; }
+    rows.forEach(function (r) {
+      var box = el('div', 'tm-cand'), kv = el('dl', 'tm-kv');
+      box.appendChild(el('div', 'cid', r.cand));
+      kv.appendChild(el('dt', null, T.standard)); kv.appendChild(el('dd', null, r.std || T.not_available));
+      kv.appendChild(el('dt', null, T.yours)); kv.appendChild(el('dd', null, r.x ? extraText(r.x) : going ? T.extra_wait : T.no_extra));
+      box.appendChild(kv); body.appendChild(box);
+    });
+  }
+  function paintTest() {
+    if (tm.mode !== 'on') return;
+    var S = api.status || {};
+    if (api.status) { paintImport(S); paintTestRun(S); }
+    paintResult(S);
+  }
+
   if (served) {
     call('GET', 'session').then(function (r) {
-      if (r.code !== 200 || !r.json.token) return;
+      if (r.code !== 200 || !r.json.token) { testOff('failed'); return; }
       api.ok = true; api.token = r.json.token; $('runbar').hidden = false; fit();
-      pollStatus(); setInterval(pollStatus, 2000);
-    }, function () {});
+      pollStatus(); setInterval(pollStatus, 2000); testOn();
+    }, function () { testOff('failed'); });
   } else {
     var fl = $('fileline'); fl.textContent = RUN.file_line || ''; fl.hidden = !RUN.file_line;
+    testOff('file');
   }
 
   /* After a run ends with a good export: load the new data/demo.js and draw the three views again in place. */
@@ -1036,16 +1350,17 @@
   document.addEventListener('keydown', function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey || e.key === 'Shift') return;
     var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;   /* typing in a field never changes the view */
     if (tag === 'SELECT' || tag === 'BUTTON') { if (!coverUp) return; }
     var wasCover = coverUp; hideCover();
-    if (e.key.length === 1 && e.key >= '1' && e.key <= '3') show(VIEWS[Number(e.key) - 1]);
+    if (e.key.length === 1 && e.key >= '1' && e.key <= '4') show(VIEWS[Number(e.key) - 1]);
     else if (wasCover) fit();
   });
   $('cover').addEventListener('click', function () { hideCover(); fit(); });
 
   var lastRunning = null;
   function paint() {
-    paintNodes(); renderBadge(); paintChips(); paintStream();
+    paintNodes(); renderBadge(); paintChips(); paintStream(); paintTest();
     var r = anyRunning();
     if (r !== lastRunning) { lastRunning = r; renderExample(); }
     paintRun();
@@ -1058,7 +1373,7 @@
   }, 1000);
 
   bind();
-  var m = /v=(live|results|proof)/.exec(location.hash || '');
+  var m = /v=(live|results|proof|test)/.exec(location.hash || '');
   if (m) hideCover();
   renderData();
   show(m ? m[1] : 'live');
