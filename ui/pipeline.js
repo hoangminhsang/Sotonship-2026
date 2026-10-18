@@ -686,14 +686,30 @@
     if (!v || st === 'waiting' || st === '') {
       frag.appendChild(doc.createTextNode(replayFrames().length ? cPipe('replay_hint') : cState('idle')));
     } else if (st === 'done') {
+      /* export.status is ok, failed, not_run, running or skipped; when it did not run, its text
+         is the command to run. Any other case shows the bridge's own line. */
       var ex = isObj(d.export) ? d.export : null;
-      var okExport = !ex || !scalar(ex.status) || EXPORT_OK.indexOf(String(ex.status).toLowerCase()) >= 0;
-      var ctx = {
-        t: first(d.dur, d.t, d.duration, d.dur_s, d.took, d.time, v.dur, v.t, v.duration),
-        cmd: first(ex && ex.cmd, ex && ex.command, d.cmd, ex && ex.text)
-      };
-      frag.appendChild(tpl(cPipe(okExport ? 'status_done' : 'status_export_missing'), ctx, 'live:done', status));
-      wide = !okExport;
+      var exStatus = ex && scalar(ex.status) ? String(ex.status).toLowerCase() : '';
+      var cmd = first(ex && ex.cmd, ex && ex.command, d.cmd);
+      var ctx = { t: first(d.dur, d.t, d.duration, d.dur_s, d.took, d.time, v.dur, v.t, v.duration), cmd: cmd };
+      if (!exStatus || EXPORT_OK.indexOf(exStatus) >= 0) {
+        if (scalar(ctx.t) || !scalar(d.text)) {
+          frag.appendChild(tpl(cPipe('status_done'), ctx, 'live:done', status));
+        } else {
+          /* no duration to fill {t}: show the bridge's own line instead of a raw placeholder */
+          frag.appendChild(valSpan(String(d.text), 'live:done.text', status));
+          wide = String(d.text).length > 54;
+        }
+      } else if ((exStatus === 'not_run' || exStatus === 'skipped') && scalar(first(cmd, ex.text))) {
+        ctx.cmd = first(cmd, ex.text);
+        frag.appendChild(tpl(cPipe('status_export_missing'), ctx, 'live:done', status));
+        wide = true;
+      } else if (scalar(d.text)) {
+        frag.appendChild(valSpan(String(d.text), 'live:done.text', status));
+        wide = String(d.text).length > 54;
+      } else {
+        frag.appendChild(tpl(cPipe('status_done'), ctx, 'live:done', status));
+      }
     } else if ((st === 'error' || st === 'stopped') && scalar(d.text)) {
       /* a stopped run: the bridge's own line says why */
       frag.appendChild(valSpan(String(d.text), 'live:done.text', status));
@@ -957,7 +973,7 @@
   function playReplay() {
     var fr = replayFrames();
     if (!fr.length) return false;
-    if (cur && String(cur.state) === 'running' && source === 'poll') return false;
+    if (liveRunning()) return false;
     if (rp.i >= fr.length - 1) rp.i = -1;
     rp.playing = true;
     source = 'replay';
@@ -974,8 +990,13 @@
     renderAll(null);
   }
 
+  /* a bridge run that is in progress owns the screen: Home, [ and ] leave it alone */
+  function liveRunning() {
+    return !!(cur && String(cur.state) === 'running' && source === 'poll');
+  }
+
   function restartReplay() {
-    if (!replayFrames().length) return false;
+    if (!replayFrames().length || liveRunning()) return false;
     pauseReplay();
     source = 'replay';
     rp.i = -1;
@@ -987,7 +1008,7 @@
      first frame); with one run, step one key frame back or forward. */
   function stepReplay(dir) {
     var runs = replayRuns();
-    if (!runs.length) return false;
+    if (!runs.length || liveRunning()) return false;
     pauseReplay();
     if (runs.length > 1) {
       rp.run = (rp.run + dir + runs.length) % runs.length;
@@ -1009,6 +1030,7 @@
     shown = flag;
     if (flag) {
       if (!ensureBuilt()) { shown = false; return; }
+      tileRefs = { sig: '', els: [] };
       renderAll(cur);
       startPolling();
     } else {
