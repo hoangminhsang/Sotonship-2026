@@ -12,6 +12,8 @@
      then that node's glyph draws itself once. A new step finishes the running one first.
      With reduced motion there is no animation: states switch instantly.
    - Without live data, Space plays window.LIVE_REPLAY (recorded key frames).
+   - A value is REAL only when the data says REAL. Anything else is drawn as scripted data:
+     a hatch strip and the word, never the alarm or ok fill.
    Screen coordinates follow PLAN.md A4: the content area is x 120-1800, y 150-1016 on the
    1920 x 1080 stage. Board space below has its origin at (120, 150). */
 (function () {
@@ -22,6 +24,9 @@
   var SVGNS = (function () {
     try { return doc.createRange().createContextualFragment('<svg></svg>').firstChild.namespaceURI; } catch (e) { return null; }
   })();
+  var DOT = ' ' + String.fromCharCode(183) + ' ';
+  /* separators that may sit between a rail id and its text: space . , : ; | - and the middle dot */
+  var CUT_LEAD = new RegExp('^[\\s.,:;|' + String.fromCharCode(183) + '-]+');
 
   /* ---------- timing (display only) ---------- */
   var POLL_MS = 500;
@@ -54,7 +59,10 @@
     waiting: 'idle', queued: 'idle', ok: 'done', complete: 'done', completed: 'done',
     failed: 'fail', passed: 'pass', stopped: 'error', errored: 'error', skip: 'skipped'
   };
-  var TILE_STATES = ['broke', 'blocked', 'clean', 'error', 'handled', 'not_handled'];
+  /* tile states: the bridge writes violated, held, ok, missed, unscored, error, running, idle;
+     the attack board words (broke, clean, handled, not_handled, blocked) are accepted too */
+  var TILE_ALIAS = { violated: 'broke', held: 'clean', ok: 'handled', missed: 'not_handled' };
+  var TILE_KNOWN = ['idle', 'running', 'broke', 'blocked', 'clean', 'error', 'handled', 'not_handled', 'unscored'];
   var EXPORT_OK = ['ok', 'done', 'exported', 'success'];
 
   var NODES = [
@@ -137,11 +145,10 @@
   var anim = null;              /* { list: [animation], node: li, edge: edge def } */
   var refs = {};                /* node id -> element refs */
   var edgeRefs = {};            /* edge key -> element refs */
-  var rcRefs = [];
   var tileRefs = { sig: '', els: [] };
   var glide = null;
   var reduceMq = null;
-  var rp = { frames: null, i: -1, timer: 0, playing: false };
+  var rp = { runs: null, run: 0, i: -1, timer: 0, playing: false };
 
   /* ---------- small helpers ---------- */
   function $(id) { return doc.getElementById(id); }
@@ -228,10 +235,12 @@
     if (STATES.indexOf(s) >= 0) return s;
     return STATE_ALIAS[s] || 'idle';
   }
+  /* the status of the whole run: REAL, SAMPLE, or PENDING when the data says nothing */
   function liveStatus(v) {
-    return v && v.label && v.label.status === 'REAL' ? 'REAL' : 'SAMPLE';
+    var s = v && v.label && v.label.status;
+    return s === 'REAL' || s === 'SAMPLE' ? s : 'PENDING';
   }
-  /* a value is REAL only when the data says so */
+  /* a value is REAL only when the data says so; otherwise it takes the run's status */
   function statusOf(x, v) {
     var s = x && x.status;
     if (s === 'REAL' || s === 'SAMPLE' || s === 'PENDING') return s;
@@ -263,6 +272,7 @@
         while (root && root.firstChild) g.appendChild(root.firstChild);
       } catch (e) { clear(g); }
     }
+    /* a plain box when a glyph is missing */
     if (!g.firstChild) g.appendChild(sv('rect', { 'class': 'f-ink', x: 14, y: 10, width: 92, height: 70 }));
   }
 
@@ -304,7 +314,7 @@
       li.appendChild(cap);
       li.appendChild(fact);
       ol.appendChild(li);
-      refs[n.id] = { li: li, g: g, word: word, script: scr, tag: tag, cap: cap, fact: fact, capSig: null, factSig: null, tagSig: null };
+      refs[n.id] = { li: li, g: g, row: st, word: word, script: scr, tag: tag, cap: cap, fact: fact, capSig: null, factSig: null, tagSig: null };
     });
   }
 
@@ -358,12 +368,11 @@
     });
   }
 
-  function buildRail(ol) { clear(ol); rcRefs = []; }
-
   function ensureBuilt() {
     if (built) return true;
     var sec = $('screen-6');
     if (!sec) return false;
+    /* pipeline.css is linked by index.html; add the link when it is missing */
     if (!doc.querySelector('link[href$="pipeline.css"]')) {
       var lk = doc.createElement('link');
       lk.rel = 'stylesheet';
@@ -383,6 +392,9 @@
     var src = need('p-src', 'div', sec);
     if (!(mode && rail && status && board && tiles && src)) return false;
     status.setAttribute('role', 'status');
+    rail.setAttribute('aria-label', cPipe('rail_label'));
+    board.setAttribute('role', 'group');
+    board.setAttribute('aria-label', cPipe('board_label'));
     var wires = $('p-wires');
     if (!wires || wires.namespaceURI !== SVGNS) {
       if (wires && wires.parentNode) wires.parentNode.removeChild(wires);
@@ -397,7 +409,7 @@
     }
     buildWires(wires, labels);
     buildNodes(nodes);
-    buildRail(rail);
+    clear(rail);
     try { reduceMq = window.matchMedia('(prefers-reduced-motion: reduce)'); } catch (e) { reduceMq = null; }
     var g = '';
     try { g = window.getComputedStyle(doc.documentElement).getPropertyValue('--glide').trim(); } catch (e2) { g = ''; }
@@ -407,8 +419,21 @@
   }
 
   /* ---------- render: nodes ---------- */
-  function nodeLook(nd, v) {
+  /* The bridge writes a finished node as "done" and puts the outcome in the tag: FAIL or PASS
+     on the gate, "scripted by the CLI" on the reviewer, intact or broken on the chain.
+     The page shows those as fail, pass and scripted. An explicit state from the data wins. */
+  function effectiveState(id, nd) {
     var s = normState(nd && nd.state);
+    var tag = nd && scalar(nd.tag) ? String(nd.tag).toUpperCase() : '';
+    if (s !== 'done' || !tag) return s;
+    if (id === 'sl.gate') return tag === 'FAIL' ? 'fail' : (tag === 'PASS' ? 'pass' : s);
+    if (id === 'sl.review') return tag.indexOf('SCRIPT') >= 0 ? 'scripted' : s;
+    if (id === 'sl.log') return tag === 'BROKEN' ? 'fail' : s;
+    return s;
+  }
+
+  function nodeLook(id, nd, v) {
+    var s = effectiveState(id, nd);
     var status = statusOf(nd, v);
     var real = status === 'REAL';
     var scripted = s !== 'idle' && s !== 'skipped' && (s === 'scripted' || !real);
@@ -418,11 +443,30 @@
     return { state: s, status: status, scripted: scripted, fill: fill };
   }
 
+  /* The finished caption has outcome variants in COPY: done_fail, done_pass, done_block,
+     done_approve. The first word of the reviewer's fact says what was decided. */
+  function doneKey(id, nd, state) {
+    if (id === 'sl.gate') {
+      if (state === 'fail' && copyAt('nodes', id, 'done_fail')) return 'done_fail';
+      if (state === 'pass' && copyAt('nodes', id, 'done_pass')) return 'done_pass';
+    }
+    if (id === 'sl.review' && nd) {
+      var w = String(first(nd.decision, nd.verdict, nd.fact) || '').split(/[\s:]/)[0].toUpperCase();
+      if (w === 'BLOCK' && copyAt('nodes', id, 'done_block')) return 'done_block';
+      if (w === 'APPROVE' && copyAt('nodes', id, 'done_approve')) return 'done_approve';
+    }
+    return 'done';
+  }
+
+  function captionKey(id, nd, state) {
+    return DONE_STATES.indexOf(state) >= 0 ? doneKey(id, nd, state) : 'running';
+  }
+
   function renderNode(id, v) {
     var r = refs[id];
     if (!r) return;
     var nd = v && v.nodes && isObj(v.nodes[id]) ? v.nodes[id] : null;
-    var look = nodeLook(nd, v);
+    var look = nodeLook(id, nd, v);
     var li = r.li;
     setAttr(li, 'data-state', look.state);
     setAttr(li, 'data-status', look.status);
@@ -430,24 +474,23 @@
     setAttr(li, 'data-scripted', look.scripted ? '1' : null);
     setAttr(li, 'aria-current', v && v.active === id ? 'step' : null);
     li.classList.toggle('is-sample', look.scripted);
-    setText(r.word, cState(look.state));
-    if (look.scripted && look.state !== 'scripted') {
-      r.script.hidden = false;
-      setText(r.script, cState('scripted'));
-    } else {
-      r.script.hidden = true;
-    }
-    var completed = DONE_STATES.indexOf(look.state) >= 0;
-    var which = completed ? 'done' : 'running';
+    var word = cState(look.state);
+    setText(r.word, word);
+    /* scripted data: the hatch strip with its word; the state word stays beside it, except for
+       a node whose state is itself "scripted" (the strip and its word are then the state) */
+    r.script.hidden = !look.scripted;
+    r.row.hidden = look.state === 'scripted';
+    if (look.scripted) setText(r.script, cState('scripted'));
+    var which = captionKey(id, nd, look.state);
     var text = cNode(id, which);
     var base = 'live:nodes.' + id;
-    var capSig = which + '\u0001' + text + '\u0001' + (nd ? [nd.fact, nd.fact2, nd.tag, nd.verdict, nd.decision, look.status].join('\u0002') : '');
+    var capSig = JSON.stringify([which, text, nd ? [nd.fact, nd.fact2, nd.tag, nd.verdict, nd.decision] : null, look.status]);
     if (r.capSig !== capSig) {
       r.capSig = capSig;
       clear(r.cap);
       r.cap.appendChild(tpl(text, nd, base, look.status));
     }
-    var factSig = nd ? [nd.fact, nd.fact2, look.status].join('\u0002') : '';
+    var factSig = JSON.stringify([nd ? [nd.fact, nd.fact2] : null, look.status]);
     if (r.factSig !== factSig) {
       r.factSig = factSig;
       clear(r.fact);
@@ -462,11 +505,14 @@
         r.fact.appendChild(f2);
       }
     }
-    var tagSig = nd && scalar(nd.tag) ? String(nd.tag) + look.status : '';
+    /* the tag sits under the state word, unless it only repeats that word (the gate's FAIL or PASS) */
+    var tagText = nd && scalar(nd.tag) ? String(nd.tag) : '';
+    if (tagText && tagText.toUpperCase() === word.toUpperCase()) tagText = '';
+    var tagSig = tagText + '|' + look.status;
     if (r.tagSig !== tagSig) {
       r.tagSig = tagSig;
       clear(r.tag);
-      if (tagSig) r.tag.appendChild(valSpan(String(nd.tag), base + '.tag', look.status));
+      if (tagText) r.tag.appendChild(valSpan(tagText, base + '.tag', look.status));
     }
   }
 
@@ -508,16 +554,24 @@
     var lb = v.label;
     var text = first(lb.text, lb.word);
     if (text === undefined) return;
-    var chip = valSpan(String(text), 'live:label', lb.status === 'REAL' ? 'REAL' : 'SAMPLE');
+    var chip = valSpan(String(text), 'live:label', liveStatus(v));
     chip.className = 'p-chip';
     host.appendChild(chip);
+  }
+
+  /* The bridge writes the rail text with the id in front ("RC-002 . defences D2"). The id has
+     its own place in the cell, so it is cut from the second line. */
+  function railText(rc) {
+    var id = scalar(rc.id) ? String(rc.id) : '';
+    var text = scalar(rc.text) ? String(rc.text) : '';
+    if (id && text.indexOf(id) === 0) text = text.slice(id.length).replace(CUT_LEAD, '');
+    return text;
   }
 
   function renderRail(v) {
     var ol = $('p-rail');
     var list = v && Array.isArray(v.rail) ? v.rail : [];
     clear(ol);
-    rcRefs = [];
     list.forEach(function (rc, i) {
       if (!isObj(rc)) return;
       var s = normState(rc.state);
@@ -543,21 +597,27 @@
       r1.appendChild(w);
       li.appendChild(r1);
       var r2 = el('div', 'p-rc2');
-      if (scalar(rc.text)) r2.appendChild(valSpan(String(rc.text), base + '.text', status));
+      var rt = railText(rc);
+      if (rt) r2.appendChild(valSpan(rt, base + '.text', status));
       li.appendChild(r2);
       ol.appendChild(li);
-      rcRefs.push(li);
     });
   }
 
   function tileSize(n, w, h) {
     var best = 3;
-    for (var rows = 1; rows <= 2; rows++) {
+    for (var rows = 1; rows <= 4; rows++) {
       var cols = Math.ceil(n / rows);
       var s = Math.min(26, Math.floor((h - (rows - 1) * 2) / rows), Math.floor((w - (cols - 1) * 2) / cols));
       if (s > best) best = s;
     }
     return best;
+  }
+
+  function tileState(raw) {
+    var s = typeof raw === 'string' ? raw : '';
+    if (has(TILE_ALIAS, s)) s = TILE_ALIAS[s];
+    return TILE_KNOWN.indexOf(s) >= 0 ? s : 'idle';
   }
 
   function renderTiles(v) {
@@ -592,14 +652,13 @@
       }
       tileRefs = { sig: shape, els: els, grid: grid };
     }
-    var labels = window.DEMO && window.DEMO.labels && window.DEMO.labels.states;
+    var words = window.DEMO && window.DEMO.labels && window.DEMO.labels.states;
     tileRefs.els.forEach(function (tile, i) {
       var item = list[i];
-      var key = Array.isArray(item) ? item[0] : null;
-      var st = Array.isArray(item) && TILE_STATES.indexOf(item[1]) >= 0 ? item[1] : 'idle';
+      var st = tileState(Array.isArray(item) ? item[1] : null);
       setAttr(tile, 'data-state', st);
       var title = '';
-      if (key !== null && key !== undefined) title = String(key) + (labels && labels[st] ? ' ' + labels[st] : '');
+      if (Array.isArray(item) && scalar(item[0])) title = String(item[0]) + (words && words[st] ? ' ' + words[st] : '');
       setAttr(tile, 'title', title || null);
     });
     if (tileRefs.grid) setAttr(tileRefs.grid, 'aria-label', cand || null);
@@ -607,43 +666,6 @@
 
   function activeNode(v) {
     return v && v.active && v.nodes && isObj(v.nodes[v.active]) ? v.nodes[v.active] : null;
-  }
-
-  function renderStatus(v) {
-    var p = $('p-status');
-    var frag = doc.createDocumentFragment();
-    var st = v ? String(v.state || '') : '';
-    var status = v ? liveStatus(v) : 'SAMPLE';
-    if (!v || st === 'waiting' || st === '') {
-      frag.appendChild(doc.createTextNode(replayFrames().length ? cPipe('replay_hint') : cState('idle')));
-    } else if (st === 'done') {
-      var d = isObj(v.done) ? v.done : {};
-      var ex = isObj(d.export) ? d.export : null;
-      var okExport = !ex || !scalar(ex.status) || EXPORT_OK.indexOf(String(ex.status).toLowerCase()) >= 0;
-      var ctx = {
-        t: first(d.t, d.dur, d.duration, d.dur_s, d.took, d.time, v.t, v.dur, v.duration),
-        cmd: first(ex && ex.cmd, ex && ex.command, d.cmd, ex && ex.text)
-      };
-      frag.appendChild(tpl(cPipe(okExport ? 'status_done' : 'status_export_missing'), ctx, 'live:done', status));
-    } else {
-      var rc = runningCand(v);
-      if (rc) {
-        frag.appendChild(valSpan(rc, 'live:rail.cand', status));
-        frag.appendChild(doc.createTextNode(' · '));
-      }
-      frag.appendChild(doc.createTextNode(cState(st === 'running' ? 'running' : 'error')));
-      var an = activeNode(v);
-      if (an && v.active) {
-        var capKey = DONE_STATES.indexOf(normState(an.state)) >= 0 ? 'done' : 'running';
-        frag.appendChild(doc.createTextNode(' · '));
-        frag.appendChild(tpl(cNode(v.active, capKey), an, 'live:nodes.' + v.active, statusOf(an, v)));
-      }
-    }
-    var sig = frag.textContent;
-    if (p.getAttribute('data-sig') === sig + '|' + status) return;
-    p.setAttribute('data-sig', sig + '|' + status);
-    clear(p);
-    p.appendChild(frag);
   }
 
   function runningCand(v) {
@@ -654,21 +676,64 @@
     return '';
   }
 
+  function renderStatus(v) {
+    var p = $('p-status');
+    var frag = doc.createDocumentFragment();
+    var st = v ? String(v.state || '') : '';
+    var status = liveStatus(v);
+    var d = v && isObj(v.done) ? v.done : {};
+    var wide = false;
+    if (!v || st === 'waiting' || st === '') {
+      frag.appendChild(doc.createTextNode(replayFrames().length ? cPipe('replay_hint') : cState('idle')));
+    } else if (st === 'done') {
+      var ex = isObj(d.export) ? d.export : null;
+      var okExport = !ex || !scalar(ex.status) || EXPORT_OK.indexOf(String(ex.status).toLowerCase()) >= 0;
+      var ctx = {
+        t: first(d.dur, d.t, d.duration, d.dur_s, d.took, d.time, v.dur, v.t, v.duration),
+        cmd: first(ex && ex.cmd, ex && ex.command, d.cmd, ex && ex.text)
+      };
+      frag.appendChild(tpl(cPipe(okExport ? 'status_done' : 'status_export_missing'), ctx, 'live:done', status));
+      wide = !okExport;
+    } else if ((st === 'error' || st === 'stopped') && scalar(d.text)) {
+      /* a stopped run: the bridge's own line says why */
+      frag.appendChild(valSpan(String(d.text), 'live:done.text', status));
+      wide = true;
+    } else {
+      var rc = runningCand(v);
+      if (rc) {
+        frag.appendChild(valSpan(rc, 'live:rail.cand', status));
+        frag.appendChild(doc.createTextNode(DOT));
+      }
+      frag.appendChild(doc.createTextNode(cState(st === 'running' ? 'running' : 'error')));
+      var an = activeNode(v);
+      if (an && v.active) {
+        var an_state = effectiveState(v.active, an);
+        frag.appendChild(doc.createTextNode(DOT));
+        frag.appendChild(tpl(cNode(v.active, captionKey(v.active, an, an_state)), an, 'live:nodes.' + v.active, statusOf(an, v)));
+      }
+    }
+    var sig = frag.textContent + '|' + status;
+    setAttr(p, 'data-wide', wide);
+    if (p.getAttribute('data-sig') === sig) return;
+    p.setAttribute('data-sig', sig);
+    clear(p);
+    p.appendChild(frag);
+  }
+
+  /* model, digest and where the data came from. The word LIVE is never written here: the
+     mode chip carries it, and only for a log that is still growing. */
   function renderSrc(v) {
     var host = $('p-src');
     clear(host);
     if (!v) return;
     var status = liveStatus(v);
-    var items = [
-      ['mode', v.mode], ['model', v.model], ['digest', v.digest],
-      ['source.log', v.source && v.source.log]
-    ];
+    var items = [['model', v.model], ['digest', v.digest], ['source.log', v.source && v.source.log]];
     var w = Array.isArray(v.warnings) ? v.warnings : [];
     w.forEach(function (x, i) { items.push(['warnings.' + i, x]); });
     var firstItem = true;
     items.forEach(function (it) {
       if (!scalar(it[1])) return;
-      if (!firstItem) host.appendChild(doc.createTextNode(' · '));
+      if (!firstItem) host.appendChild(doc.createTextNode(DOT));
       firstItem = false;
       host.appendChild(valSpan(String(it[1]), 'live:' + it[0], status));
     });
@@ -685,10 +750,18 @@
   }
 
   /* ---------- motion: one moving element at a time ---------- */
+  /* The strokes that draw on: .f-ink (main) and .f-ink.f-thin (detail). Their style="--i:N"
+     sets the order (0 first); .f-dash parts are not drawn on. */
   function inkShapes(g) {
     var list = g.querySelectorAll('.f-ink, .f-thin');
     if (!list.length) list = g.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse');
-    return list;
+    return Array.prototype.slice.call(list);
+  }
+
+  function drawOrder(shape, index) {
+    var n = NaN;
+    try { n = parseFloat(shape.style.getPropertyValue('--i')); } catch (e) { n = NaN; }
+    return isNaN(n) ? index : n;
   }
 
   function finishCurrent() {
@@ -723,17 +796,18 @@
       edge = null;
     }
     var shapes = inkShapes(r.g);
-    var n = shapes.length;
-    var spread = n > 1 ? DRAW_SPREAD_MS : 0;
-    for (var i = 0; i < n; i++) {
+    var orders = shapes.map(drawOrder);
+    var maxOrder = Math.max.apply(null, orders.concat([0]));
+    var spread = maxOrder > 0 ? DRAW_SPREAD_MS : 0;
+    shapes.forEach(function (shape, i) {
       var len = 0;
-      try { len = shapes[i].getTotalLength(); } catch (e) { len = 0; }
-      if (!(len > 0) || typeof shapes[i].animate !== 'function') continue;
+      try { len = shape.getTotalLength(); } catch (e) { len = 0; }
+      if (!(len > 0) || typeof shape.animate !== 'function') return;
       var dd = len + ' ' + len;
-      list.push(shapes[i].animate(
+      list.push(shape.animate(
         [{ strokeDasharray: dd, strokeDashoffset: len }, { strokeDasharray: dd, strokeDashoffset: 0 }],
-        { duration: DRAW_MS - spread, delay: delay + (n > 1 ? i * spread / (n - 1) : 0), easing: DRAW_EASE, fill: 'both' }));
-    }
+        { duration: DRAW_MS - spread, delay: delay + (maxOrder > 0 ? orders[i] / maxOrder * spread : 0), easing: DRAW_EASE, fill: 'both' }));
+    });
     if (!list.length) return;
     r.li.classList.add('is-drawing');
     var mine = { list: list, node: r.li, edge: edge };
@@ -788,7 +862,7 @@
     if (pollTag && pollTag.parentNode) pollTag.parentNode.removeChild(pollTag);
     var s = doc.createElement('script');
     s.src = 'data/live.js';
-    s.onload = function () { pollBusy = false; onPolled(); };
+    s.onload = function () { pollBusy = false; onPolled(false); };
     s.onerror = function () { pollBusy = false; onPolled(true); };
     pollTag = s;
     doc.head.appendChild(s);
@@ -819,28 +893,40 @@
   }
 
   /* ---------- feed: recorded key frames (window.LIVE_REPLAY) ---------- */
-  function replayFrames() {
-    if (rp.frames) return rp.frames;
+  /* window.LIVE_REPLAY is { frames: [...] } or { runs: [{ frames: [...] }, ...] } or a plain
+     array of frames. A frame is a LIVE object, or { live: LIVE, dt: ms } or { live: LIVE, t: ms }.
+     Without timing a frame waits REPLAY_STEP_MS. */
+  function replayRuns() {
+    if (rp.runs) return rp.runs;
     var R = window.LIVE_REPLAY;
-    var arr = Array.isArray(R) ? R : (R && (R.frames || R.key_frames)) || [];
-    var out = [];
-    var prevT = 0;
-    if (Array.isArray(arr)) {
-      arr.forEach(function (f) {
-        if (!isObj(f)) return;
-        var live = isObj(f.live) ? f.live : f;
-        if (!isObj(live.nodes) && !isObj(live.label) && !Array.isArray(live.rail)) return;
-        var wait = REPLAY_STEP_MS;
-        if (typeof f.dt === 'number') wait = f.dt;
-        else if (typeof f.t === 'number') { wait = f.t - prevT; prevT = f.t; }
-        if (!(wait >= 0)) wait = REPLAY_STEP_MS;
-        if (wait > REPLAY_MAX_MS) wait = REPLAY_MAX_MS;
-        if (R && !Array.isArray(R) && isObj(R.label) && !isObj(live.label)) live.label = R.label;
-        out.push({ wait: wait, live: live });
-      });
+    var runs = [];
+    function add(src) {
+      var arr = Array.isArray(src) ? src : (isObj(src) && (src.frames || src.key_frames)) || [];
+      var frames = [];
+      var prevT = 0;
+      if (Array.isArray(arr)) {
+        arr.forEach(function (f) {
+          if (!isObj(f)) return;
+          var live = isObj(f.live) ? f.live : f;
+          if (!isObj(live.nodes) && !isObj(live.label) && !Array.isArray(live.rail)) return;
+          var wait = REPLAY_STEP_MS;
+          if (typeof f.dt === 'number') wait = f.dt;
+          else if (typeof f.t === 'number') { wait = f.t - prevT; prevT = f.t; }
+          if (!(wait >= 0)) wait = REPLAY_STEP_MS;
+          if (wait > REPLAY_MAX_MS) wait = REPLAY_MAX_MS;
+          frames.push({ wait: wait, live: live });
+        });
+      }
+      if (frames.length) runs.push(frames);
     }
-    rp.frames = out;
-    return out;
+    if (isObj(R) && Array.isArray(R.runs)) R.runs.forEach(add); else add(R);
+    rp.runs = runs;
+    return runs;
+  }
+
+  function replayFrames() {
+    var runs = replayRuns();
+    return runs.length ? (runs[rp.run] || runs[0]) : [];
   }
 
   function showFrame(i) {
@@ -880,26 +966,39 @@
     return true;
   }
 
-  function restartReplay() {
-    var fr = replayFrames();
-    if (!fr.length) return false;
-    pauseReplay();
-    source = 'replay';
-    rp.i = -1;
+  function blankScreen() {
     resetRun();
     lastRev = null;
     lastUid = null;
     cur = null;
     renderAll(null);
+  }
+
+  function restartReplay() {
+    if (!replayFrames().length) return false;
+    pauseReplay();
+    source = 'replay';
+    rp.i = -1;
+    blankScreen();
     return true;
   }
 
+  /* [ and ]: with several recorded runs, switch to the previous or next one (paused at its
+     first frame); with one run, step one key frame back or forward. */
   function stepReplay(dir) {
-    var fr = replayFrames();
-    if (!fr.length) return false;
+    var runs = replayRuns();
+    if (!runs.length) return false;
     pauseReplay();
-    var next = Math.max(0, Math.min(fr.length - 1, rp.i + dir));
-    showFrame(next);
+    if (runs.length > 1) {
+      rp.run = (rp.run + dir + runs.length) % runs.length;
+      rp.i = -1;
+      source = 'replay';
+      blankScreen();
+      showFrame(0);
+      return true;
+    }
+    var fr = runs[0];
+    showFrame(Math.max(0, Math.min(fr.length - 1, rp.i + dir)));
     return true;
   }
 
