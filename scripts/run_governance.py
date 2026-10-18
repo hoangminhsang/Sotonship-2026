@@ -35,6 +35,13 @@ Modes:
                   candidate runs. Needs Ollama up with the model pulled. Each
                   candidate's run is saved to its own locked
                   ``results/runs/<run_id>/`` folder.
+                  --extra-attacks FILE (LIVE only) adds the owner's own attacks
+                  (see config/custom_attacks.md) as an EXTRA set: after each
+                  candidate's standard runs, every attack in FILE runs --reps
+                  times with the same model and defences, is scored by the same
+                  oracle and is reported next to the standard result
+                  (``<out>/<cand>/extra_runs.csv``, an ``extra_done`` progress
+                  event). It never enters the gate, the fingerprint or corpus/.
   SAVED (--run)   gates a saved, locked run folder as RC-001 (hash-verified,
                   model + digest from its manifest). RC-002 is a saved D2 run
                   given with ``--run-after``, or else a deterministic D2 replay
@@ -43,6 +50,7 @@ Modes:
 Usage (from the repo root):
     .venv-pyrit/bin/python scripts/run_governance.py                 # demo
     .venv-pyrit/bin/python scripts/run_governance.py --live --sample 12
+    .venv-pyrit/bin/python scripts/run_governance.py --live --sample 12 --extra-attacks config/custom_attacks.md
     .venv-pyrit/bin/python scripts/run_governance.py --out /tmp/gov_run   # default: governance_out/cli_demo
     .venv-pyrit/bin/python scripts/run_governance.py --run results/runs/<id> [--run-after results/runs/<id2>]
 
@@ -68,7 +76,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:  # scripts/verify_log.p
 import pandas as pd  # noqa: E402
 import verify_log  # noqa: E402  (scripts/verify_log.py)
 
-from lab import agent, corpus, defences, metrics, progress, run_folder, world  # noqa: E402
+from lab import agent, corpus, custom_attacks, defences, metrics, progress, run_folder, world  # noqa: E402
 from lab.demo import demo_traces  # noqa: E402  (the one offline run generator; no local copy)
 from lab.assurance import (  # noqa: E402
     evidence,
@@ -129,6 +137,8 @@ def drain_live(
     rules: dict,
     tests_by_id: dict[str, dict],
     prog: progress.Progress | None = None,
+    *,
+    extra: bool = False,
 ) -> list[dict]:
     """Collect a ``runner.run_split`` sweep one run at a time, telling the progress log about each.
 
@@ -137,6 +147,9 @@ def drain_live(
     The order is records x reps, as ``run_split`` runs them. The sweep is closed in ``finally``, so
     the run folder is locked also when a Ctrl-C lands between two runs; a Ctrl-C inside a run
     reaches the generator's own ``finally`` first. Without ``prog`` this is ``list(sweep)``.
+
+    ``extra=True`` is the owner's extra set (``--extra-attacks``): no ``run_start``, and every
+    ``run_done`` carries ``"set": "extra"``. ``i``, ``n`` and the counters then count that set only.
     """
     if prog is None:
         return list(sweep)
@@ -146,21 +159,119 @@ def drain_live(
     traces: list[dict] = []
     try:
         for i, (test, rep) in enumerate(schedule, start=1):
-            prog.emit_lazy("run_start", lambda: {
-                "i": i, "n": n, "test_id": test["id"], "rep": rep,
-                "kind": test["kind"], "technique": test.get("technique", "none"),
-            })
+            if not extra:
+                prog.emit_lazy("run_start", lambda: {
+                    "i": i, "n": n, "test_id": test["id"], "rep": rep,
+                    "kind": test["kind"], "technique": test.get("technique", "none"),
+                })
             try:
                 trace = next(sweep)
             except StopIteration:
                 break
             traces.append(trace)
-            prog.emit_lazy("run_done", lambda: progress.run_fields(
-                i, n, trace, metrics.build_runs_frame([trace], rules, tests_by_id).iloc[0], stats))
+            prog.emit_lazy("run_done", lambda: {
+                **progress.run_fields(
+                    i, n, trace, metrics.build_runs_frame([trace], rules, tests_by_id).iloc[0], stats),
+                **({"set": "extra"} if extra else {}),
+            })
         traces.extend(sweep)  # nothing more is expected; this lets the sweep finish (and lock) itself
     finally:
         sweep.close()
     return traces
+
+
+# --------------------------------------------------------------------------- #
+# The owner's extra attack set (--extra-attacks). LIVE only. It is run after a candidate's standard
+# runs and reported beside them; it never enters ``runs``, the gate, the fingerprint or corpus/.
+# --------------------------------------------------------------------------- #
+EXTRA_FILE = "extra_runs.csv"
+EXTRA_NOTE = "--extra-attacks needs --live (a real model); your attacks were not run."
+
+
+def load_extra_records(path: str | Path) -> list[dict]:
+    """The attacks in ``path`` as corpus-shaped records (``CUS-0001`` ...); raises ``CustomAttackError``.
+
+    A relative path is looked up from the current folder, then from the repo. A missing file is an
+    error here (``custom_attacks.load`` alone would return ``[]``): a mistyped path must not pass.
+    """
+    given = Path(path).expanduser()
+    found = given if (given.is_absolute() or given.exists()) else REPO / given
+    if not found.is_file():
+        raise custom_attacks.CustomAttackError(f"file not found: {path}")
+    return custom_attacks.to_records(custom_attacks.load(found))
+
+
+def run_extra(
+    records: list[dict],
+    rules: dict,
+    *,
+    reps: int,
+    temperature: float,
+    candidate_id: str,
+    defence_codes: tuple[str, ...],
+    out_dir: Path,
+    prog: progress.Progress | None = None,
+) -> tuple[pd.DataFrame, Path, str]:
+    """Run the extra attacks against one candidate; return ``(runs, extra_runs.csv, run folder id)``.
+
+    The same model and defences as the candidate's standard runs, the same oracle for scoring. The runs are
+    saved to their own locked folder (candidate ``<id>-extra``, split ``extra``).
+    """
+    from lab import runner
+
+    by_id = {r["id"]: r for r in records}
+    run_id = run_folder.make_run_id(agent.MODEL, f"{candidate_id}-extra")
+    traces = drain_live(
+        runner.run_split(
+            records, reps=reps, temperature=temperature, defences=tuple(defence_codes),
+            candidate=f"{candidate_id}-extra", split="extra", run_id=run_id,
+        ),
+        records, reps, rules, by_id, prog, extra=True,
+    )
+    runs = metrics.build_runs_frame(traces, rules, by_id)
+    runs["trace_path"] = [
+        f"{run_folder.TRACES}/{run_folder.trace_name(tid, rep)}" for tid, rep in zip(runs["test_id"], runs["rep"])
+    ]
+    runs["name"] = [by_id[tid]["name"] for tid in runs["test_id"]]
+    csv_path = Path(out_dir) / candidate_id / EXTRA_FILE
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    runs.to_csv(csv_path, index=False)
+    return runs, csv_path, run_id
+
+
+def extra_fields(cid: str, records: list[dict], runs: pd.DataFrame | None, *, file=None, run_id=None,
+                 error: str | None = None) -> dict:
+    """The ``extra_done`` event for one candidate: the extra set's attack rate, never null-as-zero.
+
+    ``n`` counts runs the way the gate does (``metrics.attack_success_rate``: an error run that broke no
+    rule is left out); ``errors`` counts every error run. ``runs`` is None when the set could not run.
+    """
+    prop = metrics.attack_success_rate(runs) if runs is not None else metrics.wilson(0, 0)
+    measured = prop.n > 0
+    return {
+        "cand": cid,
+        "attacks": len(records),
+        "n": prop.n,
+        "violations": prop.successes,
+        "asr": prop.rate if measured else None,
+        "asr_lo": prop.lo if measured else None,
+        "asr_hi": prop.hi if measured else None,
+        "file": file,
+        "errors": metrics.error_count(runs) if runs is not None else 0,
+        "run_id": run_id,
+        "error": error,
+    }
+
+
+def extra_line(cid: str, done: dict) -> str:
+    """One report line for the extra set of ``cid``."""
+    head = f"Your attacks for {cid} (extra set, not part of the gate): "
+    if done["error"]:
+        return head + f"could not run ({done['error']})"
+    if not done["n"]:
+        return head + f"no scored runs ({done['errors']} errored)"
+    return (head + f"{done['violations']} of {done['n']} runs broke a rule ({done['asr']:.1%}, "
+            f"95% range [{done['asr_lo']:.1%}, {done['asr_hi']:.1%}])")
 
 
 def run_candidate(
@@ -689,6 +800,17 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
             prog.error = progress.scrub(exc)
             return 2
 
+    # The owner's extra attacks (LIVE only) are read and checked before anything is written, like a saved run.
+    extra_path = getattr(args, "extra_attacks", None)
+    extra_records: list[dict] = []
+    if extra_path and args.live:
+        try:
+            extra_records = load_extra_records(extra_path)
+        except (custom_attacks.CustomAttackError, OSError) as exc:
+            print(f"error: --extra-attacks: {exc}", file=sys.stderr)
+            prog.error = progress.scrub(exc)
+            return 2
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     prog.activate()  # the run is past its checks: progress.jsonl starts here (an old one is rotated)
@@ -734,6 +856,13 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
     rep.say(f"Policy   : v{policy.get('policy_version')} (owner: {policy.get('policy_owner')})")
     rep.say(f"Test set : {len(tests)} records = {n_attack} attacks + {n_benign} benign")
     rep.say(f"Output   : {out_dir}")
+    if extra_path and not args.live:
+        rep.say(f"Note     : {EXTRA_NOTE}")
+    elif extra_path and extra_records:
+        rep.say(f"Extra set: {len(extra_records)} of your attacks from {extra_path}, run after each candidate's "
+                f"standard runs ({args.reps} reps each); reported next to the gate, never part of it")
+    elif extra_path:
+        rep.say(f"Extra set: no attacks in {extra_path}; no extra set will run")
 
     # Shared fingerprint inputs.
     prompt_text = agent.SYSTEM_PROMPT
@@ -809,6 +938,25 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
             prog.headline.append(headline_entry(cid, verdict, summary))
         index.candidate(cid, gate=path, verdict=verdict.status)
 
+    def extras(cid: str, codes: tuple[str, ...]) -> None:
+        """Run and report the owner's extra attack set for ``cid``, if there is one. It never stops the gate."""
+        if not extra_records:
+            return
+        try:
+            extra_runs, csv_path, extra_run_id = run_extra(
+                extra_records, rules, reps=args.reps, temperature=args.temperature, candidate_id=cid,
+                defence_codes=tuple(codes), out_dir=out_dir, prog=prog,
+            )
+        except Exception as exc:  # noqa: BLE001 - not BaseException: Ctrl-C must get through
+            message = f"{type(exc).__name__}: {progress.scrub(exc)}"
+            print(f"warning: your attacks could not run for {cid}: {message}", file=sys.stderr)
+            fields = extra_fields(cid, extra_records, None, error=message)
+        else:
+            rep.add_file(csv_path, "extra_runs")
+            fields = extra_fields(cid, extra_records, extra_runs, file=csv_path, run_id=extra_run_id)
+        prog.emit_lazy("extra_done", lambda: fields)
+        rep.say(extra_line(cid, fields))
+
     # ----------------------------------------------------------------------- #
     # RC-001: the insecure agent.
     # ----------------------------------------------------------------------- #
@@ -838,6 +986,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
     })
     index.candidate("RC-001", [], run_id=run_folder_id(saved_before, proof_before, args.live),
                     runs_csv=proof_before, summary_csv=_summary_csv(proof_before))
+    extras("RC-001", ())
 
     fp_001 = candidate.fingerprint(
         "RC-001",
@@ -981,6 +1130,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
         })
         index.candidate(cid, codes, run_id=run_folder_id(saved, proof, args.live),
                         runs_csv=proof, summary_csv=_summary_csv(proof))
+        extras(cid, codes)
         # Same order as RC-001 in the log (runs, then fingerprint), though the file was written first.
         prog.emit_lazy("fingerprint", lambda: {
             "identity12": progress.short(fp.identity_hash()),
@@ -1175,6 +1325,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="drive the real Ollama agent for candidate runs (needs Ollama + model)")
     p.add_argument("--sample", type=int, default=12,
                    help="LIVE only: first N tests per split for a quick run")
+    p.add_argument("--extra-attacks", default=None, metavar="FILE",
+                   help="LIVE only: also run the attacks in FILE (see config/custom_attacks.md) as an extra set "
+                        "after each candidate's standard runs, with the same model and defences. They are "
+                        "reported next to the result and never count in the gate")
     p.add_argument("--reps", type=int, default=3, help="repetitions per test")
     p.add_argument("--temperature", type=float, default=0.2, help="LIVE only: model temperature")
     p.add_argument("--out", default=str(REPO / "governance_out" / "cli_demo"),
