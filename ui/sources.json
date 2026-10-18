@@ -1,7 +1,7 @@
 {
   "schema": "ui-sources/1",
   "repo_root": "..",
-  "current_batch": "rehearsal",
+  "current_batch": "newest-run",
   "batches": [{
     "id": "rehearsal", "title": "Rehearsal batch", "adapter": "legacy-results",
     "pin_rev": "d825341",
@@ -17,7 +17,7 @@
     "traces_dir": "results/traces", "corpus": {"path": "corpus/test.jsonl", "rev": null},
     "show_only_if_differs_from_rev": "d825341"
   },
-  "run_folders": {"enabled": false, "glob": "results/runs/*/manifest.json", "require_locked": true, "max_batches": 4, "note": "Provisional until docs/DATA_CONTRACT.md exists."},
+  "run_folders": {"enabled": true, "glob": "results/runs/*/manifest.json", "max_batches": 4, "note": "Locked run folders, newest first. current_batch newest-run shows the newest one; with none, the first batch (the rehearsal) is shown. A governance candidate always gets its own run folder, also beyond max_batches."},
   "policy": {"path": "lab/governance/policy.yaml"},
   "controls": {"path": "lab/assurance/control_map.yaml"},
   "governance": {

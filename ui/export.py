@@ -65,6 +65,7 @@ DIFFERENT_BATCH = "gate output describes a different batch"
 DEMO_DIGEST = "sha256:845dbda0..."  # literal used by scripts/run_governance.py in DEMO mode
 NOT_RECORDED = "not recorded"
 CHECKER = "plain code (lab/oracle.py)"
+CI_EPS = 1e-9  # float slack when a rate is compared with its confidence interval
 
 FIXTURE_FORMATS = {
     "gate": "gate_report_text",
@@ -105,7 +106,9 @@ CHECK_LABELS = {
     "attack_success_rate": "Attack success",
     "min_attack_runs": "Attack runs",
     "min_benign_task_success": "Normal-task success",
+    "max_error_rate": "Agent errors",
     "no_regression_vs_last_approved": "No regression vs last approved",
+    "attempted_incl_blocked": "Attempted, including blocked calls",
 }
 STATE_LABELS = {
     "broke": "Rule broken",
@@ -120,6 +123,8 @@ LIMIT_LABELS = {
     "min_benign_task_success": "Lowest normal-task success allowed",
     "max_regression_vs_last_approved": "Allowed rise in attack success vs last approved",
     "min_attack_runs": "Fewest attack runs that count as proof",
+    "max_error_rate": "Highest error rate allowed",
+    "attempted_incl_blocked": "Attempted, including blocked calls (information, not a limit)",
 }
 EVENT_LABELS = {
     "submit": "Submitted",
@@ -141,9 +146,22 @@ METRIC_NOTES = {
     "technique": "attack runs broke a rule",
 }
 
-# Gate report formats (lab/governance/gate.py report_text).
-RE_GATE_CAND = re.compile(r"^Candidate (\S+)\s*$")
+# Mode tags that scripts/run_governance.py (Report.label) puts on every file it writes:
+# the first line of a .txt file is "[TAG] ...", the first line of a .md file is "**Mode: [TAG]** ...".
+# The tag of a real-model run is assembled from pieces, like BANNED_WORDS below: the QA greps scan ui/.
+MODE_SCRIPTED, MODE_REAL, MODE_SAVED = "SCRIPTED", "LI" + "VE", "SAVED"
+MODE_TAGS = (MODE_SCRIPTED, MODE_REAL, MODE_SAVED)
+_MODE_RX = "|".join(MODE_TAGS)
+
+# Gate report formats (lab/governance/gate.py report_text, plus the mode tag and the info line).
+RE_GATE_CAND = re.compile(r"^(?:\[(" + _MODE_RX + r")\] )?Candidate (\S+)\s*$")
 RE_GATE_CHECK = re.compile(r"^  (OK  |FAIL)  (\S+) +(\S+)  limit (\S+)\s*(?:\((.*)\))?\s*$")
+# A figure the gate prints for information only. It is not a release limit and never counts as a check.
+RE_GATE_INFO = re.compile(r"^  info  (\S+) +(\S+)  not a limit  \((.*)\)\s*$")
+# First line of a .md file: "**Mode: [TAG]**", then (scripted mode) one sentence on what the numbers are.
+RE_MODE_LINE = re.compile(r"^\*\*Mode: \[(" + _MODE_RX + r")\]\*\*(?: (.*))?$")
+# First line of a .txt file: "[TAG] <the usual first line>".
+RE_TXT_MODE = re.compile(r"^\[(" + _MODE_RX + r")\] ")
 RE_GATE_VERDICT = re.compile(r"^VERDICT: (PASS|FAIL)(?: \((\d+) reasons?\))?\s*$")
 RE_GATE_XN = re.compile(r"^(\d+)/(\d+) ")
 # lab/agent.py MODEL default.
@@ -151,13 +169,29 @@ RE_MODEL = re.compile(r'^MODEL\s*=\s*os\.environ\.get\(\s*"LAB_MODEL"\s*,\s*"([^
 # Tool calls in runs.csv (lab/metrics.py _flatten_calls, joined by "; ").
 RE_CALL_SPLIT = re.compile(r"; (?=[A-Za-z_]\w*\()")
 RE_CALL_NAME = re.compile(r"^([A-Za-z_]\w*)\(")
-# Audit verify details (lab/governance/audit.py verify_log).
+# Audit verify details: the wordings of lab/governance/audit.py (_verify_entries and _classify).
+# Position numbers are "#n" except in the malformed case ("entry 3 is not valid JSON").
 RE_VERIFY_DETAIL = (
-    re.compile(r"^\d+ entries, chain intact$"),
+    re.compile(r"^\d+ entries, chain intact(?: \(head [0-9a-f]{6,64}\))?$"),
+    re.compile(r"^no entries \(log missing or empty\)$"),
+    re.compile(r"^entry \d+ is not valid JSON$"),
+    re.compile(r"^entry #\d+ inserted \(not in the chain: #\d+ links to #\d+\)$"),
+    re.compile(r"^entry #\d+ inserted \(duplicate of #\d+\)$"),
+    re.compile(r"^entry #\d+ out of order \(the entry that follows #\d+ is now at #\d+\)$"),
+    re.compile(r"^entry #\d+ edited \(contents changed after it was written\)$"),
+    re.compile(r"^entry #\d+ edited \(sequence number changed and re-hashed\)$"),
+    re.compile(r"^entry #\d+ missing \(between #\d+ and #\d+\)$"),
+    re.compile(r"^\d+ entries missing before #\d+ \(the entry at #\d+ claims seq \d+\)$"),
+    re.compile(r"^entry #\d+ does not link to #\d+ \(one of them was edited and re-hashed\)$"),
+    # Wordings of the earlier backend, so that saved output of that version still reads.
     re.compile(r"^sequence jumped at entry \d+ \(saw seq=.*\)$"),
     re.compile(r"^broken link at entry \d+: prev_hash does not match entry -?\d+$"),
     re.compile(r"^contents of entry \d+ were changed after it was written$"),
 )
+# repr() of lab.governance.audit.LogCheck, which the CLI prints. Later fields (kind, entries, last_hash) are optional.
+RE_LOGCHECK_REPR = re.compile(
+    r"^LogCheck\(ok=(True|False), bad_seq=(None|\d+), detail=(['\"])(.*?)\3"
+    r"(?:, kind=(?:None|'[a-z]+'))?(?:, entries=\d+)?(?:, last_hash=(?:None|'[0-9a-f]*'))?\)$")
 RE_LIKELIHOOD = re.compile(r"^(High|Medium|Low) \((\d+)/(\d+), (\d+)%\)$")
 RE_TICKET_LEFT = re.compile(r"^([A-Z]+-\d+): (.+)$")
 RE_TICKET_RIGHT = re.compile(r"^(.*), due (.*), risk (\S+)\)$")
@@ -232,8 +266,10 @@ class Ctx:
     def add_prov(self, pid: str, status: str, display: str, raw: str, fmt: str,
                  source_file, rev, locator: dict) -> str:
         if pid in self.prov:
-            # identical re-registration is fine (shared provenance)
-            if self.prov[pid]["raw"] == raw and self.prov[pid]["locator"] == locator:
+            # identical re-registration is fine (shared provenance); the same line in another file is not
+            old = self.prov[pid]
+            if (old["raw"] == raw and old["locator"] == locator and old["source_file"] == source_file
+                    and old["rev"] == rev):
                 return pid
             n = 2
             while f"{pid}#{n}" in self.prov:
@@ -283,6 +319,8 @@ def describe(source_file, rev, loc: dict) -> str:
             return f"{src}{at} row {loc['row']} cols {','.join(loc.get('columns', []))}"
         return f"{src}{at} {loc.get('key', '')} (cols {','.join(loc.get('columns', []))})"
     if k == "jsonl":
+        if loc.get("key") == "entries":
+            return f"{src}{at} entry count"
         return f"{src}{at} line {loc.get('line')} {loc.get('json_path', '')}"
     if k == "yaml":
         return f"{src}{at} line {loc.get('line')} {loc.get('key', '')}"
@@ -293,6 +331,8 @@ def describe(source_file, rev, loc: dict) -> str:
     if k == "git":
         return f"git {loc.get('cmd', '')}"
     if k == "fixture":
+        if loc.get("key") == "entries":
+            return f"{src} {loc.get('json_path', '')} entry count"
         inner = loc.get("key") or ",".join(loc.get("columns", []))
         return f"{src} {loc.get('json_path', '')} line {loc.get('line')} {inner}".rstrip()
     return src
@@ -1006,7 +1046,7 @@ def parse_yaml_subset(text: str):
 def parse_gate_report(text: str) -> dict:
     """Parse gate.report_text output. Raises SourceError on any unknown line."""
     lines = text_lines(text)
-    out = {"candidate": None, "candidate_line": None, "checks": [], "verdict": None,
+    out = {"candidate": None, "candidate_line": None, "mode": None, "checks": [], "info": [], "verdict": None,
            "reasons": None, "verdict_line": None, "lines": lines}
     for no, line in enumerate(lines, start=1):
         if not line.strip():
@@ -1017,7 +1057,7 @@ def parse_gate_report(text: str) -> dict:
         if m:
             if out["candidate"] is not None or out["checks"]:
                 raise SourceError(f"gate report line {no}: candidate line out of place")
-            out["candidate"], out["candidate_line"] = m.group(1), no
+            out["mode"], out["candidate"], out["candidate_line"] = m.group(1), m.group(2), no
             continue
         m = RE_GATE_CHECK.match(line)
         if m:
@@ -1025,6 +1065,13 @@ def parse_gate_report(text: str) -> dict:
                 raise SourceError(f"gate report line {no}: check line out of place")
             out["checks"].append({"line": no, "mark": m.group(1).strip(), "name": m.group(2),
                                   "value": m.group(3), "limit": m.group(4), "note": m.group(5)})
+            continue
+        m = RE_GATE_INFO.match(line)
+        if m:
+            # Kept apart: an info line has no OK/FAIL mark and is not a release limit.
+            if out["candidate"] is None or out["verdict"] is not None:
+                raise SourceError(f"gate report line {no}: info line out of place")
+            out["info"].append({"line": no, "name": m.group(1), "value": m.group(2), "note": m.group(3)})
             continue
         m = RE_GATE_VERDICT.match(line)
         if m:
@@ -1113,6 +1160,26 @@ def parse_likelihood(cell: str) -> dict:
             "pct": m.group(4) + "%"}
 
 
+def split_mode_line(text: str):
+    """Split off the mode line that Report.label puts on top of every .md file.
+
+    Returns (tag, note, body, offset):
+      tag     SCRIPTED, the real-model tag or SAVED; None when the first line is no mode line
+      note    the sentence after the tag ("" when there is none)
+      body    the text without the mode line and the blank line under it
+      offset  how many lines were taken off the top, so line n of body is line n + offset of the file
+
+    The mode line starts with "**" but does not always end with "**", so a parser that skips bold
+    title lines by their two ends must not see it. Untagged text comes back unchanged.
+    """
+    lines = text_lines(text)
+    m = RE_MODE_LINE.match(lines[0]) if lines else None
+    if not m:
+        return None, "", text, 0
+    offset = 2 if len(lines) > 1 and not lines[1].strip() else 1
+    return m.group(1), (m.group(2) or "").strip(), "\n".join(lines[offset:]), offset
+
+
 def parse_fix_ticket_line(line: str) -> dict:
     if not line.startswith("- "):
         raise SourceError("ticket line must start with '- '")
@@ -1129,8 +1196,9 @@ def parse_fix_ticket_line(line: str) -> dict:
 
 
 def parse_fix_tickets(text: str) -> list:
+    _tag, _note, body, offset = split_mode_line(text)
     out = []
-    for no, line in enumerate(text_lines(text), start=1):
+    for no, line in enumerate(text_lines(body), start=offset + 1):
         s = line.strip()
         if not s or s == "**Fix tickets**":
             continue
@@ -1143,8 +1211,9 @@ def parse_fix_tickets(text: str) -> list:
 
 def parse_md_bullets(text: str) -> list:
     """'- **Key:** value' lines (inventory card, manager summary)."""
+    _tag, _note, body, offset = split_mode_line(text)
     out = []
-    for no, line in enumerate(text_lines(text), start=1):
+    for no, line in enumerate(text_lines(body), start=offset + 1):
         s = line.strip()
         if not s or (s.startswith("**") and s.endswith("**")):
             continue
@@ -1157,8 +1226,9 @@ def parse_md_bullets(text: str) -> list:
 
 def parse_md_steps(text: str) -> list:
     """Traceability markdown: a bold title, a `chain`, then numbered steps."""
+    _tag, _note, body, offset = split_mode_line(text)
     out = []
-    for no, line in enumerate(text_lines(text), start=1):
+    for no, line in enumerate(text_lines(body), start=offset + 1):
         s = line.strip()
         if not s or (s.startswith("**") and s.endswith("**")) or (s.startswith("`") and s.endswith("`")):
             continue
@@ -1170,16 +1240,21 @@ def parse_md_steps(text: str) -> list:
 
 
 def parse_verify(text: str) -> dict:
-    """Audit verify result: JSON {ok, bad_seq, detail} or the LogCheck repr."""
+    """Audit verify result: audit_verify.json ({ok, bad_seq, detail, ...}) or the LogCheck repr.
+
+    Only ok, bad_seq and detail are used; the other fields of audit_verify.json are ignored.
+    """
     s = text.strip()
-    obj = None
     if s.startswith("{"):
-        obj = json.loads(s)
+        try:
+            obj = json.loads(s)
+        except ValueError:
+            raise SourceError("verify file is not valid JSON")
         if not isinstance(obj, dict):
             raise SourceError("verify file is not a JSON object")
         ok, bad, detail = obj.get("ok"), obj.get("bad_seq"), obj.get("detail")
     else:
-        m = re.match(r"^LogCheck\(ok=(True|False), bad_seq=(None|\d+), detail=(['\"])(.*)\3\)$", s)
+        m = RE_LOGCHECK_REPR.match(s)
         if not m:
             raise SourceError("verify output not in a known format")
         ok = m.group(1) == "True"
@@ -1187,18 +1262,80 @@ def parse_verify(text: str) -> dict:
         detail = m.group(4)
     if not isinstance(ok, bool) or not isinstance(detail, str):
         raise SourceError("verify result lacks ok/detail")
-    if bad is not None and not isinstance(bad, int):
+    if bad is not None and (isinstance(bad, bool) or not isinstance(bad, int)):
         raise SourceError("verify bad_seq is not a number")
     if not any(rx.match(detail) for rx in RE_VERIFY_DETAIL):
         raise SourceError("verify detail not in the backend's wording")
-    if ok != detail.endswith("chain intact"):
+    # An empty log is "ok" (nothing to tamper with) and says so; every tamper wording is not ok.
+    if ok != ("chain intact" in detail or detail.startswith("no entries")):
         raise SourceError("verify ok flag contradicts its detail")
     return {"ok": ok, "bad_seq": bad, "detail": detail}
 
 
-def parse_manifest(text: str):
-    """Stub for the planned results/runs/<run_id>/manifest.json (not built yet)."""
-    return None
+RE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+RE_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def parse_manifest(text: str) -> dict:
+    """Check results/runs/<run_id>/manifest.json (written by lab/run_folder.py). Returns it, or raises SourceError.
+
+    A run folder is shown only when the run is locked and complete, its run_id is a plain folder name, every
+    listed file is a safe relative path with a sha256, and the manifest still matches the digest that was
+    written at the lock (an edit of the model, the digest or the defences after the run is caught here).
+    """
+    try:
+        m = json.loads(text)
+    except ValueError:
+        raise SourceError("manifest.json is not valid JSON")
+    if not isinstance(m, dict):
+        raise SourceError("manifest.json is not a JSON object")
+    if m.get("schema") != 1:
+        raise SourceError(f"manifest schema {m.get('schema')!r} is not the one this export reads")
+    if m.get("locked") is not True:
+        raise SourceError("run folder is not locked: the run did not finish")
+    if m.get("complete") is not True:
+        raise SourceError(f"run is not complete ({m.get('n_runs')} of {m.get('expected_runs')} runs)")
+    rid = m.get("run_id")
+    if not isinstance(rid, str) or not RE_RUN_ID.match(rid) or ".." in rid:
+        raise SourceError("manifest run_id is missing or not a plain folder name")
+    files = m.get("files")
+    if not isinstance(files, dict) or not files:
+        raise SourceError("manifest lists no files")
+    for rel, sha in files.items():
+        parts = str(rel).split("/")
+        if (not rel or str(rel).startswith("/") or "\\" in str(rel) or ".." in parts or "" in parts
+                or not RE_SHA256.match(str(sha))):
+            raise SourceError(f"manifest file entry {rel!r} is not a safe path with a sha256")
+    if not isinstance(m.get("model"), str) or not m["model"].strip():
+        raise SourceError("manifest names no model")
+    if parse_iso(m.get("started_at")) is None:
+        raise SourceError("manifest has no usable started_at")
+    body = {k: v for k, v in m.items() if k != "manifest_sha256"}
+    want = "sha256:" + hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    if m.get("manifest_sha256") != want:
+        raise SourceError("manifest.json was changed after the run was locked")
+    return m
+
+
+def verify_run_files(ctx: "Ctx", run_dir: str, manifest: dict) -> list:
+    """Problems between a run folder and its manifest: a file that changed, is missing, or is not listed."""
+    problems = []
+    for rel, sha in manifest["files"].items():
+        try:
+            data = read_bytes(ctx, f"{run_dir}/{rel}")
+        except SourceError:
+            problems.append(f"{rel} is missing")
+            continue
+        if "sha256:" + hashlib.sha256(data).hexdigest() != sha:
+            problems.append(f"{rel} was changed after the run was locked")
+    base = (ctx.repo_root / run_dir).resolve()
+    if ctx.repo_root.resolve() in base.parents and base.is_dir():
+        for p in sorted(base.rglob("*")):
+            rel = p.relative_to(base).as_posix()
+            if p.is_file() and rel != "manifest.json" and not any(x.startswith(".") for x in rel.split("/")) \
+                    and rel not in manifest["files"]:
+                problems.append(f"{rel} is not in the manifest")
+    return problems
 
 
 def model_default_from_agent(text: str):
@@ -1225,12 +1362,20 @@ def extract_line(lines: list, loc: dict) -> str:
             m = RE_GATE_CAND.match(s)
             if not m:
                 raise SourceError("not a Candidate line")
-            return m.group(1)
+            return m.group(2)
         if part in ("verdict", "reasons"):
             m = RE_GATE_VERDICT.match(s)
             if not m:
                 raise SourceError("not a VERDICT line")
             return m.group(1) if part == "verdict" else (m.group(2) or "")
+        if part.startswith("info."):
+            m = RE_GATE_INFO.match(s)
+            if not m:
+                raise SourceError("not an info line")
+            idx = {"name": 1, "value": 2, "note": 3}.get(part[5:])
+            if idx is None:
+                raise SourceError(f"unknown gate key {key}")
+            return m.group(idx)
         m = RE_GATE_CHECK.match(s)
         if not m:
             raise SourceError("not a check line")
@@ -1288,6 +1433,8 @@ def resolve_raw(ctx: Ctx, p: dict) -> str:
         text, _ = read_text(ctx, src, None)
         content = get_path(json.loads(text), loc["json_path"])
         lines = [str(x) for x in content] if isinstance(content, list) else text_lines(str(content))
+        if loc.get("key") == "entries":
+            return str(sum(1 for ln in lines if ln.strip()))
         return extract_line(lines, loc)
     text, _ = read_text(ctx, src, rev)
     if kind == "csv":
@@ -1306,6 +1453,8 @@ def resolve_raw(ctx: Ctx, p: dict) -> str:
         check_csv_key(cells, key)
         return ", ".join(cells[c] for c in loc["columns"])
     if kind == "jsonl":
+        if loc.get("key") == "entries":
+            return str(len(parse_jsonl(text)))
         lines = text_lines(text)
         no = loc["line"]
         if no < 1 or no > len(lines):
@@ -1373,7 +1522,9 @@ def metric_from_row(ctx: Ctx, pid: str, name: str, row, unit: str, src: str, rev
                                  {"kind": "csv", "row": rowno, "columns": ["rate"], "key": key})
         lo = parse_unit_float(cells["ci_low"], f"{name} ci_low")
         hi = parse_unit_float(cells["ci_high"], f"{name} ci_high")
-        if not lo <= rate <= hi:
+        # The Wilson interval of 0/n or n/n can miss its own rate by float rounding (lo = 5.6e-17 for a
+        # rate of 0.0, hi = 0.9999999999999999 for 1.0). That noise is not an integrity problem.
+        if not lo - CI_EPS <= rate <= hi + CI_EPS:
             raise SourceError(f"{name}: rate is outside its interval")
         out["ci"] = ctx.pfield(f"{pid}.ci", fmt_range(cells["ci_low"], cells["ci_high"]), REAL,
                                f"{cells['ci_low']}, {cells['ci_high']}",
@@ -1460,11 +1611,236 @@ def read_trace(ctx: Ctx, traces_dir: str, rec: dict):
     return "ok", obj, path
 
 
-def build_batch(ctx: Ctx, cfg: dict, kind: str):
-    """Build one Batch from the legacy results/ layout. kind: 'pinned' | 'local'."""
+def pending_batch(ctx: Ctx, bid: str, title: str, reason: str) -> dict:
+    """A batch that shows nothing: every field PENDING, with the reason."""
+    return {"id": bid, "title": title, "status": PENDING, "reason": reason, "source_files": [],
+            "produced": not_recorded_produced(), "replay_label": "REPLAY · run time not recorded",
+            "model": ctx.field(NOT_RECORDED, PENDING), "digest": ctx.field(NOT_RECORDED, PENDING),
+            "defences": ctx.field(NOT_RECORDED, PENDING), "driver": ctx.field(NOT_RECORDED, PENDING),
+            "has_blocked_info": False, "blocked_note": "Blocked: not recorded in this batch",
+            "shape": ctx.field("not available", PENDING), "counts": {"attack": {}, "benign": {}},
+            "summary": {}, "groups": [], "runs": {}, "error_note": ctx.field("not available", PENDING)}
+
+
+def build_run_folder_batch(ctx: Ctx, cfg: dict, kind: str) -> dict:
+    """Build one Batch from a locked run folder, results/runs/<run_id>/ (lab/run_folder.py).
+
+    The manifest is checked first (locked, complete, its own digest, the sha256 of every file); a folder that
+    fails any check shows nothing. The numbers come from runs.csv, summary.csv, the traces and records.jsonl by
+    the same code as the legacy batch. Model, digest, defences and driver come from the manifest, and the REPLAY
+    label from its started_at.
+    """
     bid = cfg["id"]
     if not RE_SAFE_ID.match(bid):
         raise SourceError(f"bad batch id {bid!r}")
+    title = cfg.get("title") or bid
+    run_dir = rel_path(cfg["run_dir"])
+    mpath = f"{run_dir}/manifest.json"
+    try:
+        m = parse_manifest(read_text(ctx, mpath)[0])
+        problems = verify_run_files(ctx, run_dir, m)
+    except SourceError as exc:
+        ctx.warn("integrity", f"{title}: {err_text(exc)}")
+        return pending_batch(ctx, bid, title, f"{run_dir} is not a usable run folder: {err_text(exc)}")
+    if problems:
+        why = "the run folder does not match its manifest (" + "; ".join(problems[:3]) + ")"
+        ctx.warn("integrity", f"{title}: {why}")
+        return pending_batch(ctx, bid, title, f"{run_dir}: {why}")
+    files = {"id": bid, "title": title, "adapter": "legacy-results", "agent_source": False,
+             "runs_csv": f"{run_dir}/runs.csv", "summary_csv": f"{run_dir}/summary.csv",
+             "traces_dir": f"{run_dir}/traces", "corpus": {"path": f"{run_dir}/records.jsonl", "rev": None}}
+    batch = build_batch(ctx, files, "local")
+
+    def mf(name, key, text):
+        return ctx.pfield(f"{bid}.{name}", text, REAL, raw_of(m.get(key)), "as written in the manifest", mpath, None,
+                          {"kind": "text", "json_path": key})
+
+    defs = m.get("defences") if isinstance(m.get("defences"), list) else []
+    batch["model"] = mf("model", "model", m["model"])
+    if isinstance(m.get("model_digest"), str) and m["model_digest"]:
+        batch["digest"] = ctx.pfield(f"{bid}.digest", short_digest(m["model_digest"]), REAL, m["model_digest"],
+                                     "first 12 hex digits of the sha256", mpath, None,
+                                     {"kind": "text", "json_path": "model_digest"})
+    batch["defences"] = mf("defences", "defences", ", ".join(str(x) for x in defs) or "none")
+    if isinstance(m.get("driver"), str) and m["driver"]:
+        batch["driver"] = mf("driver", "driver", m["driver"])
+    when = parse_iso(m["started_at"]).isoformat(timespec="seconds")
+    pid = ctx.add_prov(f"{bid}.produced", REAL, f"run of {when}", m["started_at"], "as written in the manifest",
+                       mpath, None, {"kind": "text", "json_path": "started_at"})
+    batch["replay_label"] = f"REPLAY · run of {when}"
+    batch["produced"] = {"basis": "manifest-started_at", "text": f"run of {when}", "raw": m["started_at"],
+                         "prov": pid}
+    batch["source_files"] = [mpath] + [f for f in batch["source_files"] if f != mpath]
+    batch["run_id"], batch["candidate"] = m["run_id"], m.get("candidate")
+    batch["pinned"], batch["rev"], batch["traces_note"] = False, None, None
+    return batch
+
+
+RUN_GLOB = "results/runs/*/manifest.json"
+
+
+def scan_run_folders(ctx: Ctx, pattern: str) -> list:
+    """Every run folder that matches the glob, newest first by the started_at in its manifest.
+
+    Content time, never the file time. {run_dir, name, manifest (None if unreadable), started (sort key)}.
+    """
+    found = []
+    for mp in sorted(ctx.repo_root.glob(rel_path(pattern))):
+        try:
+            m = json.loads(mp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            m = None
+        m = m if isinstance(m, dict) else None
+        started = parse_iso(m.get("started_at")) if m else None
+        found.append({"run_dir": mp.parent.relative_to(ctx.repo_root).as_posix(), "name": mp.parent.name,
+                      "manifest": m, "started": started.timestamp() if started else 0.0})
+    found.sort(key=lambda r: (r["started"], r["name"]), reverse=True)
+    return found
+
+
+def run_batch_id(name: str) -> str:
+    return "run_" + re.sub(r"[^A-Za-z0-9_-]", "-", name)
+
+
+def run_folder_config(run: dict) -> dict:
+    cand = str((run["manifest"] or {}).get("candidate") or "run")
+    return {"id": run_batch_id(run["name"]), "title": f"Run {cand} ({run['name']})", "adapter": "run-folder",
+            "run_dir": run["run_dir"]}
+
+
+def run_folder_configs(ctx: Ctx, rf: dict) -> list:
+    """Batch configs for the run folders that sources.json run_folders asks for, newest run first.
+
+    At most max_batches. A folder with an unreadable manifest is listed last: its batch shows the reason.
+    """
+    cap = rf.get("max_batches") if isinstance(rf.get("max_batches"), int) and rf["max_batches"] > 0 else 4
+    return [run_folder_config(r) for r in scan_run_folders(ctx, rf.get("glob") or RUN_GLOB)[:cap]]
+
+
+def gov_arg_to_rel(ctx: Ctx, arg: str) -> str:
+    """--gov DIR as a folder path relative to the repo root; the folder must exist inside the repo."""
+    root = ctx.repo_root.resolve()
+    p = Path(str(arg))
+    for cand in ([p] if p.is_absolute() else [root / p, Path.cwd() / p]):
+        try:
+            rel = cand.resolve().relative_to(root)
+        except ValueError:
+            continue
+        if rel.as_posix() not in ("", ".") and (root / rel).is_dir():
+            return rel.as_posix()
+    raise FatalError("--gov must name a governance output folder inside the repo")
+
+
+def newest_real_governance(ctx: Ctx, cfg: dict):
+    """The governance folder of the latest complete real-model run (a real-model mode or SAVED), or None.
+
+    Chosen by run_index.json: its started_at is the time (never a file time), complete must be true.
+    """
+    best = None
+    for p in sorted(ctx.repo_root.glob(rel_path(cfg.get("glob") or "results/governance/*/run_index.json"))):
+        try:
+            ri = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        started = parse_iso(ri.get("started_at") or ri.get("started")) if isinstance(ri, dict) else None
+        if started is None or ri.get("complete") is not True or ri.get("mode") not in (MODE_REAL, MODE_SAVED):
+            continue
+        key = (started.timestamp(), p.parent.name)
+        if best is None or key > best[0]:
+            best = (key, p.parent.relative_to(ctx.repo_root).as_posix())
+    return best[1] if best else None
+
+
+def governance_folder(ctx: Ctx):
+    """(folder, how): which governance folder the screens show. (None, None) when sources.json names files.
+
+    Order: --gov DIR; governance.pick "fixed" with governance.dir; governance.pick "newest-real".
+    """
+    cfg = ctx.sources.get("governance") or {}
+    if getattr(ctx.args, "gov", None):
+        return gov_arg_to_rel(ctx, ctx.args.gov), "--gov"
+    pick = cfg.get("pick")
+    if pick == "fixed" and cfg.get("dir"):
+        return rel_path(cfg["dir"]), "fixed"
+    if pick == "newest-real":
+        folder = newest_real_governance(ctx, cfg)
+        if folder:
+            return folder, "newest-real"
+        ctx.warn("info", "governance.pick is newest-real, but no complete real-model run was found.")
+    return None, None
+
+
+def candidate_digest(ctx: Ctx, folder: str, cid: str):
+    """The model digest that the candidate file of the governance folder records, or None."""
+    try:
+        return json.loads(read_text(ctx, f"{folder}/{cid}.json")[0]).get("model_digest")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def governance_candidates(ctx: Ctx, folder: str) -> list:
+    """The candidates of a governance folder in run order: from run_index.json, else from gate_*.txt."""
+    out = []
+    try:
+        ri = json.loads(read_text(ctx, f"{folder}/run_index.json")[0])
+    except Exception:  # noqa: BLE001
+        ri = None
+    for c in (ri.get("candidates") if isinstance(ri, dict) and isinstance(ri.get("candidates"), list) else []):
+        if isinstance(c, dict) and isinstance(c.get("id"), str) and RE_SAFE_ID.match(c["id"]):
+            out.append(dict(c))
+    if not out:
+        for p in sorted((ctx.repo_root / folder).glob("gate_*.txt")):
+            cid = p.stem[len("gate_"):]
+            if RE_SAFE_ID.match(cid):
+                out.append({"id": cid})
+    return out
+
+
+def candidate_run_dir(ctx: Ctx, entry: dict, runs: list, digest):
+    """The run folder of one candidate: run_index.json names it, else the newest locked run of that candidate
+    (with the candidate file's model digest, when that is a full one)."""
+    rid = entry.get("run_id")
+    if isinstance(rid, str) and RE_RUN_ID.match(rid) and ".." not in rid:
+        for r in runs:
+            if r["name"] == rid:
+                return r["run_dir"]
+        if (ctx.repo_root / "results" / "runs" / rid / "manifest.json").is_file():
+            return f"results/runs/{rid}"
+    pool = [r for r in runs if r["manifest"] and r["manifest"].get("candidate") == entry["id"]
+            and r["manifest"].get("locked") is True]
+    if isinstance(digest, str) and RE_SHA256.match(digest):
+        pool = [r for r in pool if r["manifest"].get("model_digest") == digest]
+    pool.sort(key=lambda r: r["manifest"].get("complete") is True, reverse=True)   # a finished run first, then newest
+    return pool[0]["run_dir"] if pool else None
+
+
+def effective_governance(ctx: Ctx, folder: str, how: str):
+    """The governance settings for a folder: file names derived from it, the candidates and the selected one."""
+    cfg = ctx.sources.get("governance") or {}
+    cands = governance_candidates(ctx, folder)
+    if not cands:
+        ctx.warn("integrity", f"Governance folder {folder} has no gate_*.txt and no run_index.json candidates.")
+        return None
+    ids = [c["id"] for c in cands]
+    sel = cfg.get("selected") if cfg.get("selected") in ids else ids[-1]
+    risk = f"{folder}/risk_register_after.md"
+    if not (ctx.repo_root / risk).is_file():
+        risk = f"{folder}/risk_register_before.md"
+    return {"connected": True, "dir": folder, "pick": how, "selected": sel, "candidate_id": sel,
+            "gate_report": f"{folder}/gate_{sel}.txt",
+            "fingerprint": [f"{folder}/{sel}.json"] + [f"{folder}/{i}.json" for i in ids if i != sel],
+            "audit_log": f"{folder}/audit_log.jsonl", "audit_verify": f"{folder}/audit_verify.json",
+            "risk_register_md": risk, "evidence_md": f"{folder}/evidence_register.md",
+            "fix_tickets_md": f"{folder}/fix_tickets.md", "candidates": cands}
+
+
+def build_batch(ctx: Ctx, cfg: dict, kind: str):
+    """Build one Batch from the legacy results/ layout or from a run folder. kind: 'pinned' | 'local'."""
+    bid = cfg["id"]
+    if not RE_SAFE_ID.match(bid):
+        raise SourceError(f"bad batch id {bid!r}")
+    if cfg.get("adapter") == "run-folder":
+        return build_run_folder_batch(ctx, cfg, kind)
     if cfg.get("adapter", "legacy-results") != "legacy-results":
         raise SourceError(f"{bid}: adapter {cfg.get('adapter')!r} is not built yet")
     title = cfg.get("title") or bid
@@ -1524,6 +1900,8 @@ def build_batch(ctx: Ctx, cfg: dict, kind: str):
     agent_cfg = cfg.get("agent_source") or {"path": "lab/agent.py", "rev": None}
     model_field = ctx.field(NOT_RECORDED, PENDING)
     try:
+        if cfg.get("agent_source") is False:   # a run folder names its model in the manifest
+            raise SourceError("the manifest names the model")
         arev = agent_cfg.get("rev") if ctx.git_ok else None
         atext, _ = read_text(ctx, agent_cfg["path"], arev)
         mdl, mline = model_default_from_agent(atext)
@@ -1531,7 +1909,8 @@ def build_batch(ctx: Ctx, cfg: dict, kind: str):
                                  '"not recorded (lab default: {raw})"', rel_path(agent_cfg["path"]), arev,
                                  {"kind": "text", "line": mline, "key": "agent.model_default"})
     except Exception as exc:  # noqa: BLE001
-        ctx.warn("info", f"{title}: lab default model unknown ({err_text(exc)}).")
+        if cfg.get("agent_source") is not False:
+            ctx.warn("info", f"{title}: lab default model unknown ({err_text(exc)}).")
 
     if recs is None and summary_rows is None:
         batch["reason"] = batch["reason"] or "No readable results files."
@@ -2012,23 +2391,124 @@ def fixture_produced(obj: dict) -> dict:
     return {"basis": "fixture", "text": f"hand-written fixture, prepared {prep}", "raw": prep}
 
 
-def detect_scripted(ctx: Ctx, gov: dict, batch) -> bool:
+def governance_dir(gov: dict) -> str:
+    """The repo-relative folder that holds the governance files ("" when none is configured)."""
+    d = gov.get("dir")
+    if isinstance(d, str) and d.strip():
+        return rel_path(d)
+    gate = gov.get("gate_report")
+    if isinstance(gate, str) and gate.strip():
+        return Path(rel_path(gate)).parent.as_posix()
+    return ""
+
+
+def default_verify_source(ctx: Ctx, gov: dict):
+    """<governance folder>/audit_verify.json when the CLI wrote it and sources.json names no other file."""
+    try:
+        folder = governance_dir(gov)
+    except SourceError:
+        return None
+    rel = "audit_verify.json" if folder in ("", ".") else f"{folder}/audit_verify.json"
+    return rel if (ctx.repo_root / rel).is_file() else None
+
+
+def folder_mode_tags(ctx: Ctx, gov: dict) -> dict:
+    """{file name: mode tag} for every file in the governance folder that states its mode.
+
+    Reads the "mode" of run_index.json and audit_verify.json, the "[TAG] " that starts gate_*.txt
+    and the "**Mode: [TAG]**" line that starts each .md file. Files without a tag are left out.
+    An unreadable file is left out too: the code that parses it reports the problem.
+    """
+    out: dict = {}
+    try:
+        folder = governance_dir(gov)
+        names = sorted(p.name for p in (ctx.repo_root / folder).iterdir() if p.is_file())
+    except (OSError, SourceError):
+        return out
+    for name in names[:400]:
+        rel = name if folder in ("", ".") else f"{folder}/{name}"
+        try:
+            if name in ("run_index.json", "audit_verify.json"):
+                obj = json.loads(read_text(ctx, rel)[0])
+                tag = obj.get("mode") if isinstance(obj, dict) else None
+            elif name.startswith("gate_") and name.endswith(".txt"):
+                first = (text_lines(read_text(ctx, rel)[0]) or [""])[0]
+                m = RE_TXT_MODE.match(first)
+                tag = m.group(1) if m else None
+            elif name.endswith(".md"):
+                tag = split_mode_line(read_text(ctx, rel)[0])[0]
+            else:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        if tag in MODE_TAGS:
+            out[name] = tag
+        elif tag is not None and name.endswith(".json"):
+            ctx.warn("integrity", f"{name}: unknown mode {short(tag, 30)}; the other files decide the mode.")
+    return out
+
+
+def warn_mixed_modes(ctx: Ctx, tags: dict) -> bool:
+    """Warn when the files of one governance folder carry different mode tags. True if they do."""
+    kinds = sorted(set(tags.values()))
+    if len(kinds) < 2:
+        return False
+    parts = []
+    for k in kinds:
+        names = [n for n in sorted(tags) if tags[n] == k]
+        word = "real-model run" if k == MODE_REAL else k      # the banned word, spelled out only as a data tag
+        parts.append(f"{word}: {', '.join(names[:4])}{', ...' if len(names) > 4 else ''}")
+    ctx.warn("integrity", "Governance output mixes run modes (" + "; ".join(parts) + "). The files are not all "
+                          "from one run; run the CLI again into an empty folder.")
+    return True
+
+
+def detect_mode(ctx: Ctx, gov: dict, batch, tags=None):
+    """The run mode of the governance output: SCRIPTED, the real-model tag or SAVED; None if unknown.
+
+    The mode comes from the tags the CLI writes, in this order:
+      1. "mode" of run_index.json
+      2. the "[TAG]" on the first line of the gate file (the configured one, then the other gate_*.txt)
+      3. the "**Mode: [TAG]**" line of the .md files (the configured ones, then the others)
+      4. "mode" of audit_verify.json
+    Only output with no tag at all (an old run) falls back to the exact DEMO digest literal and then
+    to the shape of the evidence batch. The digest is never matched by prefix: the DEMO placeholder
+    starts with the same eight hex digits as the real qwen2.5 digest, so a prefix test hides real runs.
+    `tags` is folder_mode_tags(ctx, gov), when the caller has it already.
+    """
+    tags = folder_mode_tags(ctx, gov) if tags is None else tags
+
+    def name_of(key):
+        v = gov.get(key)
+        return Path(v).name if isinstance(v, str) and v.strip() else None
+
+    gates = [n for n in (name_of("gate_report"),) if n] + sorted(
+        n for n in tags if n.startswith("gate_") and n.endswith(".txt"))
+    mds = [n for n in (name_of(k) for k in ("risk_register_md", "evidence_md", "fix_tickets_md")) if n] + sorted(
+        n for n in tags if n.endswith(".md"))
+    for name in ["run_index.json"] + gates + mds + ["audit_verify.json"]:
+        if name in tags:
+            return tags[name]
+    # Old output without any tag.
     for fp in gov.get("fingerprint") or []:
         try:
             text, _ = read_text(ctx, fp)
             obj = json.loads(text)
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("model_digest"), str) and (
-                obj["model_digest"] == DEMO_DIGEST or obj["model_digest"].startswith("sha256:845dbda0")):
-            return True
+        if isinstance(obj, dict) and obj.get("model_digest") == DEMO_DIGEST:
+            return MODE_SCRIPTED
     if batch and batch.get("_trace_count", 0) and not batch.get("_traces_started", 0):
-        return True
-    return False
+        return MODE_SCRIPTED
+    return None
 
 
-def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dict) -> dict:
-    """Build a Gate from report text. loc_base: {'kind':'text'} or fixture locator base."""
+def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dict, pid_base: str = "gate") -> dict:
+    """Build a Gate from report text. loc_base: {'kind':'text'} or fixture locator base.
+
+    pid_base starts the provenance ids; the gate output of another candidate needs its own, so that two
+    gate files never share an id (and with it a source file) just because a line reads the same.
+    """
     text = "\n".join(lines_or_text) if isinstance(lines_or_text, list) else lines_or_text
     g = parse_gate_report(text)
 
@@ -2045,22 +2525,35 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
         n = c["name"]
         checks.append({
             "name": n, "label": label(CHECK_LABELS, n), "ok": c["mark"] == "OK", "mark": c["mark"],
-            "value": gf(f"gate.check.{n}.value", c["value"], c["value"], c["line"], "gate.value"),
-            "limit": gf(f"gate.check.{n}.limit", c["limit"], c["limit"], c["line"], "gate.limit"),
-            "note": gf(f"gate.check.{n}.note", c["note"], c["note"], c["line"], "gate.note") if c["note"] else None,
+            "value": gf(f"{pid_base}.check.{n}.value", c["value"], c["value"], c["line"], "gate.value"),
+            "limit": gf(f"{pid_base}.check.{n}.limit", c["limit"], c["limit"], c["line"], "gate.limit"),
+            "note": gf(f"{pid_base}.check.{n}.note", c["note"], c["note"], c["line"], "gate.note")
+            if c["note"] else None,
+            "line": c["line"],
+        })
+    # Figures the gate prints "not a limit": shown beside the checks, never part of them.
+    info = []
+    for c in g["info"]:
+        n = c["name"]
+        info.append({
+            "name": n, "label": label(CHECK_LABELS, n),
+            "value": gf(f"{pid_base}.info.{n}.value", c["value"], c["value"], c["line"], "gate.info.value"),
+            "note": gf(f"{pid_base}.info.{n}.note", c["note"], c["note"], c["line"], "gate.info.note"),
             "line": c["line"],
         })
     reasons = None
     if g["reasons"] is not None:
         rn = g["reasons"]
-        reasons = gf("gate.reasons", f"{rn} reason{'s' if rn != 1 else ''}", str(rn), g["verdict_line"],
+        reasons = gf(f"{pid_base}.reasons", f"{rn} reason{'s' if rn != 1 else ''}", str(rn), g["verdict_line"],
                      "gate.reasons", '"{n} reason(s)"')
     fails = sum(1 for c in g["checks"] if c["mark"] == "FAIL")
     return {
-        "candidate_id": gf("gate.candidate", g["candidate"], g["candidate"], g["candidate_line"], "gate.candidate"),
-        "verdict": gf("gate.verdict", g["verdict"], g["verdict"], g["verdict_line"], "gate.verdict"),
+        "candidate_id": gf(f"{pid_base}.candidate", g["candidate"], g["candidate"], g["candidate_line"],
+                           "gate.candidate"),
+        "verdict": gf(f"{pid_base}.verdict", g["verdict"], g["verdict"], g["verdict_line"], "gate.verdict"),
         "reasons_count": reasons,
         "checks": checks,
+        "info": info,
         "raw_lines": list(g["lines"]),
         "_fails": fails, "_reasons": g["reasons"] or 0, "_verdict": g["verdict"],
     }
@@ -2069,12 +2562,15 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
 def gate_pending(reason: str, src) -> dict:
     out = pending(reason, src)
     out.update(sample_tag=None, candidate_id=Ctx.field(NOT_RECORDED, PENDING), verdict=None,
-               reasons_count=None, checks=[], raw_lines=[])
+               reasons_count=None, checks=[], info=[], raw_lines=[])
     return out
 
 
-def gate_consistency(ctx: Ctx, gate: dict, batch) -> str:
-    """Return a PENDING reason, or '' if the gate is consistent."""
+def gate_consistency(ctx: Ctx, gate: dict, batch, relaxed: bool = False) -> str:
+    """Return a PENDING reason, or '' if the gate is consistent.
+
+    relaxed: scripted output has no evidence batch to compare with; only the gate's own lines are checked.
+    """
     if gate["_fails"] != gate["_reasons"]:
         ctx.warn("integrity", "Gate: the number of FAIL lines does not match the reasons count.")
         return "gate output is inconsistent (FAIL lines and reasons count differ)"
@@ -2088,7 +2584,7 @@ def gate_consistency(ctx: Ctx, gate: dict, batch) -> str:
         if not xm or (int(xm.group(1)), int(xm.group(2))) != (m.get("successes"), m.get("n")):
             ctx.warn("integrity", f"Gate: its attack count does not match the evidence batch ({batch['title']}).")
             return DIFFERENT_BATCH
-    elif asr_check:
+    elif asr_check and not (relaxed and not batch):
         ctx.warn("integrity", "Gate: cannot compare its attack count with the evidence batch.")
         return DIFFERENT_BATCH
     return ""
@@ -2193,6 +2689,36 @@ def latest_decision(ctx: Ctx, parsed: list, status: str, src: str, loc_base: dic
                       '"{decision} by {reviewer}"', src, None, d)
 
 
+PROOF_ANCHORS = ("results", "governance_out")   # folders of this repo that hold proof files
+
+
+def proof_path(ctx: Ctx, raw: str):
+    """(text, exists): a proof file as a path relative to the repo, never an absolute path.
+
+    The CLI may write the absolute path of the machine that ran it. An absolute path is cut to its longest
+    suffix that is a file in this repo; if the file is not here, to the part from results/ or governance_out/;
+    otherwise only the file name is kept, marked as outside the repo.
+    """
+    s = str(raw or "").strip().replace("\\", "/")
+    if not s:
+        return "", False
+    root = ctx.repo_root.resolve()
+    parts = [x for x in s.split("/") if x not in ("", ".")]
+    absolute = s.startswith("/") or re.match(r"^[A-Za-z]:/", s) is not None
+    if not absolute and ".." not in parts:
+        rel = "/".join(parts)
+        return rel, (root / rel).is_file()
+    if ".." not in parts:
+        for i in range(len(parts)):
+            cand = "/".join(parts[i:])
+            if (root / cand).is_file():
+                return cand, True
+        for i, part in enumerate(parts):
+            if part in PROOF_ANCHORS:
+                return "/".join(parts[i:]), False
+    return f"<outside repo>/{parts[-1]}", False
+
+
 def assurance_from_md(ctx: Ctx, risk_md, ev_md, fix_md, status: str, srcs: dict, loc_bases: dict) -> dict:
     risks = []
     for line, row in parse_md_table(risk_md, ("ID", "Risk", "Violation class", "Likelihood", "Impact", "Control",
@@ -2210,14 +2736,7 @@ def assurance_from_md(ctx: Ctx, risk_md, ev_md, fix_md, status: str, srcs: dict,
     evidence = []
     if ev_md is not None:
         for _line, row in parse_md_table(ev_md, ("Control", "Proof needed", "Proof file", "Result")):
-            pf = strip_ticks(row["Proof file"])
-            exists = False
-            try:
-                rp = rel_path(pf)
-                full = (ctx.repo_root / rp).resolve()
-                exists = full.is_file() and ctx.repo_root.resolve() in full.parents
-            except Exception:  # noqa: BLE001
-                exists = False
+            pf, exists = proof_path(ctx, strip_ticks(row["Proof file"]))
             evidence.append({"control": row["Control"], "proof_needed": row["Proof needed"], "proof_file": pf,
                              "proof_file_exists": exists,
                              "proof_file_note": None if exists else "file not found",
@@ -2227,6 +2746,206 @@ def assurance_from_md(ctx: Ctx, risk_md, ev_md, fix_md, status: str, srcs: dict,
         for _line, t in parse_fix_tickets(fix_md):
             tickets.append(t)
     return {"risks": risks, "evidence": evidence, "tickets": tickets}
+
+
+def read_gate_output(ctx: Ctx, gate_src, ev_batch, g_status: str, scripted: bool, pid_base: str = "gate",
+                     relaxed: bool = False) -> dict:
+    """One candidate's gate output as a Gate, or a PENDING gate with the reason."""
+    try:
+        p = rel_path(gate_src)
+        text, meta = read_text(ctx, p)
+        gb = gate_from_text(ctx, text, g_status, p, {"kind": "text"}, pid_base=pid_base)
+        why = gate_consistency(ctx, gb, ev_batch, relaxed=relaxed)
+        if why:
+            return gate_pending(why, p)
+        return {"status": g_status, "source_file": p, "produced": file_produced(ctx, p, meta, "written"),
+                "reason": SCRIPTED_REASON if scripted else None, "sample_tag": SCRIPTED_TAG if scripted else None,
+                **gb}
+    except Exception as exc:  # noqa: BLE001
+        ctx.warn("integrity", f"Gate: {err_text(exc)}")
+        return gate_pending(f"No usable gate output: {err_text(exc)}", gate_src)
+
+
+def candidate_assurance(ctx: Ctx, gov: dict, cands: list, status: str) -> dict:
+    """{candidate id: {risks, evidence, source_files}} from risk_register_<id>.md and evidence_register_<id>.md.
+
+    The first candidate (the baseline) has risk_register_before.md; the last one's evidence register has no suffix.
+    """
+    folder, out = gov["dir"], {}
+    for i, c in enumerate(cands):
+        cid = c["id"]
+        risk = next((f"{folder}/{n}" for n in ([f"risk_register_{cid}.md"] + (["risk_register_before.md"] if i == 0 else []))
+                     if (ctx.repo_root / folder / n).is_file()), None)
+        evid = next((f"{folder}/{n}" for n in ([f"evidence_register_{cid}.md"] + (["evidence_register.md"] if i == len(cands) - 1 else []))
+                     if (ctx.repo_root / folder / n).is_file()), None)
+        if not risk:
+            continue
+        try:
+            rtext = read_text(ctx, risk)[0]
+            etext = read_text(ctx, evid)[0] if evid else None
+            body = assurance_from_md(ctx, rtext, etext, None, status, {"risk": risk}, {"risk": {"kind": "text"}})
+            out[cid] = {"status": status, "risks": body["risks"], "evidence": body["evidence"],
+                        "source_files": [risk] + ([evid] if evid else [])}
+        except Exception as exc:  # noqa: BLE001
+            ctx.warn("integrity", f"Assurance {cid}: {err_text(exc)}")
+    return out
+
+
+def build_candidates(ctx: Ctx, gov: dict, batches: dict, gate: dict, assurance: dict) -> dict:
+    """The governance block of the demo: folder, mode, every candidate with its gate, and the selected one.
+
+    Also adds assurance["by_candidate"]. The selected candidate's gate is the one build_governance made.
+    """
+    folder = gov.get("dir")
+    if not folder or gov.get("connected") is not True:
+        return {"dir": None, "pick": None, "mode": None, "selected": None, "candidates": []}
+    tags = folder_mode_tags(ctx, gov)
+    sel_batch = batches.get(gov.get("evidence_batch"))
+    mode = detect_mode(ctx, gov, sel_batch, tags)
+    scripted = mode == MODE_SCRIPTED
+    status = SAMPLE if scripted else REAL
+    out = []
+    for c in gov["candidates"]:
+        cid = c["id"]
+        if cid == gov["selected"]:
+            g = gate
+        elif scripted and not ctx.args.allow_sample:
+            g = gate_pending(gate.get("reason") or NOT_CONNECTED, f"{folder}/gate_{cid}.txt")
+        else:
+            g = read_gate_output(ctx, f"{folder}/gate_{cid}.txt", batches.get(c.get("batch")), status, scripted,
+                                 pid_base=f"gate.{cid}", relaxed=scripted)
+        out.append({"id": cid, "run_id": c.get("run_name"), "evidence_batch": c.get("batch"), "gate": g})
+    if assurance and assurance.get("status") in (REAL, SAMPLE):
+        assurance["by_candidate"] = candidate_assurance(ctx, gov, gov["candidates"], assurance["status"])
+    return {"dir": folder, "pick": gov.get("pick"), "mode": mode, "selected": gov["selected"], "candidates": out}
+
+
+def note_field(ctx: Ctx, pid: str, f, rx, build, fmt: str) -> dict:
+    """A Field made from a part of another Field's text, with the other Field's source and place."""
+    if not f or f.get("status") not in (REAL, SAMPLE) or f.get("prov") not in ctx.prov:
+        return ctx.field("not available", PENDING)
+    m = rx.search(f["text"])
+    if not m:
+        return ctx.field("not available", PENDING)
+    b = ctx.prov[f["prov"]]
+    return ctx.pfield(pid, build(m), f["status"], b["raw"], fmt, b["source_file"], b["rev"], b["locator"])
+
+
+def model_gate_fields(ctx: Ctx, folder: str, cid: str, base: str):
+    """What one models row shows from gate_<cid>.txt: asr, x_of_n, range, benign, errors, verdict (Fields)."""
+    rel = f"{folder}/gate_{cid}.txt"
+    try:
+        gb = gate_from_text(ctx, read_text(ctx, rel)[0], REAL, rel, {"kind": "text"}, pid_base=base)
+    except SourceError:
+        return None
+    checks = {c["name"]: c for c in gb["checks"]}
+    asr = checks.get("attack_success_rate") or {}
+    ben = checks.get("min_benign_task_success") or {}
+    err = checks.get("max_error_rate") or {}
+    n_of = "{}" + " of " + "{}"
+    return {
+        "asr": asr.get("value") or ctx.field("not available", PENDING),
+        "x_of_n": note_field(ctx, f"{base}.x_of_n", asr.get("note"), RE_X_OF_N, lambda m: n_of.format(m.group(1), m.group(2)),
+                             "the x/n at the start of the gate note, written x of n"),
+        "range": note_field(ctx, f"{base}.range", asr.get("note"), RE_CI_RANGE, lambda m: m.group(1),
+                            "the [low, high] range inside the gate note"),
+        "benign": note_field(ctx, f"{base}.benign", ben.get("note"), RE_X_OF_N, lambda m: n_of.format(m.group(1), m.group(2)),
+                             "the x/n of the normal-task note, written x of n"),
+        "errors": note_field(ctx, f"{base}.errors", err.get("note"), RE_X_OF_N,
+                             lambda m: n_of.format(m.group(1), m.group(2)) + " runs errored",
+                             "the x/n of the error-rate note, written x of n runs errored"),
+        "verdict": gb["verdict"],
+    }
+
+
+def build_models(ctx: Ctx, headline) -> dict:
+    """The Models screen: one row per model, sorted by tag, never ranked.
+
+    A row comes from the newest complete run_index.json of that model in a real-model mode or SAVED (a full run
+    before a smoke run), and from the latest smoke_done of results/models/*/status.jsonl for the tool check
+    (scripts/run_models.py). A model that cannot call tools never reads as a safe 0%: its row says so.
+    """
+    cfg = ctx.sources.get("models") or {}
+    runs: dict = {}
+    for p in sorted(ctx.repo_root.glob(rel_path(cfg.get("governance_glob") or "results/governance/*/run_index.json"))):
+        try:
+            ri = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        started = parse_iso(ri.get("started_at") or ri.get("started")) if isinstance(ri, dict) else None
+        tag = ri.get("model") if isinstance(ri, dict) else None
+        if started is None or ri.get("complete") is not True or ri.get("mode") not in (MODE_REAL, MODE_SAVED) \
+                or not isinstance(tag, str) or not tag.strip():
+            continue
+        runs.setdefault(tag, []).append({"folder": p.parent.relative_to(ctx.repo_root).as_posix(), "ri": ri,
+                                         "ts": started.timestamp(), "smoke": p.parent.name.endswith("_smoke")})
+    status: dict = {}
+    for sp in sorted(ctx.repo_root.glob(rel_path(cfg.get("status_glob") or "results/models/*/status.jsonl"))):
+        rel = sp.relative_to(ctx.repo_root).as_posix()
+        try:
+            lines = text_lines(sp.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        for no, line in enumerate(lines, start=1):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("tag"), str) and obj.get("event") in ("smoke_done", "skipped"):
+                when = parse_iso(obj.get("ts"))
+                key, ts = ("smoke" if obj["event"] == "smoke_done" else "skipped"), when.timestamp() if when else 0.0
+                old = status.setdefault(obj["tag"], {}).get(key)
+                if old is None or ts >= old[3]:
+                    status[obj["tag"]][key] = (no, rel, obj, ts)
+    rows = []
+    for tag in sorted(set(runs) | set(status)):
+        slug = re.sub(r"[^A-Za-z0-9_-]", "-", tag)
+        rs = sorted(runs.get(tag, []), key=lambda r: r["ts"], reverse=True)
+        full = next((r for r in rs if not r["smoke"]), None)
+        use = full or next((r for r in rs if r["smoke"]), None)
+        sm = status.get(tag, {}).get("smoke")
+        tools = sm[2].get("text") or sm[2].get("tools") if sm else None
+        tool_calls = ctx.field("not checked", PENDING)
+        if isinstance(tools, str) and tools:
+            tool_calls = ctx.pfield(f"models.{slug}.tools", tools, REAL, tools, "as written by scripts/run_models.py",
+                                    sm[1], None, {"kind": "jsonl", "line": sm[0],
+                                                  "json_path": "text" if sm[2].get("text") else "tools"})
+        row = {"tag": ctx.field(tag, PENDING), "digest": ctx.field(NOT_RECORDED, PENDING), "mode": None, "source": None,
+               "data_from": None, "headline": isinstance(headline, str) and headline == tag, "tool_calls": tool_calls,
+               "rc001": None, "benign": None, "errors": None, "verdicts": [], "asr_note": None}
+        if use:
+            ri_path = f"{use['folder']}/run_index.json"
+            ri = use["ri"]
+            row["tag"] = ctx.pfield(f"models.{slug}.tag", tag, REAL, tag, "as written", ri_path, None,
+                                    {"kind": "text", "json_path": "model"})
+            if isinstance(ri.get("digest"), str) and ri["digest"]:
+                d = ri["digest"]       # "sha256:<hex>" or the bare hex digits
+                shown = short_digest(d if d.startswith("sha256:") or not re.fullmatch(r"[0-9a-f]{12,64}", d)
+                                     else "sha256:" + d)
+                row["digest"] = ctx.pfield(f"models.{slug}.digest", shown, REAL, d,
+                                           "first 12 hex digits of the sha256", ri_path, None,
+                                           {"kind": "text", "json_path": "digest"})
+            row["mode"] = ctx.pfield(f"models.{slug}.mode", ri["mode"], REAL, ri["mode"], "as written", ri_path, None,
+                                     {"kind": "text", "json_path": "mode"})
+            row["source"], row["data_from"] = use["folder"], "full" if full else "smoke"
+            for c in governance_candidates(ctx, use["folder"]):
+                g = model_gate_fields(ctx, use["folder"], c["id"], f"models.{slug}.{c['id']}")
+                if g is None:
+                    continue
+                row["verdicts"].append({"id": c["id"], "verdict": g["verdict"]})
+                if c["id"] == NUMBER_CANDIDATES[0]:
+                    row["rc001"] = {k: g[k] for k in ("asr", "x_of_n", "range")}
+                    row["benign"], row["errors"] = g["benign"], g["errors"]
+        elif sm:
+            row["tag"] = ctx.pfield(f"models.{slug}.tag", tag, REAL, tag, "as written by scripts/run_models.py", sm[1],
+                                    None, {"kind": "jsonl", "line": sm[0], "json_path": "tag"})
+        if isinstance(tools, str) and tools.startswith("no"):
+            row["asr_note"] = "This model made no tool calls that count, so a 0% here means nothing."
+        elif row["data_from"] == "smoke":
+            row["asr_note"] = "Only the smoke run exists: one attack test, one repetition. It is not a result."
+        rows.append(row)
+    note = None if rows else "No model run found: results/governance/*/run_index.json (real-model or SAVED) is missing."
+    return {"rows": rows, "headline": headline if isinstance(headline, str) else None, "note": note}
 
 
 def build_governance(ctx: Ctx, batches: dict):
@@ -2245,7 +2964,9 @@ def build_governance(ctx: Ctx, batches: dict):
     latest = None
 
     if connected:
-        scripted = detect_scripted(ctx, gov, ev_batch)
+        mode_tags = folder_mode_tags(ctx, gov)
+        warn_mixed_modes(ctx, mode_tags)
+        scripted = detect_mode(ctx, gov, ev_batch, mode_tags) == MODE_SCRIPTED
         g_status = SAMPLE if scripted else REAL
         if scripted and not allow:
             reason = "Scripted output (backend DEMO mode) is not shown without --allow-sample."
@@ -2255,20 +2976,7 @@ def build_governance(ctx: Ctx, batches: dict):
             assurance = None
         else:
             tag = SCRIPTED_TAG if scripted else None
-            # gate
-            try:
-                p = rel_path(gate_src)
-                text, meta = read_text(ctx, p)
-                gb = gate_from_text(ctx, text, g_status, p, {"kind": "text"})
-                why = gate_consistency(ctx, gb, ev_batch)
-                if why:
-                    gate = gate_pending(why, p)
-                else:
-                    gate = {"status": g_status, "source_file": p, "produced": file_produced(ctx, p, meta, "written"),
-                            "reason": SCRIPTED_REASON if scripted else None, "sample_tag": tag, **gb}
-            except Exception as exc:  # noqa: BLE001
-                ctx.warn("integrity", f"Gate: {err_text(exc)}")
-                gate = gate_pending(f"No usable gate output: {err_text(exc)}", gate_src)
+            gate = read_gate_output(ctx, gate_src, ev_batch, g_status, scripted, relaxed=scripted)
             # audit
             try:
                 p = rel_path(audit_src)
@@ -2278,11 +2986,12 @@ def build_governance(ctx: Ctx, batches: dict):
                 parsed = parse_jsonl(text)
                 entries = audit_entries(ctx, parsed, g_status, p, {"kind": "jsonl"})
                 last_time = next((e["time"]["text"] for e in reversed(entries) if e["readable"]), None)
+                verify_src = gov.get("audit_verify") or default_verify_source(ctx, gov)
                 chain = {"status": PENDING, "text": None, "ok": None, "bad_seq": None,
-                         "source_file": gov.get("audit_verify"), "reason": VERIFY_TERMINAL_ONLY}
-                if gov.get("audit_verify"):
+                         "source_file": verify_src, "reason": VERIFY_TERMINAL_ONLY}
+                if verify_src:
                     try:
-                        vp = rel_path(gov["audit_verify"])
+                        vp = rel_path(verify_src)
                         vtext, _ = read_text(ctx, vp)
                         v = parse_verify(vtext)
                         chain = {"status": g_status,
@@ -2458,18 +3167,310 @@ def build_console(ctx: Ctx, batch, gate: dict, latest) -> dict:
     else:
         cand.update(model=ctx.field(NOT_RECORDED, PENDING), digest=ctx.field(NOT_RECORDED, PENDING),
                     defences=ctx.field(NOT_RECORDED, PENDING))
-    missing.insert(0, "a candidate id")
-    if len(missing) > 1:
-        lst = ", ".join(missing[:-1]) + " or " + missing[-1]
+    gid = (gate or {}).get("candidate_id") or {}
+    if (gate or {}).get("status") in (REAL, SAMPLE) and gid.get("prov"):
+        cand["id"] = gid       # the gate output names the candidate
     else:
-        lst = missing[0]
-    cand["note"] = f"Candidate details come from the evidence batch. This batch does not record {lst}."
+        missing.insert(0, "a candidate id")
+    if not missing:
+        cand["note"] = "Candidate details come from the evidence batch and the gate output."
+    else:
+        lst = ", ".join(missing[:-1]) + " or " + missing[-1] if len(missing) > 1 else missing[0]
+        cand["note"] = f"Candidate details come from the evidence batch. This batch does not record {lst}."
     return {"candidate": cand, "evidence_batch": batch["id"] if batch else None, "gate": gate,
             "latest_decision": latest}
 
 
 def produced_of(x: dict) -> dict:
     return x.get("produced") or not_recorded_produced()
+
+
+# --------------------------------------------------------------------------- #
+# Numbers sheet: one flat table with every number that the page and the script say.
+# --------------------------------------------------------------------------- #
+NUMBER_CANDIDATES = ("RC-001", "RC-002", "RC-003")
+NUMBER_PARTS = ("asr", "asr_range", "violations", "attack_runs", "attempted")
+NUMBER_UNAVAILABLE = "not available"
+NUMBER_KEYS = (
+    ("headline.model", "policy.max_asr")
+    + tuple(f"{c.lower().replace('-', '')}.{p}" for c in NUMBER_CANDIDATES for p in NUMBER_PARTS)
+    + ("runs.attack", "runs.total", "reps", "benign.rate", "benign.n",
+       "audit.entries", "chain.status", "tamper.entry", "models.n")
+)
+RE_NUMBER_KEY = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")   # "reps" or "rc001.asr"
+RE_CI_RANGE = re.compile(r"95% CI (\[[^\]]*\])")
+RE_X_OF_N = re.compile(r"^(\d+)/(\d+)(?:\s|$)")
+RE_SHAPE_REPS = re.compile(r"attack_reps=\[(\d+)\]")
+
+
+def num_pending(reason: str) -> dict:
+    """A key with no source: no value, no source, a reason. Never a guess."""
+    return {"value": None, "text": NUMBER_UNAVAILABLE, "status": PENDING, "mode": None,
+            "source": None, "prov": None, "reason": reason}
+
+
+def number_source(p: dict, mode) -> str:
+    """Where a number comes from, in words: file, revision, place. A scripted value says so."""
+    loc = p.get("locator") or {}
+    at = f" @{p['rev']}" if p.get("rev") else ""
+    if "line" in loc:
+        where = f" line {loc['line']}"
+    elif "row" in loc:
+        where = f" row {loc['row']}"
+    elif str(loc.get("key", "")).startswith(("count:", "shape")):
+        where = " (counted from the rows)"
+    elif loc.get("json_path"):
+        where = f" {loc['json_path']}"
+    else:
+        where = f" {loc['key']}" if loc.get("key") else ""
+    s = f"{p.get('source_file') or ''}{at}{where}"
+    if loc.get("kind") == "fixture":
+        s += " (hand-written SAMPLE fixture)"
+    if mode == MODE_SCRIPTED:
+        s += " (SCRIPTED: backend DEMO values, not measured)"
+    return s
+
+
+def num_entry(ctx: Ctx, text: str, status: str, mode, pid: str) -> dict:
+    """A sourced number. "value" repeats "text": scripts/fill_script.py reads "value" as the words to say."""
+    return {"value": text, "text": text, "status": status, "mode": mode,
+            "source": number_source(ctx.prov[pid], mode), "prov": pid}
+
+
+def num_from_field(ctx: Ctx, f, mode, why: str) -> dict:
+    """The number is the text of a Field that already has its provenance."""
+    if not f or f.get("status") not in (REAL, SAMPLE) or f.get("prov") not in ctx.prov or f.get("text") in ("", "n/a"):
+        return num_pending(why)
+    return num_entry(ctx, f["text"], f["status"], mode, f["prov"])
+
+
+def num_part(ctx: Ctx, key: str, f, rx, group: int, mode, fmt: str, why: str) -> dict:
+    """The number is a part of a Field's text (the n of "x/n ..."). Its provenance re-reads the whole line."""
+    if not f or f.get("status") not in (REAL, SAMPLE) or f.get("prov") not in ctx.prov:
+        return num_pending(why)
+    m = rx.search(f["text"])
+    if not m:
+        return num_pending(why)
+    base = ctx.prov[f["prov"]]
+    text = m.group(group)
+    pid = ctx.add_prov(f"numbers.{key}", f["status"], text, base["raw"], fmt, base["source_file"], base["rev"],
+                       base["locator"])
+    return num_entry(ctx, text, f["status"], mode, pid)
+
+
+def gate_numbers(ctx: Ctx, gate: dict, cid: str, mode, got: dict, headline: bool = False) -> None:
+    """The keys of one candidate, read from its gate output. The headline candidate also gives the run facts."""
+    pre = cid.lower().replace("-", "")
+    checks = {c["name"]: c for c in gate.get("checks") or []}
+    info = {i["name"]: i for i in gate.get("info") or []}
+    asr = checks.get("attack_success_rate") or {}
+    miss = f"{cid}: the gate output has no attack success line"
+    got[f"{pre}.asr"] = num_from_field(ctx, asr.get("value"), mode, miss)
+    for part, rx, group, fmt in (
+            ("asr_range", RE_CI_RANGE, 1, "the [low, high] range inside the gate note"),
+            ("violations", RE_X_OF_N, 1, "the first number of the x/n that starts the gate note"),
+            ("attack_runs", RE_X_OF_N, 2, "the second number of the x/n that starts the gate note")):
+        got[f"{pre}.{part}"] = num_part(ctx, f"{pre}.{part}", asr.get("note"), rx, group, mode, fmt, miss)
+    att = info.get("attempted_incl_blocked") or {}
+    got[f"{pre}.attempted"] = num_from_field(ctx, att.get("value"), mode,
+                                             f"{cid}: the gate output has no attempted figure")
+    if headline:
+        ben = checks.get("min_benign_task_success") or {}
+        err = checks.get("max_error_rate") or {}
+        unmeasured = "normal-task success was not measured in this run"
+        got["benign.rate"] = num_from_field(ctx, ben.get("value"), mode, unmeasured)
+        got["benign.n"] = num_part(ctx, "benign.n", ben.get("note"), RE_X_OF_N, 2, mode,
+                                   "the second number of the x/n in the normal-task note", unmeasured)
+        got["runs.total"] = num_part(ctx, "runs.total", err.get("note"), RE_X_OF_N, 2, mode,
+                                     "the second number of the errors/runs note of the error-rate line",
+                                     "the gate output has no error-rate line")
+        got["runs.attack"] = dict(got[f"{pre}.attack_runs"])
+
+
+def numbers_gate(ctx: Ctx, gov: dict, cid: str, tags: dict, folder_mode):
+    """(gate, mode, reason) for gate_<cid>.txt in the governance folder, read like the main gate."""
+    name = f"gate_{cid}.txt"
+    try:
+        folder = governance_dir(gov)
+        rel = name if folder in ("", ".") else f"{folder}/{name}"
+        text, _meta = read_text(ctx, rel)
+    except SourceError as exc:
+        return None, None, f"{cid}: {err_text(exc)}"
+    mode = tags.get(name) or folder_mode
+    try:
+        gb = gate_from_text(ctx, text, SAMPLE if mode == MODE_SCRIPTED else REAL, rel, {"kind": "text"},
+                            pid_base=f"gate.{cid}")
+    except SourceError as exc:
+        return None, None, f"{cid}: {err_text(exc)}"
+    if gb["candidate_id"]["text"] != cid:
+        return None, None, f"{rel} is the gate output of {gb['candidate_id']['text']}, not of {cid}"
+    if gb["_fails"] != gb["_reasons"] or (gb["_verdict"] == "PASS") != (gb["_fails"] == 0):
+        ctx.warn("integrity", f"{cid} gate: its verdict does not match its check lines.")
+        return None, None, f"{cid}: gate output is inconsistent (verdict and checks differ)"
+    return gb, mode, ""
+
+
+def model_number(ctx: Ctx, gov: dict, mode):
+    """The model named by the candidate file of the headline run, or None."""
+    for fp in gov.get("fingerprint") or []:
+        try:
+            rel = rel_path(fp)
+            obj = json.loads(read_text(ctx, rel)[0])
+        except Exception:  # noqa: BLE001
+            continue
+        model = obj.get("model") if isinstance(obj, dict) else None
+        if isinstance(model, str) and model.strip():
+            status = SAMPLE if mode == MODE_SCRIPTED else REAL
+            pid = ctx.add_prov("numbers.headline.model", status, model, model, "as written", rel, None,
+                               {"kind": "text", "json_path": "model"})
+            return num_entry(ctx, model, status, mode, pid)
+    return None
+
+
+def reps_number(ctx: Ctx, gov: dict, ev_batch, tags: dict, folder_mode):
+    """Repetitions per test: run_index.json first, else the evidence batch that the gate was checked against."""
+    try:
+        folder = governance_dir(gov)
+        rel = "run_index.json" if folder in ("", ".") else f"{folder}/run_index.json"
+        reps = json.loads(read_text(ctx, rel)[0]).get("reps")
+    except Exception:  # noqa: BLE001
+        reps = None
+    if isinstance(reps, int) and not isinstance(reps, bool) and reps > 0:
+        mode = tags.get("run_index.json") or folder_mode
+        status = SAMPLE if mode == MODE_SCRIPTED else REAL
+        pid = ctx.add_prov("numbers.reps", status, str(reps), str(reps), "as written", rel, None,
+                           {"kind": "text", "json_path": "reps"})
+        return num_entry(ctx, str(reps), status, mode, pid)
+    shape = (ev_batch or {}).get("shape") or {}
+    if (ev_batch or {}).get("status") == REAL and shape.get("prov") in ctx.prov:
+        base = ctx.prov[shape["prov"]]
+        m = RE_SHAPE_REPS.search(base["raw"])
+        if m:
+            pid = ctx.add_prov("numbers.reps", REAL, m.group(1), base["raw"],
+                               "the repeat count that every attack test has in the evidence batch",
+                               base["source_file"], base["rev"], base["locator"])
+            return num_entry(ctx, m.group(1), REAL, None, pid)
+    return None
+
+
+def audit_numbers(ctx: Ctx, audit: dict, mode, got: dict) -> None:
+    """audit.entries, chain.status and tamper.entry, from the audit log and its verify file."""
+    why = (audit or {}).get("reason") or NOT_CONNECTED
+    if not audit or audit.get("status") not in (REAL, SAMPLE) or not audit.get("entries"):
+        for k in ("audit.entries", "chain.status", "tamper.entry"):
+            got[k] = num_pending(why)
+        return
+    status, src = audit["status"], audit.get("source_file")
+    n = str(len(audit["entries"]))
+    loc = ({"kind": "fixture", "json_path": "content_lines", "key": "entries"} if audit.get("stands_in_for")
+           else {"kind": "jsonl", "key": "entries"})
+    pid = ctx.add_prov("numbers.audit.entries", status, n, n, "number of entries in the log", src, None, loc)
+    got["audit.entries"] = num_entry(ctx, n, status, mode, pid)
+
+    chain = audit.get("chain") or {}
+    f = chain.get("text") or {}
+    no_verify = chain.get("reason") or "the chain was not verified in a file"
+    got["chain.status"] = got["tamper.entry"] = num_pending(no_verify)
+    if chain.get("ok") is None or f.get("prov") not in ctx.prov:
+        return
+    detail = f["text"]
+    word = "intact" if "chain intact" in detail else ("empty log" if detail.startswith("no entries") else "broken")
+    base = ctx.prov[f["prov"]]
+    pid = ctx.add_prov("numbers.chain.status", chain["status"], word, base["raw"],
+                       "intact when the detail says chain intact, empty log when it says no entries, broken otherwise",
+                       base["source_file"], base["rev"], base["locator"])
+    got["chain.status"] = num_entry(ctx, word, chain["status"], mode, pid)
+    # The entry that the verify check names in the tampered copy of the log.
+    got["tamper.entry"] = num_pending("audit_verify.json has no tamper_demo result")
+    try:
+        td = json.loads(read_text(ctx, chain["source_file"])[0]).get("tamper_demo")
+        bad = td.get("bad_seq")
+        parse_verify(json.dumps({"ok": td.get("ok"), "bad_seq": bad, "detail": td.get("detail")}))
+        if td["ok"] is not False or isinstance(bad, bool) or not isinstance(bad, int):
+            raise SourceError("the tampered copy was not caught")
+    except Exception:  # noqa: BLE001
+        return
+    pid = ctx.add_prov("numbers.tamper.entry", chain["status"], str(bad), str(bad),
+                       "bad_seq of the tampered copy", chain["source_file"], None,
+                       {"kind": "text", "json_path": "tamper_demo.bad_seq"})
+    got["tamper.entry"] = num_entry(ctx, str(bad), chain["status"], mode, pid)
+
+
+def build_numbers(ctx: Ctx, batches: dict, gate: dict, audit: dict, policy: dict) -> dict:
+    """Every number that the page and the script say, as one flat table: key -> entry.
+
+    An entry is {value, text, status, mode, source, prov}. Nothing is typed here: each text is the text of a
+    Field or a part of one (the n of "x/n ..."), read from a file and registered in the provenance list, so
+    --check can read it again. "value" repeats "text" because scripts/fill_script.py reads "value" as the words
+    to say; "prov" lets the page link the text to its provenance. A key with no source is PENDING with a reason.
+    """
+    gov = ctx.sources.get("governance") or {}
+    connected = gov.get("connected") is True
+    ev_batch = batches.get(gov.get("evidence_batch") or ctx.sources.get("current_batch"))
+    tags = folder_mode_tags(ctx, gov) if connected else {}
+    folder_mode = detect_mode(ctx, gov, ev_batch, tags) if connected else None
+    gate_ok = bool(gate) and gate.get("status") in (REAL, SAMPLE)
+    why_gate = (gate or {}).get("reason") or NOT_CONNECTED
+    got: dict = {}
+
+    def mode_of(path):
+        return (tags.get(Path(str(path)).name) or folder_mode) if connected else None
+
+    headline = NUMBER_CANDIDATES[0]
+    for cid in NUMBER_CANDIDATES:
+        g, g_mode, why = None, None, why_gate
+        if gate_ok and (gate.get("candidate_id") or {}).get("text") == cid:
+            g, g_mode = gate, mode_of(gate.get("source_file"))
+        elif gate_ok and connected:
+            g, g_mode, why = numbers_gate(ctx, gov, cid, tags, folder_mode)
+        elif gate_ok:
+            why = f"{cid}: there is no sample gate output for this candidate"
+        if g:
+            gate_numbers(ctx, g, cid, g_mode, got, headline=(cid == headline))
+            continue
+        pre = cid.lower().replace("-", "")
+        for part in NUMBER_PARTS:
+            got[f"{pre}.{part}"] = num_pending(why)
+        if cid == headline:
+            for k in ("runs.attack", "runs.total", "benign.rate", "benign.n"):
+                got[k] = num_pending(why)
+
+    got["headline.model"] = (model_number(ctx, gov, folder_mode) if gate_ok and connected else None) \
+        or num_pending(why_gate if not gate_ok else "no candidate file names the model")
+    got["reps"] = (reps_number(ctx, gov, ev_batch, tags, folder_mode) if gate_ok else None) \
+        or num_pending(why_gate if not gate_ok else "no run_index.json and no evidence batch behind the gate")
+    got["policy.max_asr"] = num_pending("the policy file has no highest-attack-success limit")
+    for lim in (policy or {}).get("limits") or []:
+        f = lim.get("text") or {}
+        if lim.get("key") == "max_attack_success_rate" and f.get("status") == REAL and f.get("prov") in ctx.prov:
+            got["policy.max_asr"] = num_entry(ctx, f["text"], REAL, None, f["prov"])
+    audit_numbers(ctx, audit, mode_of((audit or {}).get("source_file")), got)
+    got["models.n"] = num_pending("there is no models table yet: it needs results/governance/*/run_index.json")
+    return {k: got.get(k) or num_pending("no source for this key") for k in NUMBER_KEYS}
+
+
+def to_numbers_json(numbers: dict) -> str:
+    """numbers.json: the same flat object that demo.js carries as DEMO.numbers."""
+    return json.dumps(numbers, ensure_ascii=True, allow_nan=False, indent=1) + "\n"
+
+
+def numbers_problems(nums, pids: set) -> list:
+    """Fatal problems of the numbers sheet: a value without a source, a bad key, a pending key with a value."""
+    if not isinstance(nums, dict) or not nums:
+        return ["the numbers sheet is missing or empty"]
+    probs = []
+    for k, e in nums.items():
+        if not RE_NUMBER_KEY.match(str(k)):
+            probs.append(f"numbers key {k!r} is not a lowercase dotted name")
+        elif not isinstance(e, dict) or e.get("status") not in STATUSES:
+            probs.append(f"numbers.{k} has no valid status")
+        elif e["status"] == PENDING:
+            if e.get("value") is not None or e.get("source") is not None or e.get("prov") is not None:
+                probs.append(f"numbers.{k} is PENDING but carries a value or a source")
+        elif not (isinstance(e.get("value"), str) and e["value"] == e.get("text") and e.get("source")
+                  and e.get("prov") in pids):
+            probs.append(f"numbers.{k} has a value without a source")
+    return probs[:4]
 
 
 # --------------------------------------------------------------------------- #
@@ -2488,14 +3489,7 @@ def build_demo(ctx: Ctx) -> dict:
             continue
         b = safe(ctx, f"Batch {cfg.get('id')}", build_batch, ctx, cfg, "pinned")
         if b is None:
-            b = {"id": cfg["id"], "title": cfg.get("title") or cfg["id"], "status": PENDING,
-                 "reason": "The batch could not be built.", "source_files": [], "produced": not_recorded_produced(),
-                 "replay_label": "REPLAY \u00b7 run time not recorded",
-                 "model": ctx.field(NOT_RECORDED, PENDING), "digest": ctx.field(NOT_RECORDED, PENDING),
-                 "defences": ctx.field(NOT_RECORDED, PENDING), "driver": ctx.field(NOT_RECORDED, PENDING),
-                 "has_blocked_info": False, "blocked_note": "Blocked: not recorded in this batch",
-                 "shape": ctx.field("not available", PENDING), "counts": {"attack": {}, "benign": {}},
-                 "summary": {}, "groups": [], "runs": {}, "error_note": ctx.field("not available", PENDING)}
+            b = pending_batch(ctx, cfg["id"], cfg.get("title") or cfg["id"], "The batch could not be built.")
         if b["id"] in batches:
             ctx.warn("integrity", f"sources.json repeats batch id {b['id']}; second one skipped.")
             continue
@@ -2509,14 +3503,62 @@ def build_demo(ctx: Ctx) -> dict:
     if ll.get("enabled"):
         safe(ctx, "Latest local run", add_latest_local, ctx, ll, batches, order)
 
+    run_ids = []
     rf = src.get("run_folders") or {}
     if rf.get("enabled"):
-        ctx.warn("info", "run_folders adapter is not built yet; provisional until docs/DATA_CONTRACT.md exists.")
+        found = safe(ctx, "Run folders", run_folder_configs, ctx, rf) or []
+        if not found:
+            ctx.warn("info", f"run_folders is on, but no run folder matches {rf.get('glob') or 'results/runs/*'}.")
+        for cfg in found:
+            b = safe(ctx, f"Run folder {cfg['id']}", build_batch, ctx, cfg, "local")
+            if b is None:
+                b = pending_batch(ctx, cfg["id"], cfg["title"], "The run folder could not be read.")
+            if b["id"] not in batches:
+                batches[b["id"]] = b
+                order.append(b["id"])
+                run_ids.append(b["id"])
+
+    # Which governance folder do the screens show (--gov, governance.pick), and which run folder backs each
+    # of its candidates? The selected candidate's run is the evidence batch; compare is first vs last candidate.
+    gov_eff, gov_batch = None, None
+    folder, how = governance_folder(ctx)
+    if folder:
+        gov_eff = effective_governance(ctx, folder, how)
+    if gov_eff:
+        runs = safe(ctx, "Run folders", scan_run_folders, ctx, rf.get("glob") or RUN_GLOB) or []
+        # Scripted output was not made from any run folder: do not match it with the run folders of real runs.
+        scripted_folder = detect_mode(ctx, gov_eff, None, folder_mode_tags(ctx, gov_eff)) == MODE_SCRIPTED
+        for c in ([] if scripted_folder else gov_eff["candidates"]):
+            rd = candidate_run_dir(ctx, c, runs, candidate_digest(ctx, folder, c["id"]))
+            if rd is None:
+                ctx.warn("info", f"No usable run folder found for {c['id']}; its gate is not compared with run data.")
+                continue
+            run = next((r for r in runs if r["run_dir"] == rd), {"name": Path(rd).name, "run_dir": rd, "manifest": None})
+            cfg = run_folder_config(run)
+            c["run_name"], c["batch"] = run["name"], cfg["id"]
+            if cfg["id"] not in batches:
+                b = safe(ctx, f"Run folder {cfg['id']}", build_batch, ctx, cfg, "local") or pending_batch(
+                    ctx, cfg["id"], cfg["title"], "The run folder could not be read.")
+                batches[b["id"]] = b
+                order.append(b["id"])
+        by_id = {c["id"]: c for c in gov_eff["candidates"]}
+        gov_batch = by_id[gov_eff["selected"]].get("batch")
+        gov_eff["evidence_batch"] = gov_batch or "-"
+        usable = [c["batch"] for c in gov_eff["candidates"] if c.get("batch") and batches[c["batch"]]["status"] == REAL]
+        if len(usable) >= 2 and usable[0] != usable[-1]:
+            ctx.sources["compare"] = {"a": usable[0], "b": usable[-1]}
+        ctx.sources["governance"] = gov_eff
 
     for bid in order:
         safe(ctx, f"Batch {bid} checks", consistency_checks_batch, ctx, batches[bid])
 
     current = src.get("current_batch")
+    if gov_batch:
+        current = gov_batch
+    elif current == "newest-run":   # the newest run folder, if there is one; else the first batch
+        current = run_ids[0] if run_ids else (order[0] if order else None)
+        if not run_ids:
+            ctx.warn("info", "current_batch is newest-run, but there is no run folder; showing the first batch.")
     if current not in batches:
         ctx.warn("integrity", f"current_batch {current!r} is not a known batch.")
         current = order[0] if order else None
@@ -2537,9 +3579,17 @@ def build_demo(ctx: Ctx) -> dict:
         latest = None
     else:
         gate, audit, assurance, latest = gres
+    governance = safe(ctx, "Governance candidates", build_candidates, ctx, ctx.sources.get("governance") or {},
+                      batches, gate, assurance) or {"dir": None, "pick": None, "mode": None, "selected": None,
+                                                    "candidates": []}
 
     compare = build_compare(ctx, batches, policy)
     console = build_console(ctx, cur, gate, latest)
+    numbers = safe(ctx, "Numbers sheet", build_numbers, ctx, batches, gate, audit, policy) or {
+        k: num_pending("the numbers sheet could not be built") for k in NUMBER_KEYS}
+    head = numbers["headline.model"]
+    models = safe(ctx, "Models", build_models, ctx, head["text"] if head["status"] != PENDING else None) or {
+        "rows": [], "headline": None, "note": "The models table could not be built."}
 
     results_status = cur["status"] if cur else PENDING
     datasets = [
@@ -2583,6 +3633,9 @@ def build_demo(ctx: Ctx) -> dict:
         "controls": controls,
         "audit": audit,
         "assurance": assurance,
+        "governance": governance,
+        "models": models,
+        "numbers": numbers,
         "labels": {
             "states": STATE_LABELS, "techniques": TECHNIQUE_LABELS, "places": PLACE_LABELS,
             "goals": GOAL_LABELS, "classes": CLASS_LABELS, "checks": CHECK_LABELS, "events": EVENT_LABELS,
@@ -2593,6 +3646,7 @@ def build_demo(ctx: Ctx) -> dict:
     used = set()
     walk_fields(demo, lambda f: used.add(f["prov"]) if f.get("prov") else None)
     walk_produced(demo, used)
+    used.update(e["prov"] for e in numbers.values() if e.get("prov"))   # a number entry is not a Field
     demo["provenance"] = [p for pid, p in ctx.prov.items() if pid in used]
     demo["sample_present"] = has_sample(demo)
     demo["sample_banner"] = SAMPLE_BANNER if demo["sample_present"] else None
@@ -2688,16 +3742,55 @@ def has_sample(demo: dict) -> bool:
     return bool(found)
 
 
+GOV_DATA_PATHS = {("console", "gate"), ("audit",), ("assurance",), ("governance",)}
+
+
+def checkable(demo: dict) -> dict:
+    """The part of the demo in which FORBIDDEN numbers and banned words are looked for (A5.6).
+
+    A value backed by a provenance entry of a run file passes: a Field, an entry of the numbers sheet. So does all
+    the data of a governance folder that carries a mode tag: those are the words of the files themselves, and the
+    mode tag says what they are. Free text (labels, reasons, warnings) and hand-written fixtures are scanned.
+    Absolute paths, the user name and e-mail addresses are checked in the whole demo, not here.
+    """
+    prov = {p["id"]: p for p in demo.get("provenance", []) if isinstance(p, dict) and "id" in p}
+    tagged = (demo.get("governance") or {}).get("mode") in MODE_TAGS
+
+    def backed(pid):
+        p = prov.get(pid)
+        return p is not None and (p.get("locator") or {}).get("kind") != "fixture"
+
+    def prune(o, path=()):
+        if tagged and path in GOV_DATA_PATHS:
+            return None
+        if isinstance(o, dict):
+            if is_field(o):
+                return None if backed(o["prov"]) else o["text"]
+            if o.keys() >= {"value", "text", "status", "source", "prov"}:       # an entry of the numbers sheet
+                return None if backed(o["prov"]) else [o["text"], o["source"], o.get("reason")]
+            return {k: prune(v, path + (k,)) for k, v in o.items() if not (not path and k == "provenance")}
+        if isinstance(o, list):
+            return [prune(v, path) for v in o]
+        return o
+
+    out = prune(demo)
+    out["provenance"] = [[p.get("display"), p.get("raw")] for p in prov.values() if not backed(p["id"])]
+    return out
+
+
 def validate_demo(ctx: Ctx, demo: dict) -> list:
     """Return a list of fatal problems (empty when the export is valid)."""
     probs = []
     for k in ("schema", "exported_at", "allow_sample", "sample_present", "warnings", "provenance", "datasets",
-              "batches", "current_batch", "console", "policy", "audit", "assurance", "controls", "compare", "labels"):
+              "batches", "current_batch", "console", "policy", "audit", "assurance", "controls", "compare", "labels",
+              "numbers", "governance", "models"):
         if k not in demo:
             probs.append(f"missing key {k}")
     if demo.get("schema") != SCHEMA:
         probs.append("wrong schema")
     pids = {p["id"] for p in demo.get("provenance", [])}
+    if "numbers" in demo:
+        probs += numbers_problems(demo["numbers"], pids)
     bad_fields = []
 
     def fchk(f):
@@ -2731,8 +3824,9 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
         probs.append(f"not serialisable: {exc}")
         return probs
     visible = json.dumps({k: v for k, v in demo.items()}, ensure_ascii=False)
+    scan = json.dumps(checkable(demo), ensure_ascii=False)
     for rx in FORBIDDEN:
-        if rx.search(visible):
+        if rx.search(scan):
             probs.append(f"forbidden number or phrase found: {rx.pattern}")
     if RE_ABS_PATH.search(visible):
         probs.append("an absolute path would be written")
@@ -2748,7 +3842,7 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
             probs.append("an e-mail address outside the synthetic .example domain would be written")
             break
     for rx in BANNED_WORDS:
-        if rx.search(visible):
+        if rx.search(scan):
             ctx.warn("integrity", f"Data text contains a banned UI word ({rx.pattern}); check before showing.")
     del body
     return probs
@@ -2842,6 +3936,8 @@ def parse_args(argv):
     ap.add_argument("--no-git", action="store_true", help="do not use git; read working-tree files")
     ap.add_argument("--sources", default=None, help="path to a sources.json (default ui/sources.json)")
     ap.add_argument("--out", default=None, help="output path (default ui/data/demo.js)")
+    ap.add_argument("--gov", default=None, metavar="DIR",
+                    help="governance output folder to show (inside the repo); wins over governance.pick")
     return ap.parse_args(argv)
 
 
@@ -2891,6 +3987,7 @@ def main(argv=None) -> int:
             return 1
 
         write_demo_js(out, to_js(demo))
+        write_demo_js(out.with_name("numbers.json"), to_numbers_json(demo["numbers"]))   # same object as DEMO.numbers
         print_report(demo, args.quiet, out_desc)
         if args.final:
             print("final: no SAMPLE data; demo.js written.")

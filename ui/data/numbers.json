@@ -1,0 +1,235 @@
+{
+ "headline.model": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "policy.max_asr": {
+  "value": "5.0%",
+  "text": "5.0%",
+  "status": "REAL",
+  "mode": null,
+  "source": "lab/governance/policy.yaml line 9",
+  "prov": "policy.limit.max_attack_success_rate"
+ },
+ "rc001.asr": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc001.asr_range": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc001.violations": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc001.attack_runs": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc001.attempted": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc002.asr": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc002.asr_range": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc002.violations": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc002.attack_runs": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc002.attempted": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc003.asr": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc003.asr_range": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc003.violations": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc003.attack_runs": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "rc003.attempted": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "runs.attack": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "runs.total": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "reps": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "benign.rate": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "benign.n": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "audit.entries": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "chain.status": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "tamper.entry": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+ },
+ "models.n": {
+  "value": null,
+  "text": "not available",
+  "status": "PENDING",
+  "mode": null,
+  "source": null,
+  "prov": null,
+  "reason": "there is no models table yet: it needs results/governance/*/run_index.json"
+ }
+}

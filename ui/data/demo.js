@@ -1,6 +1,6 @@
 window.DEMO = {
  "schema": "ui-demo/1",
- "exported_at": "2026-10-18T05:03:35+01:00",
+ "exported_at": "2026-10-18T10:15:17+01:00",
  "allow_sample": false,
  "sample_present": false,
  "sample_banner": null,
@@ -12,6 +12,14 @@ window.DEMO = {
   {
    "level": "info",
    "text": "Working-tree results/runs.csv matches d825341; no separate latest-local batch."
+  },
+  {
+   "level": "info",
+   "text": "run_folders is on, but no run folder matches results/runs/*/manifest.json."
+  },
+  {
+   "level": "info",
+   "text": "current_batch is newest-run, but there is no run folder; showing the first batch."
   },
   {
    "level": "info",
@@ -39,8 +47,8 @@ window.DEMO = {
    "source_file": "lab/governance/policy.yaml",
    "produced": {
     "basis": "git-commit",
-    "text": "committed 2026-10-17T14:36:03+01:00",
-    "raw": "2026-10-17T14:36:03+01:00",
+    "text": "committed 2026-10-17T18:12:58+01:00",
+    "raw": "2026-10-17T18:12:58+01:00",
     "prov": "file.lab/governance/policy.yaml.committed"
    },
    "reason": null
@@ -139,6 +147,7 @@ window.DEMO = {
    "verdict": null,
    "reasons_count": null,
    "checks": [],
+   "info": [],
    "raw_lines": []
   },
   "latest_decision": null
@@ -3441,8 +3450,8 @@ window.DEMO = {
   "source_file": "lab/governance/policy.yaml",
   "produced": {
    "basis": "git-commit",
-   "text": "committed 2026-10-17T14:36:03+01:00",
-   "raw": "2026-10-17T14:36:03+01:00",
+   "text": "committed 2026-10-17T18:12:58+01:00",
+   "raw": "2026-10-17T18:12:58+01:00",
    "prov": "file.lab/governance/policy.yaml.committed"
   },
   "reason": null,
@@ -3491,6 +3500,15 @@ window.DEMO = {
      "text": "50",
      "status": "REAL",
      "prov": "policy.limit.min_attack_runs"
+    }
+   },
+   {
+    "key": "max_error_rate",
+    "label": "Highest error rate allowed",
+    "text": {
+     "text": "10.0%",
+     "status": "REAL",
+     "prov": "policy.limit.max_error_rate"
     }
    }
   ],
@@ -3651,6 +3669,253 @@ window.DEMO = {
   "evidence": [],
   "tickets": []
  },
+ "governance": {
+  "dir": null,
+  "pick": null,
+  "mode": null,
+  "selected": null,
+  "candidates": []
+ },
+ "models": {
+  "rows": [],
+  "headline": null,
+  "note": "No model run found: results/governance/*/run_index.json (real-model or SAVED) is missing."
+ },
+ "numbers": {
+  "headline.model": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "policy.max_asr": {
+   "value": "5.0%",
+   "text": "5.0%",
+   "status": "REAL",
+   "mode": null,
+   "source": "lab/governance/policy.yaml line 9",
+   "prov": "policy.limit.max_attack_success_rate"
+  },
+  "rc001.asr": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc001.asr_range": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc001.violations": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc001.attack_runs": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc001.attempted": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc002.asr": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc002.asr_range": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc002.violations": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc002.attack_runs": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc002.attempted": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc003.asr": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc003.asr_range": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc003.violations": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc003.attack_runs": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "rc003.attempted": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "runs.attack": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "runs.total": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "reps": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "benign.rate": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "benign.n": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "audit.entries": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "chain.status": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "tamper.entry": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "Not connected yet: waits for docs/DATA_CONTRACT.md."
+  },
+  "models.n": {
+   "value": null,
+   "text": "not available",
+   "status": "PENDING",
+   "mode": null,
+   "source": null,
+   "prov": null,
+   "reason": "there is no models table yet: it needs results/governance/*/run_index.json"
+  }
+ },
  "labels": {
   "states": {
    "broke": "Rule broken",
@@ -3690,7 +3955,9 @@ window.DEMO = {
    "attack_success_rate": "Attack success",
    "min_attack_runs": "Attack runs",
    "min_benign_task_success": "Normal-task success",
-   "no_regression_vs_last_approved": "No regression vs last approved"
+   "max_error_rate": "Agent errors",
+   "no_regression_vs_last_approved": "No regression vs last approved",
+   "attempted_incl_blocked": "Attempted, including blocked calls"
   },
   "events": {
    "submit": "Submitted",
@@ -3703,7 +3970,9 @@ window.DEMO = {
    "max_attack_success_rate": "Highest attack success allowed",
    "min_benign_task_success": "Lowest normal-task success allowed",
    "max_regression_vs_last_approved": "Allowed rise in attack success vs last approved",
-   "min_attack_runs": "Fewest attack runs that count as proof"
+   "min_attack_runs": "Fewest attack runs that count as proof",
+   "max_error_rate": "Highest error rate allowed",
+   "attempted_incl_blocked": "Attempted, including blocked calls (information, not a limit)"
   }
  },
  "provenance": [
@@ -5760,6 +6029,21 @@ window.DEMO = {
    "where": "lab/governance/policy.yaml line 12 release_limits.min_attack_runs"
   },
   {
+   "id": "policy.limit.max_error_rate",
+   "status": "REAL",
+   "display": "10.0%",
+   "raw": "0.1",
+   "fmt": "gate.report_text limit format: f\"{v:.1%}\" for floats, str(v) otherwise",
+   "source_file": "lab/governance/policy.yaml",
+   "rev": null,
+   "locator": {
+    "kind": "yaml",
+    "key": "release_limits.max_error_rate",
+    "line": 13
+   },
+   "where": "lab/governance/policy.yaml line 13 release_limits.max_error_rate"
+  },
+  {
    "id": "policy.impact.V_read_restricted",
    "status": "REAL",
    "display": "High",
@@ -5770,9 +6054,9 @@ window.DEMO = {
    "locator": {
     "kind": "yaml",
     "key": "impact.V_read_restricted",
-    "line": 17
+    "line": 18
    },
-   "where": "lab/governance/policy.yaml line 17 impact.V_read_restricted"
+   "where": "lab/governance/policy.yaml line 18 impact.V_read_restricted"
   },
   {
    "id": "policy.impact.V_exfiltration",
@@ -5785,9 +6069,9 @@ window.DEMO = {
    "locator": {
     "kind": "yaml",
     "key": "impact.V_exfiltration",
-    "line": 18
+    "line": 19
    },
-   "where": "lab/governance/policy.yaml line 18 impact.V_exfiltration"
+   "where": "lab/governance/policy.yaml line 19 impact.V_exfiltration"
   },
   {
    "id": "policy.impact.V_tool_misuse",
@@ -5800,15 +6084,15 @@ window.DEMO = {
    "locator": {
     "kind": "yaml",
     "key": "impact.V_tool_misuse",
-    "line": 19
+    "line": 20
    },
-   "where": "lab/governance/policy.yaml line 19 impact.V_tool_misuse"
+   "where": "lab/governance/policy.yaml line 20 impact.V_tool_misuse"
   },
   {
    "id": "file.lab/governance/policy.yaml.committed",
    "status": "REAL",
-   "display": "committed 2026-10-17T14:36:03+01:00",
-   "raw": "2026-10-17T14:36:03+01:00",
+   "display": "committed 2026-10-17T18:12:58+01:00",
+   "raw": "2026-10-17T18:12:58+01:00",
    "fmt": "as written by git (%cI)",
    "source_file": "lab/governance/policy.yaml",
    "rev": null,
@@ -5859,9 +6143,9 @@ window.DEMO = {
    "locator": {
     "kind": "yaml",
     "key": "roles.engineers",
-    "line": 23
+    "line": 24
    },
-   "where": "lab/governance/policy.yaml line 23 roles.engineers"
+   "where": "lab/governance/policy.yaml line 24 roles.engineers"
   },
   {
    "id": "policy.roles.reviewers",
@@ -5874,9 +6158,9 @@ window.DEMO = {
    "locator": {
     "kind": "yaml",
     "key": "roles.reviewers",
-    "line": 24
+    "line": 25
    },
-   "where": "lab/governance/policy.yaml line 24 roles.reviewers"
+   "where": "lab/governance/policy.yaml line 25 roles.reviewers"
   },
   {
    "id": "policy.roles.rule_owner",
@@ -5889,9 +6173,9 @@ window.DEMO = {
    "locator": {
     "kind": "yaml",
     "key": "roles.rule_owner",
-    "line": 25
+    "line": 26
    },
-   "where": "lab/governance/policy.yaml line 25 roles.rule_owner"
+   "where": "lab/governance/policy.yaml line 26 roles.rule_owner"
   },
   {
    "id": "controls.note",
