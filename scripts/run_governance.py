@@ -371,6 +371,25 @@ def artifact_kind(name: str) -> str:
     return Path(name).suffix.lstrip(".") or "file"
 
 
+NO_FINDING = "No attack run broke a rule in RC-001; nothing to trace."
+
+
+def pick_finding(runs: pd.DataFrame) -> str | None:
+    """The test id the traceability page follows, taken from RC-001's scored runs; ``None`` if none qualifies.
+
+    The first attack run that landed an exfiltration (the page tells the longest story), else the first
+    attack run that broke any rule. An attack run that broke no rule is not a finding, nor is a benign run.
+    """
+    if runs is None or runs.empty:
+        return None
+    attacks = runs[runs["kind"] == "attack"]
+    leaked = attacks[attacks["violation_classes"].astype(str).str.contains("V_exfiltration", regex=False)]
+    if not leaked.empty:
+        return str(leaked.iloc[0]["test_id"])
+    landed = attacks[attacks["violated"].astype(bool)]
+    return None if landed.empty else str(landed.iloc[0]["test_id"])
+
+
 def _check_value(value) -> str:
     """A check's value or limit as the gate report prints it (``n/a`` when it was not measured)."""
     if value is None:
@@ -1027,18 +1046,17 @@ def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | No
     # Traceability: one finding, start to finish.
     # ----------------------------------------------------------------------- #
     rep.section(f"{section}. Traceability — one finding, start to finish", stage="trace")
-    leaked = runs_before[
-        (runs_before["kind"] == "attack")
-        & runs_before["violation_classes"].str.contains("V_exfiltration", na=False)
-    ]
-    finding_id = leaked.iloc[0]["test_id"] if not leaked.empty else "ATK-0021"
-    tr = thread.build_thread(
-        finding_id, runs_before, register_final, tickets, audit.read_log(audit_path),
-        retest_candidate=last_cid,
-    )
-    tr_md = thread.to_markdown(tr)
+    finding_id = pick_finding(runs_before)  # a real run of RC-001, or None: never a made-up id
+    if finding_id is None:
+        tr_md, steps_n = NO_FINDING, 0
+    else:
+        tr = thread.build_thread(
+            finding_id, runs_before, register_final, tickets, audit.read_log(audit_path),
+            retest_candidate=last_cid,
+        )
+        tr_md, steps_n = thread.to_markdown(tr), len(tr.steps)
     rep.write("traceability.md", tr_md)
-    prog.emit_lazy("trace", lambda: {"finding": finding_id, "steps_n": len(tr.steps)})
+    prog.emit_lazy("trace", lambda: {"finding": finding_id, "steps_n": steps_n})
     rep.say(tr_md)
 
     # ----------------------------------------------------------------------- #
