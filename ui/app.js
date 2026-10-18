@@ -1356,6 +1356,51 @@
     if (state.card && card) { try { card.focus({ preventScroll: true }); } catch (e) { card.focus(); } }
   }
 
+  /* ---------- the cover: Redline, the team and the tagline, all from copy.js ---------- */
+
+  var coverShown = false;
+
+  function setText(id, text) {
+    var n = $(id);
+    if (!n) return;
+    clear(n);
+    if (text) { n.textContent = text; n.setAttribute('data-static', ''); }
+  }
+
+  /* Without copy.js there is no cover: the page opens on a screen, as before. */
+  function renderCover() {
+    var name = copy('product.name');
+    if (!$('cover') || !name) return false;
+    setText('cover-name', name);
+    setText('cover-what', copy('product.what'));
+    setText('cover-tagline', copy('product.tagline'));
+    setText('cover-team', copy('product.team_line', { team: copy('product.team') }));
+    setText('cover-track', copy('product.track'));
+    setText('cover-hint', copy('cover.hint'));
+    return true;
+  }
+
+  function showCover() {
+    var cv = $('cover');
+    if (!cv || !renderCover()) return false;
+    if (drawerOpen) closeDrawer(false);
+    cv.hidden = false;
+    coverShown = true;
+    doc.body.classList.add('cover-open');
+    try { cv.focus({ preventScroll: true }); } catch (e) { cv.focus(); }
+    return true;
+  }
+
+  function hideCover() {
+    var cv = $('cover');
+    if (!cv || !coverShown) return;
+    cv.hidden = true;
+    coverShown = false;
+    doc.body.classList.remove('cover-open');
+    var h = doc.querySelector('#screen-' + state.s + ' .screen-title');
+    if (h) { try { h.focus({ preventScroll: true }); } catch (e) { h.focus(); } }
+  }
+
   function show(n, opts) {
     opts = opts || {};
     n = Math.max(1, Math.min(SCREEN_COUNT, n | 0));
@@ -1402,6 +1447,12 @@
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     var k = e.key;
+    /* on the cover any key starts the show; a digit also opens its screen, and R and P keep their jobs */
+    if (coverShown) {
+      if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta' || k === 'CapsLock') return;
+      hideCover();
+      if (k === ' ' || k === 'Enter' || k === 'Escape' || k === 'Tab' || k === 'ArrowRight') { e.preventDefault(); return; }
+    }
     if (drawerOpen && (k === 'Escape' || k === 'Tab')) { onDrawerKey(e); return; }
     if (k.length === 1 && k >= '1' && k <= String(SCREEN_COUNT)) { e.preventDefault(); show(Number(k)); return; }
     if (k === 'r' || k === 'R') { if (!e.repeat) { e.preventDefault(); location.reload(); } return; }
@@ -1508,9 +1559,13 @@
   }
 
   function boot() {
+    /* the cover shows only when the page opens with no screen in the address; a reload keeps the screen */
+    var fresh = !location.hash || location.hash === '#';
     readHash();
     applyCopy();
     bindNav();
+    var cover = $('cover');
+    if (cover) cover.addEventListener('click', hideCover);
     doc.addEventListener('keydown', onKey);
     addEventListener('hashchange', onHashChange);
     addEventListener('mousemove', armIdle, { passive: true });
@@ -1534,6 +1589,7 @@
       state.run = null;
       writeHash();
     }
+    if (fresh) showCover();
     fontsReady(1000).then(function () {
       fit();
       deckReady = true;

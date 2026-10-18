@@ -85,6 +85,10 @@ def test_product_block():
     assert product["name"] == "Redline"
     assert product["team"] == "Gatekeepers"
     assert product["tagline"].strip()
+    # the cover and the header are built from these words, nothing else
+    assert "{team}" in product["team_line"]
+    assert product["what"].strip() and product["track"].strip()
+    assert copy["cover"]["hint"].strip()
 
 
 def test_beats_use_the_plan_ids_in_order_and_name_their_screens():
