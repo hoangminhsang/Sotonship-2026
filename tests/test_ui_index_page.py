@@ -61,3 +61,40 @@ def test_the_run_bar_words_are_in_copy_and_have_no_digit():
         assert run["kinds"][kind].strip()
     assert "python ui/bridge.py --serve" in run["file_line"] or "bridge" in run["file_line"]
     assert not re.search(r"\d", json.dumps(run))
+
+
+def test_the_chart_starts_neutral_and_only_follows_a_run_this_page_has_seen():
+    state = _function("stateOf")
+    assert "cands.length ? 'done'" not in state and "if (!nodes) return 'idle'" in state
+    fresh = _function("fresh")
+    assert "'running'" in fresh and "seen" in fresh
+    assert "startedHere()" in HTML   # the page's own POST /api/run also counts
+    assert "paintNodes" in _function("paint")
+
+
+def test_node_states_have_their_own_looks_and_motion_respects_the_user_setting():
+    for cls in (".node.running::before", ".node.done", ".node.error", ".node.skipped", "#wires path.done"):
+        assert cls in HTML, cls
+    assert "conic-gradient" in HTML and "stroke-dashoffset" in HTML
+    assert "prefers-reduced-motion" in HTML
+
+
+def test_the_stream_panel_reads_the_feed_and_the_pinned_example():
+    assert 'id="stream"' in HTML and 'id="stream-body"' in HTML
+    assert "feed_pin" in HTML and ".feed" in HTML and ".seq" in HTML
+    assert "source.uid" in HTML        # a new run clears the stream
+    assert "labels" in HTML and "techniques" in HTML and "classes" in HTML
+    paint = _function("paintStream")
+    assert "fresh()" in paint and "$('lower').hidden" in paint
+
+
+def test_the_stream_words_are_in_copy_and_have_no_digit():
+    stream = COPY["page"]["stream"]
+    for key in ("head_scripted", "head_model", "scripted_agent", "hidden_tag", "caught", "held", "more_runs",
+                "fingerprint", "gate", "audit", "reviewer_tag", "chain_ok", "chain_bad", "ticket"):
+        assert stream[key].strip(), key
+    assert "scripted" in stream["head_scripted"].lower() and "no model" in stream["head_scripted"].lower()
+    assert not re.search(r"\d", json.dumps(stream))
+    block = HTML[HTML.index("the stream: what passes"):HTML.index("run bar: only when")]
+    used = set(re.findall(r"\bS\.([a-z_]+)", block))
+    assert used <= set(stream), sorted(used - set(stream))
