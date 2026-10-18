@@ -64,8 +64,31 @@ Rules that apply to every row:
     The page animates the edge prev_active>active.
   * A node whose event says nothing new keeps its last fact; facts are short
     (about 50 characters) because the node box has two 22 px lines.
+  * "." in the table stands for the middle dot (U+00B7) that separates the parts of a fact.
 
-This file grows in steps. Step 2 (this one): the state builder, the live.js writer.
+ui-live/1 FIELDS (where the spec leaves a choice; keys are exactly the A3 list, plus "schema",
+done.dur and done.text)
+  nodes[id]  state idle|running|done|error|skipped; status REAL|SAMPLE (the run's status, "" while waiting);
+             tag: sl.gate PASS|FAIL, sl.review "scripted by the CLI" when the event says so, sl.log intact|broken
+  edges      16 keys "a>b", idle|done; "ll.summary>fix.ticket" is lit only when the run ends
+  rail[]     id, text, verdict FAIL|PASS|"" (the gate's), state idle|running|done|error, status
+  tiles      cand, n, list: n entries [key, state] for the candidate on show; key "<test_id>:<rep>" or "#<i>" before
+             that run starts; state idle|running|violated|held|ok|missed|error|unscored
+  label      word SCRIPTED|LIVE|REPLAY|SAVED ("" while waiting), text, status REAL|SAMPLE
+  state      waiting|running|done|error|stopped; active = node that started last (null unless running)
+  done       null until the run ends: exit_code, dur ("2.5 s"), text (the whole status line), export{status, text}
+             export.status ok|failed|not_run|running|skipped; text is the command to run when it did not run
+  batch      null, or {"models": [{slug, tag, state, tools, text}]} sorted by tag
+  events_tail up to 6 short strings; warnings: strings
+
+LABELS AND PACING
+  LIVE only while a LIVE-mode log is still growing (the child is alive, or the last event is under 60 s old);
+  a recorded LIVE log is REPLAY ("REPLAY . real-model run of <UTC> . N x speed . long gaps shortened");
+  SCRIPTED shows "SCRIPTED . paced for display": about 40 ms per run_done, at least 1.4 s per node transition.
+  A log that stops growing for 180 s with no child is shown as "stopped".
+
+COMMANDS: see --help. Exit codes: 0 fine or stopped by you, 2 refused or bad arguments, 130 run stopped by
+Ctrl-C, otherwise the run's own exit code. Not verified on Windows: CREATE_NEW_PROCESS_GROUP + CTRL_BREAK_EVENT.
 """
 from __future__ import annotations
 
