@@ -44,7 +44,7 @@ The v1 sequential commands (F0–F7) stay the fallback for all of these.
 - The dashboard is now one page: `http://127.0.0.1:8765/`. It has a cover ("Redline", "Press any key to start") and three views: Live run, Results and Proof.
   The old seven-screen page moved to `http://127.0.0.1:8765/details.html`. Its address works as before: `details.html#s=6` shows the pipeline during a bridge run, and `details.html#s=7` shows the models.
 - Do not pull while a batch runs. Pull between batches (V3).
-- Expected `pytest` last line on macOS for this push: 1038 passed
+- Expected `pytest` last line on macOS for this push: `1090 passed`
 
 ## Run the pipeline from the page
 
