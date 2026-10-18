@@ -36,28 +36,41 @@ Outputs (``<STAMP>`` is the UTC start time, ``<slug>`` is the model tag as lab.r
     results/governance/<STAMP>_<slug>[_smoke]  the governance output of each child
     results/runs/<run_id>/                   the locked run folders (written by the child)
 
-status.jsonl: every line has ``ts`` (UTC), ``event``, ``slug``, ``tag``; some add fields.
+status.jsonl: every line has ``ts`` (UTC), ``event``, ``slug``, ``tag``, plus these fields.
+``out``, ``log`` and ``run_dirs`` are relative to the repo (``run_dirs`` are names inside results/runs).
 
-    queued          position
-    pull_start / pull_done                  exit_code (pull_done)
-    preflight_start / preflight_ok / preflight_fail / preflight_skipped
-    smoke_start     out, log
-    smoke_done      exit_code, tools (yes | no | not checked), reason, text, out, run_dirs
-    full_start      out, log
-    full_done       exit_code, out, run_dirs (+ reason when interrupted)
-    skipped         reason            (the full run will not happen; always the last line of a model
-                                       that did not reach full_done)
+    queued               position
+    pull_start           log
+    pull_done            exit_code (None: ollama could not start, see error)
+    preflight_start      log
+    preflight_ok         exit_code
+    preflight_fail       exit_code, detail (the FAIL lines of preflight.py)
+    preflight_skipped    reason ("scripted")
+    smoke_start          out, log
+    smoke_done           exit_code, tools (yes | no | not checked), reason, text, out, run_dirs, detail
+                         text = "<tools> (<reason>)", e.g. "no (every run errored)" or "not checked (scripted)"
+    full_start           out, log
+    full_done            exit_code, out, run_dirs (+ reason "interrupted")
+    skipped              reason. The full run will not happen. It is the last line of every model
+                         that did not reach full_done (no tool support, a failed step, --smoke-only, Ctrl-C).
 
 Concurrency: ``--parallel N`` (default 2, at most 4) runs N models at once on a thread pool, one child
-process per model. The same model never runs twice at once. N is forced to 1 while
-scripts/run_governance.py still calls ``corpus.build_and_write(``, because two runs would rewrite
-corpus/*.jsonl at the same time (the corpus race; the fix makes the run read-only on the corpus).
+process at a time per model. The same model never runs twice at once. N is forced to 1 while
+scripts/run_governance.py still contains ``build_and_write(`` (a plain text search, so keep that string out
+of its comments too): every run then rewrites corpus/*.jsonl at its start, and two runs at once would
+write the same files at the same time (the corpus race). The fix replaces the call by a read-only check.
 
-Stopping: Ctrl-C (or SIGTERM) stops the batch. Each running child gets exactly one interrupt, so its run
-folder still locks, and queued models are skipped. A second Ctrl-C ends the children at once.
+Stopping: Ctrl-C or SIGTERM stops the batch. Each running child gets exactly one interrupt, so its run
+folders still lock, and the queued models are skipped. A second Ctrl-C, or 60 s without an exit, ends the
+children at once; any run folder left unlocked is listed. Each child has its own process group (Windows)
+or session (POSIX), so a Ctrl-C typed in the terminal reaches only this script, which passes it on once.
+
+Exit code: 0 all went as planned (a model skipped for missing tool support is a result, not a failure);
+1 a step failed (preflight, pull, smoke or full); 2 bad command line or setup; 130 stopped.
 
 Not verified: how OLLAMA_NUM_PARALLEL and OLLAMA_MAX_LOADED_MODELS behave when two models run. Check
-with ``ollama ps`` while the batch runs.
+with ``ollama ps`` while the batch runs. Not verified on Windows: CTRL_BREAK_EVENT as the stop signal,
+taskkill for the hard stop. A child ends cleanly on a break only if it handles SIGBREAK.
 
 Standard library only; Python 3.9 or newer; no shell is ever used (argument lists, ``shell=False``).
 """
@@ -75,7 +88,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -356,8 +369,8 @@ def build_plan(opts: argparse.Namespace, layout: Layout, models: Sequence[Model]
 
 
 TOOL_CHECK_TEXT = (
-    'tool support is "yes" only with a structured tool call in the smoke traces, no "<tool_call>" text in any '
-    "final_text, and not every run errored; otherwise the full run is skipped"
+    'yes needs a structured tool call, no "<tool_call>" text in any final_text, and not every run '
+    "errored; otherwise the full run is skipped"
 )
 
 
@@ -419,6 +432,12 @@ def _read_json(path: Path):
         return None
 
 
+def _is_locked(run_dir: Path) -> bool:
+    """True when the run folder's manifest says ``locked`` (lab/run_folder.py does that when a run ends)."""
+    manifest = _read_json(Path(run_dir) / "manifest.json")
+    return isinstance(manifest, dict) and bool(manifest.get("locked"))
+
+
 def snapshot_runs(runs_dir: Path) -> Set[str]:
     """Names of the run folders that exist now. Taken before a step, to tell its new folders apart."""
     try:
@@ -462,6 +481,7 @@ class ToolCheck:
 
     @property
     def text(self) -> str:
+        """One line for a screen or the console, e.g. ``no (every run errored)``."""
         return f"{self.tools} ({self.reason})" if self.reason else self.tools
 
 
@@ -489,12 +509,22 @@ def classify_tool_support(traces: Sequence[dict]) -> ToolCheck:
     as_text = sum(1 for t in traces if TEXT_TOOL_CALL in str(t.get("final_text") or ""))
     if as_text:
         return ToolCheck("no", f"the model wrote tool calls as text ({TEXT_TOOL_CALL} in final_text)",
-                         f"{as_text} of {total} runs")
+                         f"in {as_text} of {total} runs")
     made = sum(1 for t in traces if _has_structured_call(t))
     if made == 0:
-        return ToolCheck("no", "no structured tool call in any run", f"{total} runs")
+        return ToolCheck("no", "no structured tool call in any run", f"{total} runs checked")
     return ToolCheck("yes", f"{made} of {total} runs made a structured tool call",
                      f"{len(errors)} of {total} runs errored" if errors else "")
+
+
+def tool_support_of(run_dirs: Sequence[Path]) -> ToolCheck:
+    """The tool-support check on the run folders of one smoke run."""
+    traces, unreadable = read_traces(run_dirs)
+    check = classify_tool_support(traces)
+    if unreadable:
+        note = f"{unreadable} trace files unreadable"
+        check = ToolCheck(check.tools, check.reason, "; ".join(x for x in (check.detail, note) if x))
+    return check
 
 
 # --------------------------------------------------------------------------- #
@@ -555,16 +585,33 @@ def _send_interrupt(proc: "subprocess.Popen") -> None:
         return
     try:
         if os.name == "nt":
-            # Not verified on Windows. The child sits in its own process group, which switches Ctrl-C off
-            # for it, so CTRL_BREAK_EVENT is the one console signal that can reach it. Python turns a
-            # break into KeyboardInterrupt only in a process that installs a SIGBREAK handler; without
-            # one, the child ends at once and its run folders stay unlocked (the end-of-batch report
-            # lists any such folder).
+            # CTRL_BREAK_EVENT to the child's process group: not verified on Windows.
+            # The child sits in its own process group, which switches Ctrl-C off for it, so a break is
+            # the one console signal that can reach it. Python turns a break into KeyboardInterrupt only
+            # in a process that installs a SIGBREAK handler. Without one the child ends at once and its
+            # run folders stay unlocked (the end-of-batch report lists any such folder).
             proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
         else:
             proc.send_signal(signal.SIGINT)
     except OSError:
         pass
+
+
+def _end_process(proc: "subprocess.Popen") -> None:
+    """End a child now (no cleanup: its run folders may stay unlocked)."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            # taskkill /T ends the whole tree: not verified on Windows. A venv's python.exe starts the real
+            # interpreter as its child, and TerminateProcess on the launcher alone could leave that child running.
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], check=False,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            proc.terminate()
+    except OSError:
+        with contextlib.suppress(OSError):
+            proc.terminate()
 
 
 def _exit_code(returncode: int) -> int:
@@ -609,8 +656,7 @@ class ChildSet:
             self.stopping = True
             todo = list(self._procs.values())
         for proc in todo:
-            with contextlib.suppress(OSError):
-                proc.terminate()
+            _end_process(proc)
 
 
 def _raise_keyboard_interrupt(signum, frame) -> None:  # pragma: no cover - runs in a signal handler
@@ -811,6 +857,8 @@ class Batch:
             emit("pull_done", exit_code=step.exit_code, **({"error": step.error} if step.error else {}))
             if step.interrupted:
                 return skip("interrupted", "interrupted")
+            if step.exit_code is None:
+                return skip("failed", f"ollama pull could not run ({step.error})")
             if step.exit_code != 0:
                 return skip("failed", f"ollama pull failed ({_exit_text(step)}); check the tag with: "
                                       f"ollama pull {model.tag}")
@@ -842,11 +890,7 @@ class Batch:
         elif self.scripted:
             check = ToolCheck("not checked", "scripted")
         else:
-            traces, unreadable = read_traces(smoke_dirs)
-            check = classify_tool_support(traces)
-            if unreadable:
-                check = ToolCheck(check.tools, check.reason,
-                                  "; ".join(x for x in (check.detail, f"{unreadable} trace files unreadable") if x))
+            check = tool_support_of(smoke_dirs)
         res.tools, res.tools_text = check.tools, check.text
         fields = {"exit_code": step.exit_code, "tools": check.tools, "reason": check.reason, "text": check.text,
                   "out": row["smoke_out"], "run_dirs": [p.name for p in smoke_dirs]}
@@ -896,13 +940,13 @@ class Batch:
                 tail = f"full run {'done' if res.outcome == 'ok' else res.outcome}: {res.out}"
                 if res.note and res.outcome != "ok":
                     tail += f"  ({res.note})"
+            elif res.outcome == "no_tools":
+                tail = "full run skipped"          # the reason is already in the tools column
             else:
                 tail = f"full run skipped: {res.note}"
             say(f"  {model.slug:<26} tools: {res.tools_text}  |  {tail}")
         if self.children.stopping:
-            unlocked = [p for p in sorted(self.run_dirs)
-                        if not (isinstance(_read_json(p / "manifest.json"), dict)
-                                and _read_json(p / "manifest.json").get("locked"))]
+            unlocked = [p for p in sorted(self.run_dirs) if not _is_locked(p)]
             if unlocked:
                 say("These run folders are NOT locked (their run did not end cleanly). Nothing was deleted:")
                 for path in unlocked:
@@ -928,8 +972,13 @@ def _check_setup(opts: argparse.Namespace, layout: Layout) -> str:
     python = opts.python or sys.executable
     if not python:
         raise UsageError("cannot tell which Python to run the child scripts with; pass --python PATH")
-    if opts.python and not (Path(opts.python).is_file() or shutil.which(opts.python)):
-        raise UsageError(f"--python {opts.python!r} is not a file or a command on PATH")
+    if opts.python:
+        if Path(opts.python).is_file():
+            # Absolute, because the children run in the repo folder. abspath, not resolve(): a venv's
+            # python is a symlink, and following it would leave the venv.
+            python = os.path.abspath(opts.python)
+        elif not shutil.which(opts.python):
+            raise UsageError(f"--python {opts.python!r} is not a file or a command on PATH")
     needed = ["run_governance.py"] + ([] if opts.scripted else ["preflight.py"])
     for name in needed:
         if not (layout.root / "scripts" / name).is_file():

@@ -535,6 +535,53 @@ def test_run_folder_helpers_survive_missing_and_damaged_files(rm, tmp_path):
     assert [p.name for p in rm.runs_for_model(runs, "alpha:1b", set())] == ["a"]   # "b" has no readable manifest
 
 
+def test_three_models_in_one_runs_folder_are_classified_each_from_its_own_folders(rm, tmp_path):
+    """Fabricated run folders on disk, read the way the batch reads them."""
+    runs = tmp_path / "runs"
+    before = rm.snapshot_runs(runs)
+    for cid in ("RC-001", "RC-002", "RC-003"):
+        _mk_run(runs, f"20261018T060000Z_alpha-1b_{cid}", "alpha:1b", [_trace(tool_calls=[CALL]), _trace()])
+        _mk_run(runs, f"20261018T060000Z_beta-2b_{cid}", "beta:2b",
+                [_trace(tool_calls=[CALL]), _trace(final_text="<tool_call>{}</tool_call>")])
+        _mk_run(runs, f"20261018T060000Z_gamma-3b_{cid}", "gamma:3b", [_trace(error="boom"), _trace(error="boom")])
+    got = {tag: rm.tool_support_of(rm.runs_for_model(runs, tag, before)) for tag in ("alpha:1b", "beta:2b", "gamma:3b")}
+    assert got["alpha:1b"].tools == "yes"
+    assert got["beta:2b"].tools == "no" and "<tool_call>" in got["beta:2b"].reason
+    assert got["gamma:3b"].tools == "no" and got["gamma:3b"].reason == "every run errored"
+    assert rm.tool_support_of([]).tools == "no"     # a smoke run that left no folder is not a pass
+
+
+def test_unreadable_trace_files_are_mentioned(rm, tmp_path):
+    runs = tmp_path / "runs"
+    d = _mk_run(runs, "a", "alpha:1b", [_trace(tool_calls=[CALL])])
+    (d / "traces" / "broken__rep1.json").write_text("{nope")
+    check = rm.tool_support_of([d])
+    assert check.tools == "yes" and "1 trace files unreadable" in check.detail
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need extra rights on Windows")
+def test_python_override_becomes_absolute_without_following_a_venv_symlink(rm, tmp_path, monkeypatch):
+    real = tmp_path / "base-python"
+    real.write_text("")
+    link = tmp_path / "venv-python"
+    link.symlink_to(real)
+    monkeypatch.chdir(tmp_path)
+    repo = make_repo(tmp_path / "r")
+    opts = rm.parse_args(["--python", "venv-python", "--scripted"])
+    got = rm._check_setup(opts, rm.Layout(root=repo, results=repo / "results"))
+    assert got == str(link)   # not str(real): resolving the link would leave the venv
+
+
+def test_a_missing_ollama_is_reported_as_such(rm, tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, ("alpha:1b",))
+    monkeypatch.setattr(rm, "OLLAMA_CMD", [str(tmp_path / "no-such-ollama")])
+    assert rm.main(["--pull"], root=repo, stamp=STAMP) == 1
+    assert events(repo) == ["queued", "pull_start", "pull_done", "skipped"]
+    pull_done, skipped = status_lines(repo)[2], status_lines(repo)[3]
+    assert pull_done["exit_code"] is None and "could not start" in pull_done["error"]
+    assert "could not run" in skipped["reason"]
+
+
 # --------------------------------------------------------------------------- #
 # Running a batch, SCRIPTED. The repo's own run_governance.py, output in a tmp folder.
 # --------------------------------------------------------------------------- #
