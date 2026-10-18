@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -61,8 +62,12 @@ ANSI = {"red": "31", "green": "32", "cyan": "36", "yellow": "33", "dim": "2", "b
 Line = Tuple[str, Optional[str], float]
 
 
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def clip(text: str, width: int = MAX_WIDTH) -> str:
     text = str(text).replace("\r", " ").replace("\n", " ").replace("\t", " ")     # one line
+    text = CONTROL.sub("?", text)   # model text must never drive the terminal (ESC, BEL, CSI ...)
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
@@ -338,7 +343,7 @@ def want_color(no_color_flag: bool, stream=None) -> bool:
 
 def emit(lines: List[Line], use_color: bool, pace: bool) -> None:
     for text, colour, delay in lines:
-        print(paint(text, colour, use_color), flush=True)
+        print(paint(CONTROL.sub("?", str(text)), colour, use_color), flush=True)   # last guard before the tty
         if pace and delay > 0:
             time.sleep(delay)
 

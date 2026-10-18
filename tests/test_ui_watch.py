@@ -296,3 +296,10 @@ def test_tickets_item_uses_the_bridge_first_field():
     # ui/bridge.py names the first ticket's title "first"
     line = watch.Watcher._item_line({"seq": 1, "type": "tickets", "rows": 3, "first": "Build D2 for V_read_restricted"})
     assert line is not None and line[0] == "fix raised  Build D2 for V_read_restricted"
+
+
+def test_clip_removes_terminal_control_characters():
+    # tool_calls text comes from a model under attack: it must not drive the terminal
+    out = watch.clip("ok\x1b[2J\x1b]0;pwned\x07\x9bAend\x00")
+    assert not any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in out)
+    assert out.startswith("ok") and out.endswith("end?")
