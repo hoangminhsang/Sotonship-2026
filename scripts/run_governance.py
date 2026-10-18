@@ -62,8 +62,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+if str(Path(__file__).resolve().parent) not in sys.path:  # scripts/verify_log.py: one writer for audit_verify.json
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd  # noqa: E402
+import verify_log  # noqa: E402  (scripts/verify_log.py)
 
 from lab import agent, corpus, defences, metrics, progress, run_folder, world  # noqa: E402
 from lab.demo import demo_traces  # noqa: E402  (the one offline run generator; no local copy)
@@ -505,6 +508,76 @@ def run_folder_id(saved, proof, live: bool) -> str | None:
     return None
 
 
+def _summary_csv(proof) -> Path | None:
+    """The summary.csv that sits beside a candidate's runs.csv (run folder, or the copy under --out)."""
+    return None if proof is None else Path(proof).parent / "summary.csv"
+
+
+# --------------------------------------------------------------------------- #
+# The two raw JSON files the dashboard export reads: <out>/audit_verify.json and <out>/run_index.json.
+# They are not reports: no mode label is stamped on them (Report.write would), and they are not
+# artifact events. Both hold repo-relative POSIX paths (the same rule as progress.jsonl).
+# --------------------------------------------------------------------------- #
+AUDIT_VERIFY_FILE = "audit_verify.json"
+RUN_INDEX_FILE = "run_index.json"
+RUN_INDEX_SCHEMA = "run-index/1"
+DEMO_DIGEST = "placeholder (DEMO)"  # the DEMO run loads no model, so it has no digest (as in the meta event)
+write_json = verify_log.write_json
+
+
+def _path_text(path) -> str | None:
+    """Repo-relative POSIX path, or ``<outside repo>/<name>``; a relative path means relative to the repo."""
+    if path is None:
+        return None
+    p = Path(path)
+    return progress.display_path(p if p.is_absolute() else REPO / p, REPO)
+
+
+class RunIndex:
+    """What ``run_index.json`` will say. Filled in while the pipeline runs, written once when it ends.
+
+    ``active`` turns on when the output folder exists; a run refused before that writes nothing. On a
+    failure the same document is written with ``complete: false`` and only the candidates reached so far.
+    """
+
+    def __init__(self, out_dir: Path, uid: str, mode: str, git_commit: str | None) -> None:
+        self.path = Path(out_dir) / RUN_INDEX_FILE
+        self.active = False
+        self.doc = {
+            "schema": RUN_INDEX_SCHEMA, "mode": mode, "uid": uid, "started": progress.utc_now(), "ended": None,
+            "complete": False, "model": None, "digest": None, "git_commit": git_commit,
+            "reps": None, "sample": None, "candidates": [],
+        }
+
+    def set_run(self, *, model, digest, reps, sample) -> None:
+        self.doc.update(model=model, digest=digest or None, reps=reps, sample=sample)
+
+    def candidate(self, cid: str, defences=None, **fields) -> None:
+        """Add ``cid`` (first call) or update it; a path field is stored as repo-relative POSIX."""
+        row = next((c for c in self.doc["candidates"] if c["id"] == cid), None)
+        if row is None:
+            row = {"id": cid, "defences": list(defences or []), "run_id": None, "runs_csv": None,
+                   "summary_csv": None, "gate": None, "fingerprint": None, "verdict": None}
+            self.doc["candidates"].append(row)
+        for key, value in fields.items():
+            row[key] = _path_text(value) if key in ("runs_csv", "summary_csv", "gate", "fingerprint") else value
+
+    def write(self, complete: bool) -> Path | None:
+        """Write the file; returns its path, or None for a run that never got to create its folder."""
+        if not self.active:
+            return None
+        self.doc.update(ended=progress.utc_now(), complete=bool(complete))
+        return write_json(self.path, self.doc)
+
+
+def audit_verify_document(real, mode: str, forged=None) -> dict:
+    """The ``audit-verify/1`` document for the real log's check, with the forged copy's result if the demo ran."""
+    tamper = None if forged is None else {
+        "ok": forged.ok, "bad_seq": forged.bad_seq, "kind": forged.kind, "detail": forged.detail,
+    }
+    return verify_log.verify_document(real, mode=mode, tamper_demo=tamper)
+
+
 # --------------------------------------------------------------------------- #
 # Main pipeline.
 # --------------------------------------------------------------------------- #
@@ -517,16 +590,19 @@ def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
     """
     prog = progress.Progress(args.out, repo=REPO, deferred=True)  # writes nothing until _run is past its checks
     started = time.monotonic()
+    mode = SAVED if args.run else (LIVE if args.live else SCRIPTED)
+    commit = progress.git_commit(REPO)
+    index = RunIndex(Path(args.out), prog.uid, mode, commit)
     prog.emit_lazy("pipeline_start", lambda: {
-        "mode": SAVED if args.run else (LIVE if args.live else SCRIPTED),
+        "mode": mode,
         "argv": progress.relativise_argv(list(argv or []), REPO),
         "out": progress.display_path(args.out, REPO),
         "platform": sys.platform,
-        "git_commit": progress.git_commit(REPO),
+        "git_commit": commit,
     })
     status, code = "ok", 0
     try:
-        code = _run(args, prog)
+        code = _run(args, prog, index)
         status = "ok" if code == 0 else "error"
         return code
     except KeyboardInterrupt:
@@ -541,9 +617,17 @@ def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
         prog.emit("pipeline_done", status=status, exit_code=code, dur_s=round(time.monotonic() - started, 3),
                   headline={"cands": list(prog.headline)}, error=prog.error)
         prog.close()
+        try:  # the index describes the run, so it never fails it; a partial one is written on error too
+            written = index.write(complete=(status == "ok" and code == 0))
+            if written is not None:
+                print(f"Run index : {written}")
+        except Exception as exc:  # noqa: BLE001 - not BaseException: Ctrl-C must get through
+            print(f"warning: could not write {RUN_INDEX_FILE}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
+def _run(args: argparse.Namespace, prog: progress.Progress, index: RunIndex | None = None) -> int:
+    if index is None:  # called without one (a test): collect into a throw-away index that is never written
+        index = RunIndex(Path(args.out), prog.uid, SAVED if args.run else (LIVE if args.live else SCRIPTED), None)
     # Saved runs are loaded and hash-verified before anything is written.
     saved_before = None
     saved_retests: dict[str, tuple] = {"RC-002": (None, None), "RC-003": (None, None)}
@@ -573,6 +657,10 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     prog.activate()  # the run is past its checks: progress.jsonl starts here (an old one is rotated)
+    index.active = True
+    stale_verify = out_dir / AUDIT_VERIFY_FILE
+    if stale_verify.exists():  # it describes the last run's log, not this one's: keep it under a stamped name
+        rotate_log(stale_verify)
     tag = SAVED if saved_before is not None else (LIVE if args.live else SCRIPTED)
     rep = Report(out_dir, tag=tag, note=SCRIPTED_NOTE if tag == SCRIPTED else "", prog=prog)
 
@@ -636,6 +724,8 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         model_digest = "sha256:845dbda0..."  # best-effort provenance for the demo
 
     reps = saved_before[0].get("reps") if saved_before is not None else args.reps
+    index.set_run(model=model_name, digest=DEMO_DIGEST if tag == SCRIPTED else model_digest, reps=reps,
+                  sample=args.sample if tag == LIVE else None)
     with prog.guard():
         used = live_subset(tests, args.sample) if tag == LIVE else tests  # the records the candidates run
         expected = (saved_before[0].get("expected_runs") or len(saved_before[2])) if saved_before is not None \
@@ -682,6 +772,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         prog.emit_lazy("gate", lambda: gate_fields(cid, verdict, report, path))
         with prog.guard():
             prog.headline.append(headline_entry(cid, verdict, summary))
+        index.candidate(cid, gate=path, verdict=verdict.status)
 
     # ----------------------------------------------------------------------- #
     # RC-001: the insecure agent.
@@ -710,6 +801,8 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         "runs_csv": proof_before,
         "summary": summary_before,
     })
+    index.candidate("RC-001", [], run_id=run_folder_id(saved_before, proof_before, args.live),
+                    runs_csv=proof_before, summary_csv=_summary_csv(proof_before))
 
     fp_001 = candidate.fingerprint(
         "RC-001",
@@ -724,6 +817,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
     )
     candidate.save(fp_001, out_dir)
     rep.add_file(out_dir / "RC-001.json", "fingerprint")
+    index.candidate("RC-001", [], fingerprint=out_dir / "RC-001.json")
     rep.say(f"\nFingerprint RC-001 identity: {fp_001.identity_hash()}")
     prog.emit_lazy("fingerprint", lambda: {"identity12": progress.short(fp_001.identity_hash()),
                                            "changed_vs_prev": None})
@@ -822,6 +916,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
         )
         candidate.save(fp, out_dir)
         rep.add_file(out_dir / f"{cid}.json", "fingerprint")
+        index.candidate(cid, codes, fingerprint=out_dir / f"{cid}.json")
         rep.say(f"Fingerprint changed vs {prev_cid}: {prev_fp.identity_hash() != fp.identity_hash()}")
         rep.say(f"(so {prev_cid}'s decision does not carry over — the re-test rule forces a fresh review)")
 
@@ -849,6 +944,8 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
             "runs_csv": proof,
             "summary": summary,
         })
+        index.candidate(cid, codes, run_id=run_folder_id(saved, proof, args.live),
+                        runs_csv=proof, summary_csv=_summary_csv(proof))
         # Same order as RC-001 in the log (runs, then fingerprint), though the file was written first.
         prog.emit_lazy("fingerprint", lambda: {
             "identity12": progress.short(fp.identity_hash()),
@@ -975,6 +1072,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
     real = audit.verify_log(audit_path)
     rep.say(f"Real log      : {real}")
     prog.emit_lazy("chain", lambda: chain_fields(real))
+    check = None  # the forged copy's result, when the tamper demo runs
 
     if args.tamper_demo:
         tampered = out_dir / "audit_log_tampered_demo.jsonl"
@@ -994,6 +1092,9 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
                 rep.say(f">>> TAMPERING DETECTED at entry #{check.bad_seq} (real log untouched) <<<")
             prog.emit_lazy("chain", lambda: chain_fields(real, check))
 
+    verify_file = out_dir / AUDIT_VERIFY_FILE  # raw JSON, written here where the chain is checked
+    write_json(verify_file, audit_verify_document(real, tag, check))
+
     # ----------------------------------------------------------------------- #
     # Final summary of artifacts + the headline verdicts.
     # ----------------------------------------------------------------------- #
@@ -1001,6 +1102,7 @@ def _run(args: argparse.Namespace, prog: progress.Progress) -> int:
     for p in rep.written:
         rep.say(f"  {p}")
     rep.say(f"  {audit_path}")
+    rep.say(f"  {verify_file}")
     for cid, proof in proofs.items():
         rep.say(f"  {proof}  ({cid} runs)")
 
