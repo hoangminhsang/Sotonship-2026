@@ -24,8 +24,9 @@ COPY_JS = UI / "copy.js"
 #   team team name (also copy.js)
 #   first, last  the first and last screen key, from the router
 #   who  reviewer name from data
-#   n    a count of rows that are listed on the screen
-ALLOWED_PLACEHOLDERS = {"t", "cmd", "cand", "team", "first", "last", "who", "n"}
+#   n    a count of rows that are listed on the screen, or of warnings
+#   i    how many of those warnings are about data integrity
+ALLOWED_PLACEHOLDERS = {"t", "cmd", "cand", "team", "first", "last", "who", "n", "i"}
 
 # The beat ids. Lane G writes its script against the same ids (fill_script.py, SCRIPT_CUT.md).
 BEAT_IDS = ["problem", "why_now", "pivot", "baseline", "duties", "tamper",

@@ -17,6 +17,12 @@ window.COPY = {
     "tagline": "The machine gives evidence. A person decides.",
     "track": "Responsible AI track"
   },
+  "warnings": {
+    "summary": "{n} warnings. The export report lists them.",
+    "summary_integrity": "{n} warnings, {i} about data integrity. The export report lists them.",
+    "integrity_only": "{i} data integrity warnings. The export report lists them.",
+    "sample": "SAMPLE data on screen — not produced by the backend"
+  },
   "cover": {
     "label": "Redline cover",
     "hint": "Press any key to start"

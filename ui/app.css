@@ -562,6 +562,59 @@ body.no-data #chips,body.no-data #replay{display:none}
 /* the element a beat points at keeps the focus ring, except in presenter mode, where the audience sees no operator aids */
 body.presenter .beat-target:focus,body.presenter .beat-target:focus-visible{outline:none;box-shadow:none}
 
+/* ---------- 15b type scale (owner direction, 18 Oct: medium fonts, easy to read at a glance) ----------
+   22 px  labels, footnotes, provenance, status tags (the minimum)
+   26 px  body text, table cells, card lines
+   40 px  the one screen title
+   56 px  at most one key number per screen; nothing is larger than 56 px anywhere.
+   These rules come last on purpose: they set the scale for every screen, the header and the cover. */
+body,.screen,.body,.lede,table.grid,.screen dd,#drawer dd,.entry,.chain,#k-note:not(:empty),#m-note:not(:empty),.d-text{font-size:26px}
+.screen-title,body #screen-6 .screen-title,#stage:has(> #banner:not([hidden])) .screen-title{font:400 40px/1.15 var(--serif);letter-spacing:0}
+.display,.display-m,.num-big{font-size:56px}
+.num-hero{font:300 56px/1 var(--serif)}
+.num-mid{font-size:40px}
+#c-evidence .rate-line .num-mid,.rate-line > :not(.num-mid):not(.num-big){font-size:26px;font-family:var(--sans);font-weight:400}
+#c-evidence .num-hero + :is(p,span,.body,.lede){font-size:26px}
+.quote,#r-controls .quote{font:italic 300 26px/1.3 var(--serif)}
+.screen h3,#b-batches,#b-batches strong,#b-batches h2,.group-head,.checks li{font-size:26px}
+.legend-item,.group-head > * + *,.test-col > :not(.tile),.checks .note,.d-code,.calls li,.verdict pre,.raw{font-size:22px}
+#d-title{font:300 40px/1.1 var(--serif)}
+.entry .time,.entry .hash,.entry code,.m-digest,.m-folder,.dc-line,.dc-reason,.dc-lede{font-size:22px}
+.entry{grid-template-columns:52px 430px 190px 130px minmax(0,1fr)}
+table.grid th{font-size:22px}
+table.grid code,.src code{font-size:22px}
+/* header: the brand is a small serif word; the honesty chips sit on one compact line at 22 px */
+.brand-name{font:400 26px/1 var(--serif)}
+.chip{padding:3px 10px;gap:8px}
+#chips{gap:8px}
+#banner{padding:4px 20px 4px 54px;font:500 22px/1.3 var(--sans)}
+#banner::before{width:30px}
+/* fewer boxes and rules: the key-value strips and the cover have none */
+#screen-1{row-gap:28px}
+#c-limits table.grid td:last-child{white-space:nowrap}
+/* the cover: one name at 56 px, plain lines under it */
+#cover-name{font:300 56px/1.1 var(--serif);letter-spacing:0;margin:0 0 14px}
+#cover-what{font:400 26px/1.4 var(--sans)}
+#cover-tagline{font:italic 300 26px/1.3 var(--serif);max-width:1200px}
+#cover-team{font:500 26px/1.3 var(--sans);margin-top:36px}
+#cover-track,#cover-hint{font-size:22px}
+#cover-rule{margin:30px 0 30px;width:240px}
+/* the release-decision card: short lines at 26 px and no big numbers */
+#p-decision{padding:12px 32px 8px;gap:8px}
+#p-decision .dc-col{row-gap:4px}
+.verdict.compact{padding:3px 14px 4px;margin:0 0 2px}
+.dc-cand{gap:3px}
+#p-decision .dc-head h2{font:500 26px/1.3 var(--sans);letter-spacing:0}
+.dc-cand{border-top:0;padding-top:0;gap:6px}
+.dc-id{font:500 26px/1.3 var(--sans)}
+.dc-who{font-size:26px}
+.verdict.compact .num-mid{font:500 26px/1.3 var(--sans)}
+.dc-facts{border-top:0;padding-top:6px}
+.dc-fact{grid-template-columns:210px minmax(0,1fr)}
+.screen dt,.dc-label{font-size:22px}
+/* the models table: cells at 26 px, secondary lines at 22 px */
+.m-tag{font-size:26px}
+
 /* ---------- 16 reduced motion ---------- */
 @media (prefers-reduced-motion:reduce){
   #deck,#deck.draw{transition:none}

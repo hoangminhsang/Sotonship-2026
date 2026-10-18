@@ -337,7 +337,7 @@
 
   /* The banner sentence. On the pipeline screen the board fills the stage, so the banner is hidden there
      (body[data-screen="6"] in app.css) and the same sentence leads the footer warnings instead. */
-  var SAMPLE_BANNER = 'SAMPLE data on screen — not produced by the backend';
+  var SAMPLE_BANNER = copy('warnings.sample') || 'SAMPLE data on screen';
 
   function renderBanner() {
     var b = $('banner');
@@ -358,32 +358,30 @@
     add(s, ['Exported ', V(D.exported_at)]);
   }
 
+  /* One short line at the bottom: how many warnings there are and where to read them. The full texts
+     stay in the title (hover) and in the export report. In presenter mode only integrity warnings count.
+     On the pipeline screen the SAMPLE sentence leads the line, because the banner is hidden there. */
   function renderWarnings() {
     var w = $('warn');
     if (!w) return;
     clear(w);
-    /* integrity warnings first and always (presenter too); info notes only outside presenter mode.
-       The footer holds two lines, so a longer list ends with a counted pointer to the export report. */
-    var all = (D.warnings || []).slice();
-    if (state.s === PIPELINE_SCREEN && samplePresent()) all.unshift({ level: 'integrity', text: SAMPLE_BANNER });
+    var all = D.warnings || [];
     var integrity = all.filter(function (x) { return x.level === 'integrity'; });
-    var info = all.filter(function (x) { return x.level !== 'integrity'; });
-    var shown = integrity.concat(state.p ? [] : info);
-    var MAX = 2;
-    var visible = shown.length > MAX ? shown.slice(0, MAX - 1) : shown;
-    visible.forEach(function (item) {
-      w.appendChild(el('p', { class: 'warn-line', 'data-level': item.level === 'integrity' ? 'integrity' : 'info', title: item.text }, [
-        el('span', { class: 'warn-level' }, item.level === 'integrity' ? 'Integrity:' : 'Note:'), ' ', V(item.text)
-      ]));
-    });
-    if (shown.length > visible.length) {
-      var rest = shown.slice(visible.length);
-      var restIntegrity = rest.some(function (x) { return x.level === 'integrity'; });
-      w.appendChild(el('p', {
-        class: 'warn-line', 'data-level': restIntegrity ? 'integrity' : 'info',
-        title: rest.map(function (x) { return x.text; }).join('\n')
-      }, [V(String(rest.length), 'warn-count'), restIntegrity ? ' more warnings, with integrity ones. The export report lists them.' : ' more notes. The export report lists them.']));
+    var text = '';
+    if (state.p) {
+      if (integrity.length) text = copy('warnings.integrity_only', { i: String(integrity.length) });
+    } else if (all.length) {
+      text = integrity.length
+        ? copy('warnings.summary_integrity', { n: String(all.length), i: String(integrity.length) })
+        : copy('warnings.summary', { n: String(all.length) });
     }
+    var sample = state.s === PIPELINE_SCREEN && samplePresent();
+    if (!text && !sample) return;
+    var shown = state.p ? integrity : all;
+    w.appendChild(el('p', {
+      class: 'warn-line', 'data-level': integrity.length || sample ? 'integrity' : 'info',
+      title: (sample ? [copy('warnings.sample')] : []).concat(shown.map(function (x) { return x.text; })).join('\n')
+    }, [sample ? copy('warnings.sample') + '. ' : null, text ? V(text) : null]));
   }
 
   function replayLabelsFor(n) {
