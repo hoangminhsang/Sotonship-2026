@@ -1,6 +1,6 @@
 window.DEMO = {
  "schema": "ui-demo/1",
- "exported_at": "2026-10-18T07:44:10+01:00",
+ "exported_at": "2026-10-18T10:15:17+01:00",
  "allow_sample": false,
  "sample_present": false,
  "sample_banner": null,
@@ -12,6 +12,14 @@ window.DEMO = {
   {
    "level": "info",
    "text": "Working-tree results/runs.csv matches d825341; no separate latest-local batch."
+  },
+  {
+   "level": "info",
+   "text": "run_folders is on, but no run folder matches results/runs/*/manifest.json."
+  },
+  {
+   "level": "info",
+   "text": "current_batch is newest-run, but there is no run folder; showing the first batch."
   },
   {
    "level": "info",
@@ -3660,6 +3668,18 @@ window.DEMO = {
   "risks": [],
   "evidence": [],
   "tickets": []
+ },
+ "governance": {
+  "dir": null,
+  "pick": null,
+  "mode": null,
+  "selected": null,
+  "candidates": []
+ },
+ "models": {
+  "rows": [],
+  "headline": null,
+  "note": "No model run found: results/governance/*/run_index.json (real-model or SAVED) is missing."
  },
  "numbers": {
   "headline.model": {
