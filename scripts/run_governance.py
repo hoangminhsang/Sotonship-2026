@@ -118,6 +118,47 @@ def load_saved_run(path: str | Path, expect_defences: tuple[str, ...]) -> tuple[
     return manifest, records, traces
 
 
+def drain_live(
+    sweep,
+    records: list[dict],
+    reps: int,
+    rules: dict,
+    tests_by_id: dict[str, dict],
+    prog: progress.Progress | None = None,
+) -> list[dict]:
+    """Collect a ``runner.run_split`` sweep one run at a time, telling the progress log about each.
+
+    ``run_start`` goes out before the model is called for a run, ``run_done`` after its trace is
+    written, scored with ``metrics.build_runs_frame([trace], ...)`` and carrying the running counters.
+    The order is records x reps, as ``run_split`` runs them. The sweep is closed in ``finally``, so
+    the run folder is locked also when a Ctrl-C lands between two runs; a Ctrl-C inside a run
+    reaches the generator's own ``finally`` first. Without ``prog`` this is ``list(sweep)``.
+    """
+    if prog is None:
+        return list(sweep)
+    schedule = [(test, rep) for test in records for rep in range(1, reps + 1)]
+    n = len(schedule)
+    stats = progress.RunningStats()
+    traces: list[dict] = []
+    try:
+        for i, (test, rep) in enumerate(schedule, start=1):
+            prog.emit_lazy("run_start", lambda: {
+                "i": i, "n": n, "test_id": test["id"], "rep": rep,
+                "kind": test["kind"], "technique": test.get("technique", "none"),
+            })
+            try:
+                trace = next(sweep)
+            except StopIteration:
+                break
+            traces.append(trace)
+            prog.emit_lazy("run_done", lambda: progress.run_fields(
+                i, n, trace, metrics.build_runs_frame([trace], rules, tests_by_id).iloc[0], stats))
+        traces.extend(sweep)  # nothing more is expected; this lets the sweep finish (and lock) itself
+    finally:
+        sweep.close()
+    return traces
+
+
 def run_candidate(
     tests: list[dict],
     tests_by_id: dict[str, dict],
@@ -150,11 +191,13 @@ def run_candidate(
         from lab import runner
 
         run_id = run_folder.make_run_id(agent.MODEL, candidate_id)
-        traces = list(
+        records = live_subset(tests, sample)
+        traces = drain_live(
             runner.run_split(
-                live_subset(tests, sample), reps=reps, temperature=temperature,
+                records, reps=reps, temperature=temperature,
                 defences=tuple(defence_codes), candidate=candidate_id, split="test", run_id=run_id,
-            )
+            ),
+            records, reps, rules, tests_by_id, prog,
         )
         proof = run_folder.RUNS_ROOT / run_id / "runs.csv"
     else:
