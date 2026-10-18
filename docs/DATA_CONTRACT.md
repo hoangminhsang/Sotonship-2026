@@ -496,7 +496,7 @@ Stage ids: `setup`; then for each candidate `RC-00N:runs`, `RC-00N:gate`, `RC-00
 
 ## 9. `ui/data/replay.js` — `window.LIVE_REPLAY`, schema `ui-replay/1`
 
-**Producer:** `python ui/bridge.py --bake PATH` (a `progress.jsonl`, or a run folder that holds one). **Consumer:** `ui/pipeline.js`, when no bridge runs (the page opened from `file://`). Space plays it, Home restarts it, `[` and `]` switch the model.
+**Producer:** `python ui/bridge.py --bake PATH` (a `progress.jsonl`, or a run folder that holds one). **Consumer:** `ui/pipeline.js`, when no bridge runs (the page opened from `file://`). Space plays or pauses it, Home restarts it, and `[` and `]` step to the previous or next recorded run (or one frame, when the file holds one run).
 **Committed placeholder:** `window.LIVE_REPLAY = null;`.
 
 ```
