@@ -330,6 +330,8 @@ def describe(source_file, rev, loc: dict) -> str:
         return f"{src}{at} {loc.get('json_path', '')}"
     if k == "git":
         return f"git {loc.get('cmd', '')}"
+    if k == "manifests":
+        return f"{', '.join(loc.get('files', []))} started_at,ended_at"
     if k == "fixture":
         if loc.get("key") == "entries":
             return f"{src} {loc.get('json_path', '')} entry count"
@@ -1429,6 +1431,8 @@ def resolve_raw(ctx: Ctx, p: dict) -> str:
     src, rev = p.get("source_file"), p.get("rev")
     if kind == "git":
         return git_locator(ctx, loc.get("cmd", ""))
+    if kind == "manifests":
+        return manifest_times(ctx, loc["files"], loc["key"])[0]
     if kind == "fixture":
         text, _ = read_text(ctx, src, None)
         content = get_path(json.loads(text), loc["json_path"])
@@ -3195,7 +3199,7 @@ NUMBER_KEYS = (
     ("headline.model", "policy.max_asr")
     + tuple(f"{c.lower().replace('-', '')}.{p}" for c in NUMBER_CANDIDATES for p in NUMBER_PARTS)
     + ("runs.attack", "runs.total", "reps", "benign.rate", "benign.n",
-       "audit.entries", "chain.status", "tamper.entry", "models.n")
+       "audit.entries", "chain.status", "tamper.entry", "time.to_decision", "time.runs", "models.n")
 )
 RE_NUMBER_KEY = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")   # "reps" or "rc001.asr"
 RE_CI_RANGE = re.compile(r"95% CI (\[[^\]]*\])")
@@ -3213,7 +3217,12 @@ def number_source(p: dict, mode) -> str:
     """Where a number comes from, in words: file, revision, place. A scripted value says so."""
     loc = p.get("locator") or {}
     at = f" @{p['rev']}" if p.get("rev") else ""
-    if "line" in loc:
+    files = loc.get("files") or []
+    if len(files) > 1:                       # a time read from several manifests
+        where = f" and {len(files) - 1} more started_at,ended_at"
+    elif files:
+        where = " started_at,ended_at"
+    elif "line" in loc:
         where = f" line {loc['line']}"
     elif "row" in loc:
         where = f" row {loc['row']}"
@@ -3353,6 +3362,79 @@ def reps_number(ctx: Ctx, gov: dict, ev_batch, tags: dict, folder_mode):
     return None
 
 
+def fmt_duration(seconds) -> str:
+    """4 min 12 s, 59 s, 1 h 2 min 5 s: whole seconds, the largest units first."""
+    h, rest = divmod(int(round(seconds)), 3600)
+    m, s = divmod(rest, 60)
+    return f"{h} h {m} min {s} s" if h else (f"{m} min {s} s" if m else f"{s} s")
+
+
+def manifest_times(ctx: Ctx, files: list, key: str):
+    """(raw, seconds) of the run times in the manifests of run folders.
+
+    key "span": the first start to the last end, raw "<start>, <end>". key "sum": the run times added up, raw
+    "<start>, <end>" of every manifest joined by "; ". Raises SourceError when a manifest has no usable times.
+    """
+    pairs = []
+    for f in files:
+        try:
+            m = json.loads(read_text(ctx, f)[0])
+            s, e = parse_iso(m.get("started_at")), parse_iso(m.get("ended_at"))
+        except (SourceError, ValueError, AttributeError):
+            s = e = None
+        if s is None or e is None or e < s:
+            raise SourceError(f"{f}: no usable started_at and ended_at")
+        pairs.append((m["started_at"], s, m["ended_at"], e))
+    if key == "span":
+        first, last = min(pairs, key=lambda x: x[1]), max(pairs, key=lambda x: x[3])
+        return f"{first[0]}, {last[2]}", (last[3] - first[1]).total_seconds()
+    return "; ".join(f"{x[0]}, {x[2]}" for x in pairs), sum((x[3] - x[1]).total_seconds() for x in pairs)
+
+
+def time_numbers(ctx: Ctx, gov: dict, batches: dict, tags: dict, folder_mode, got: dict) -> None:
+    """time.to_decision and time.runs, measured from files, never typed.
+
+    time.to_decision: start to end of the pipeline run from run_index.json when it has both (and says it is
+    complete); else the first start to the last end over the run folders of all candidates. time.runs: the run
+    times of those run folders added up. A run without usable times leaves the key PENDING.
+    """
+    mode = tags.get("run_index.json") or folder_mode
+    status = SAMPLE if mode == MODE_SCRIPTED else REAL
+    try:
+        folder = governance_dir(gov)
+        rel = "run_index.json" if folder in ("", ".") else f"{folder}/run_index.json"
+        ri = json.loads(read_text(ctx, rel)[0])
+    except Exception:  # noqa: BLE001
+        ri = None
+    if isinstance(ri, dict) and ri.get("complete") is True:
+        sk = next((k for k in ("started_at", "started") if k in ri), None)
+        ek = next((k for k in ("ended_at", "ended") if k in ri), None)
+        s, e = parse_iso(ri.get(sk)), parse_iso(ri.get(ek))
+        if s is not None and e is not None and e >= s:
+            text = fmt_duration((e - s).total_seconds())
+            pid = ctx.add_prov("numbers.time.to_decision", status, text, f"{ri[sk]}, {ri[ek]}",
+                               "end minus start of the pipeline run, in whole seconds", rel, None,
+                               {"kind": "text", "json_path": f"{sk},{ek}"})
+            got["time.to_decision"] = num_entry(ctx, text, status, mode, pid)
+    cands = gov.get("candidates") or []
+    files = [f"{c['run_dir']}/manifest.json" for c in cands
+             if c.get("run_dir") and (batches.get(c.get("batch")) or {}).get("status") == REAL]
+    if not cands or len(files) != len(cands):
+        return
+    for key, name, fmt in (("span", "time.to_decision", "last end minus first start of the candidates' runs"),
+                           ("sum", "time.runs", "the run times of the candidates added up")):
+        if key == "span" and got["time.to_decision"]["status"] != PENDING:
+            continue
+        try:
+            raw, seconds = manifest_times(ctx, files, key)
+        except SourceError:
+            continue
+        text = fmt_duration(seconds)
+        pid = ctx.add_prov(f"numbers.{name}", REAL, text, raw, fmt + ", in whole seconds", files[0], None,
+                           {"kind": "manifests", "files": files, "key": key})
+        got[name] = num_entry(ctx, text, REAL, folder_mode, pid)
+
+
 def audit_numbers(ctx: Ctx, audit: dict, mode, got: dict) -> None:
     """audit.entries, chain.status and tamper.entry, from the audit log and its verify file."""
     why = (audit or {}).get("reason") or NOT_CONNECTED
@@ -3445,6 +3527,11 @@ def build_numbers(ctx: Ctx, batches: dict, gate: dict, audit: dict, policy: dict
         if lim.get("key") == "max_attack_success_rate" and f.get("status") == REAL and f.get("prov") in ctx.prov:
             got["policy.max_asr"] = num_entry(ctx, f["text"], REAL, None, f["prov"])
     audit_numbers(ctx, audit, mode_of((audit or {}).get("source_file")), got)
+    got["time.to_decision"] = got["time.runs"] = num_pending(
+        why_gate if not gate_ok else "no finished run behind the gate: no run_index.json with a start and an end, "
+                                     "and not every candidate has a usable run folder")
+    if gate_ok and connected:
+        time_numbers(ctx, gov, batches, tags, folder_mode, got)
     got["models.n"] = num_pending("there is no models table yet: it needs results/governance/*/run_index.json")
     return {k: got.get(k) or num_pending("no source for this key") for k in NUMBER_KEYS}
 
@@ -3535,7 +3622,7 @@ def build_demo(ctx: Ctx) -> dict:
                 continue
             run = next((r for r in runs if r["run_dir"] == rd), {"name": Path(rd).name, "run_dir": rd, "manifest": None})
             cfg = run_folder_config(run)
-            c["run_name"], c["batch"] = run["name"], cfg["id"]
+            c["run_name"], c["batch"], c["run_dir"] = run["name"], cfg["id"], run["run_dir"]
             if cfg["id"] not in batches:
                 b = safe(ctx, f"Run folder {cfg['id']}", build_batch, ctx, cfg, "local") or pending_batch(
                     ctx, cfg["id"], cfg["title"], "The run folder could not be read.")
