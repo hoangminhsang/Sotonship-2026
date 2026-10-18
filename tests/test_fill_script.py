@@ -440,13 +440,18 @@ def test_bad_wpm_is_a_usage_error(fs, tmp_path, wpm):
 # ------------------------------------------------------------------ beat ids
 
 AGREED_IDS = (
-    "problem", "why_now", "pivot", "rc001", "duties",
+    "problem", "why_now", "pivot", "baseline", "duties",
     "tamper", "safeguard", "limits", "business", "close",
 )
 
 
 def test_the_built_in_id_list_is_the_agreed_one(fs):
     assert tuple(fs.BUILTIN_IDS) == AGREED_IDS
+
+
+def test_the_built_in_ids_contain_no_digit(fs):
+    # ui/copy.js must hold no digit at all, ids included (lane F's rule).
+    assert not [i for i in fs.BUILTIN_IDS if any(ch.isdigit() for ch in i)]
 
 
 def test_a_heading_may_start_with_an_id(fs, capsys, tmp_path):
@@ -474,8 +479,8 @@ def test_an_id_must_be_lowercase(fs, capsys, tmp_path):
 
 
 def test_an_id_with_no_title_is_used_as_the_title(fs, capsys, tmp_path):
-    _, out, _ = run(fs, capsys, tmp_path, "## rc001: [20s]\n" + words(5) + "\n", {})
-    assert rows(out)["rc001"]["id"] == "rc001"
+    _, out, _ = run(fs, capsys, tmp_path, "## baseline: [20s]\n" + words(5) + "\n", {})
+    assert rows(out)["baseline"]["id"] == "baseline"
 
 
 def test_the_agreed_ids_are_accepted_in_any_order(fs, capsys, tmp_path):
@@ -516,7 +521,7 @@ def test_ids_in_the_list_but_not_in_the_script_are_listed_without_failing(fs, ca
     tpl = ibeat("problem", "Problem", "20s", words(5)) + ibeat("close", "Close", "7s", words(5))
     code, out, _ = run(fs, capsys, tmp_path, tpl, {})
     assert ("Ids in the list but not in the script: "
-            "why_now, pivot, rc001, duties, tamper, safeguard, limits, business") in out
+            "why_now, pivot, baseline, duties, tamper, safeguard, limits, business") in out
     assert code == 0
 
 

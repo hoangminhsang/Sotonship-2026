@@ -25,7 +25,7 @@ TEMPLATE FORMAT (Markdown)
   1. A beat is a heading (# to ######) that ENDS with its time slot in seconds,
      in square brackets: "## problem: Problem [20s]" or "## Close [7.5s]".
   2. The heading may start with an id: lowercase letters, digits and
-     underscores, then a colon ("problem:", "why_now:", "rc001:"). The id is
+     underscores, then a colon ("problem:", "why_now:", "baseline:"). The id is
      the key of the beat in ui/copy.js. The beats may come in any order. A
      title that only contains a colon ("Why now: the gap") has no id.
   3. A beat runs from its heading to the next heading of any kind, or to the
@@ -61,7 +61,7 @@ NUMBERS FILE (JSON object; default ui/data/numbers.json)
 BEAT IDS
 
   The id list is the beat list of ui/copy.js. Built in, in order: problem,
-  why_now, pivot, rc001, duties, tamper, safeguard, limits, business, close.
+  why_now, pivot, baseline, duties, tamper, safeguard, limits, business, close.
   --ids sets another list: ids separated by commas, a JSON file (a list of ids
   or of {"id": ...} objects, an object keyed by id, or {"beats": ...}), or a
   .js file with a beats list (copy.js). Without --ids the tool reads
@@ -100,7 +100,7 @@ DEFAULT_COPY = REPO / "ui" / "copy.js"
 DEFAULT_WPM = 150.0
 
 # The beats of ui/copy.js, in its order (agreed with lane F, 18 Oct 2026).
-BUILTIN_IDS = ("problem", "why_now", "pivot", "rc001", "duties",
+BUILTIN_IDS = ("problem", "why_now", "pivot", "baseline", "duties",
                "tamper", "safeguard", "limits", "business", "close")
 
 # "## problem: Problem [20s]": a heading whose text ends with the slot in seconds.
