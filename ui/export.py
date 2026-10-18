@@ -2819,6 +2819,131 @@ def build_candidates(ctx: Ctx, gov: dict, batches: dict, gate: dict, assurance: 
     return {"dir": folder, "pick": gov.get("pick"), "mode": mode, "selected": gov["selected"], "candidates": out}
 
 
+def note_field(ctx: Ctx, pid: str, f, rx, build, fmt: str) -> dict:
+    """A Field made from a part of another Field's text, with the other Field's source and place."""
+    if not f or f.get("status") not in (REAL, SAMPLE) or f.get("prov") not in ctx.prov:
+        return ctx.field("not available", PENDING)
+    m = rx.search(f["text"])
+    if not m:
+        return ctx.field("not available", PENDING)
+    b = ctx.prov[f["prov"]]
+    return ctx.pfield(pid, build(m), f["status"], b["raw"], fmt, b["source_file"], b["rev"], b["locator"])
+
+
+def model_gate_fields(ctx: Ctx, folder: str, cid: str, base: str):
+    """What one models row shows from gate_<cid>.txt: asr, x_of_n, range, benign, errors, verdict (Fields)."""
+    rel = f"{folder}/gate_{cid}.txt"
+    try:
+        gb = gate_from_text(ctx, read_text(ctx, rel)[0], REAL, rel, {"kind": "text"}, pid_base=base)
+    except SourceError:
+        return None
+    checks = {c["name"]: c for c in gb["checks"]}
+    asr = checks.get("attack_success_rate") or {}
+    ben = checks.get("min_benign_task_success") or {}
+    err = checks.get("max_error_rate") or {}
+    n_of = "{}" + " of " + "{}"
+    return {
+        "asr": asr.get("value") or ctx.field("not available", PENDING),
+        "x_of_n": note_field(ctx, f"{base}.x_of_n", asr.get("note"), RE_X_OF_N, lambda m: n_of.format(m.group(1), m.group(2)),
+                             "the x/n at the start of the gate note, written x of n"),
+        "range": note_field(ctx, f"{base}.range", asr.get("note"), RE_CI_RANGE, lambda m: m.group(1),
+                            "the [low, high] range inside the gate note"),
+        "benign": note_field(ctx, f"{base}.benign", ben.get("note"), RE_X_OF_N, lambda m: n_of.format(m.group(1), m.group(2)),
+                             "the x/n of the normal-task note, written x of n"),
+        "errors": note_field(ctx, f"{base}.errors", err.get("note"), RE_X_OF_N,
+                             lambda m: n_of.format(m.group(1), m.group(2)) + " runs errored",
+                             "the x/n of the error-rate note, written x of n runs errored"),
+        "verdict": gb["verdict"],
+    }
+
+
+def build_models(ctx: Ctx, headline) -> dict:
+    """The Models screen: one row per model, sorted by tag, never ranked.
+
+    A row comes from the newest complete run_index.json of that model in a real-model mode or SAVED (a full run
+    before a smoke run), and from the latest smoke_done of results/models/*/status.jsonl for the tool check
+    (scripts/run_models.py). A model that cannot call tools never reads as a safe 0%: its row says so.
+    """
+    cfg = ctx.sources.get("models") or {}
+    runs: dict = {}
+    for p in sorted(ctx.repo_root.glob(rel_path(cfg.get("governance_glob") or "results/governance/*/run_index.json"))):
+        try:
+            ri = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        started = parse_iso(ri.get("started_at") or ri.get("started")) if isinstance(ri, dict) else None
+        tag = ri.get("model") if isinstance(ri, dict) else None
+        if started is None or ri.get("complete") is not True or ri.get("mode") not in (MODE_REAL, MODE_SAVED) \
+                or not isinstance(tag, str) or not tag.strip():
+            continue
+        runs.setdefault(tag, []).append({"folder": p.parent.relative_to(ctx.repo_root).as_posix(), "ri": ri,
+                                         "ts": started.timestamp(), "smoke": p.parent.name.endswith("_smoke")})
+    status: dict = {}
+    for sp in sorted(ctx.repo_root.glob(rel_path(cfg.get("status_glob") or "results/models/*/status.jsonl"))):
+        rel = sp.relative_to(ctx.repo_root).as_posix()
+        try:
+            lines = text_lines(sp.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        for no, line in enumerate(lines, start=1):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("tag"), str) and obj.get("event") in ("smoke_done", "skipped"):
+                when = parse_iso(obj.get("ts"))
+                key, ts = ("smoke" if obj["event"] == "smoke_done" else "skipped"), when.timestamp() if when else 0.0
+                old = status.setdefault(obj["tag"], {}).get(key)
+                if old is None or ts >= old[3]:
+                    status[obj["tag"]][key] = (no, rel, obj, ts)
+    rows = []
+    for tag in sorted(set(runs) | set(status)):
+        slug = re.sub(r"[^A-Za-z0-9_-]", "-", tag)
+        rs = sorted(runs.get(tag, []), key=lambda r: r["ts"], reverse=True)
+        full = next((r for r in rs if not r["smoke"]), None)
+        use = full or next((r for r in rs if r["smoke"]), None)
+        sm = status.get(tag, {}).get("smoke")
+        tools = sm[2].get("text") or sm[2].get("tools") if sm else None
+        tool_calls = ctx.field("not checked", PENDING)
+        if isinstance(tools, str) and tools:
+            tool_calls = ctx.pfield(f"models.{slug}.tools", tools, REAL, tools, "as written by scripts/run_models.py",
+                                    sm[1], None, {"kind": "jsonl", "line": sm[0],
+                                                  "json_path": "text" if sm[2].get("text") else "tools"})
+        row = {"tag": ctx.field(tag, PENDING), "digest": ctx.field(NOT_RECORDED, PENDING), "mode": None, "source": None,
+               "data_from": None, "headline": isinstance(headline, str) and headline == tag, "tool_calls": tool_calls,
+               "rc001": None, "benign": None, "errors": None, "verdicts": [], "asr_note": None}
+        if use:
+            ri_path = f"{use['folder']}/run_index.json"
+            ri = use["ri"]
+            row["tag"] = ctx.pfield(f"models.{slug}.tag", tag, REAL, tag, "as written", ri_path, None,
+                                    {"kind": "text", "json_path": "model"})
+            if isinstance(ri.get("digest"), str) and ri["digest"]:
+                row["digest"] = ctx.pfield(f"models.{slug}.digest", short_digest(ri["digest"]), REAL, ri["digest"],
+                                           "first 12 hex digits of the sha256", ri_path, None,
+                                           {"kind": "text", "json_path": "digest"})
+            row["mode"] = ctx.pfield(f"models.{slug}.mode", ri["mode"], REAL, ri["mode"], "as written", ri_path, None,
+                                     {"kind": "text", "json_path": "mode"})
+            row["source"], row["data_from"] = use["folder"], "full" if full else "smoke"
+            for c in governance_candidates(ctx, use["folder"]):
+                g = model_gate_fields(ctx, use["folder"], c["id"], f"models.{slug}.{c['id']}")
+                if g is None:
+                    continue
+                row["verdicts"].append({"id": c["id"], "verdict": g["verdict"]})
+                if c["id"] == NUMBER_CANDIDATES[0]:
+                    row["rc001"] = {k: g[k] for k in ("asr", "x_of_n", "range")}
+                    row["benign"], row["errors"] = g["benign"], g["errors"]
+        elif sm:
+            row["tag"] = ctx.pfield(f"models.{slug}.tag", tag, REAL, tag, "as written by scripts/run_models.py", sm[1],
+                                    None, {"kind": "jsonl", "line": sm[0], "json_path": "tag"})
+        if isinstance(tools, str) and tools.startswith("no"):
+            row["asr_note"] = "This model made no tool calls that count, so a 0% here means nothing."
+        elif row["data_from"] == "smoke":
+            row["asr_note"] = "Only the smoke run exists: one attack test, one repetition. It is not a result."
+        rows.append(row)
+    note = None if rows else "No model run found: results/governance/*/run_index.json (real-model or SAVED) is missing."
+    return {"rows": rows, "headline": headline if isinstance(headline, str) else None, "note": note}
+
+
 def build_governance(ctx: Ctx, batches: dict):
     gov = ctx.sources.get("governance") or {}
     connected = gov.get("connected") is True
@@ -3452,6 +3577,9 @@ def build_demo(ctx: Ctx) -> dict:
     console = build_console(ctx, cur, gate, latest)
     numbers = safe(ctx, "Numbers sheet", build_numbers, ctx, batches, gate, audit, policy) or {
         k: num_pending("the numbers sheet could not be built") for k in NUMBER_KEYS}
+    head = numbers["headline.model"]
+    models = safe(ctx, "Models", build_models, ctx, head["text"] if head["status"] != PENDING else None) or {
+        "rows": [], "headline": None, "note": "The models table could not be built."}
 
     results_status = cur["status"] if cur else PENDING
     datasets = [
@@ -3496,6 +3624,7 @@ def build_demo(ctx: Ctx) -> dict:
         "audit": audit,
         "assurance": assurance,
         "governance": governance,
+        "models": models,
         "numbers": numbers,
         "labels": {
             "states": STATE_LABELS, "techniques": TECHNIQUE_LABELS, "places": PLACE_LABELS,
@@ -3608,7 +3737,7 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
     probs = []
     for k in ("schema", "exported_at", "allow_sample", "sample_present", "warnings", "provenance", "datasets",
               "batches", "current_batch", "console", "policy", "audit", "assurance", "controls", "compare", "labels",
-              "numbers", "governance"):
+              "numbers", "governance", "models"):
         if k not in demo:
             probs.append(f"missing key {k}")
     if demo.get("schema") != SCHEMA:

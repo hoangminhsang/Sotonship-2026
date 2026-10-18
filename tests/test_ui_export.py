@@ -795,7 +795,7 @@ def write_live_folder(root: Path, cli, tag: str = "LIVE", run=None, size=None, m
                  for cid in run]
         (out / "run_index.json").write_text(json.dumps({
             "schema": "run-index/1", "mode": tag, "complete": complete, "started_at": started_at,
-            "reps": size["reps"], "model": model, "candidates": cands}), encoding="utf-8")
+            "reps": size["reps"], "model": model, "digest": digest, "candidates": cands}), encoding="utf-8")
 
 
 def expected_sheet(run=None, size=None) -> dict:
@@ -1438,6 +1438,99 @@ def test_assurance_has_the_risks_of_every_candidate(ex, repo):
         rows = [ln for ln in text.splitlines() if ln.startswith("| R-")]
         assert [r["id"] for r in by[cid]["risks"]] == [ln.split("|")[1].strip() for ln in rows], cid
     assert demo["assurance"]["risks"] and demo["assurance"]["source_files"][0].endswith("risk_register_after.md")
+
+
+# --------------------------------------------------------------------------- #
+# Models screen: one row per model, from results/governance/*/run_index.json and results/models/*/status.jsonl.
+# The status.jsonl lines follow the docstring of scripts/run_models.py (lane B).
+# --------------------------------------------------------------------------- #
+def put_model_run(root, cli, name, model, tag="LIVE", started="2026-10-18T06:00:00+00:00", complete=True, run=None,
+                  size=None):
+    write_live_folder(root, cli, tag=tag, model=model, started_at=started, complete=complete, run=run, size=size,
+                      folder=f"results/governance/{name}")
+    return f"results/governance/{name}"
+
+
+def put_status(root, stamp, events):
+    d = root / "results" / "models" / stamp
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "status.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+
+
+def smoke_done(tag, tools, reason="", out="results/governance/x_smoke", ts="2026-10-18T05:00:00+00:00"):
+    return {"ts": ts, "event": "smoke_done", "slug": tag.replace(":", "-"), "tag": tag, "exit_code": 0,
+            "tools": tools, "reason": reason, "text": f"{tools} ({reason})" if reason else tools, "out": out,
+            "run_dirs": []}
+
+
+def test_models_has_one_row_per_model_sorted_by_tag_with_the_newest_full_run(ex, tmp_path, cli_mod):
+    older = {"RC-001": (30, 30), "RC-002": (20, 30), "RC-003": (10, 30)}
+    newer = {"RC-001": (12, 12), "RC-002": (6, 12), "RC-003": (0, 12)}
+    put_model_run(tmp_path, cli_mod, "20261018T050000Z_zeta", "zeta:1b", started="2026-10-18T05:00:00+00:00", run=older)
+    put_model_run(tmp_path, cli_mod, "20261018T060000Z_alpha", "alpha:7b", started="2026-10-18T06:00:00+00:00")
+    put_model_run(tmp_path, cli_mod, "20261018T070000Z_alpha", "alpha:7b", started="2026-10-18T07:00:00+00:00", run=newer)
+    ctx = make_ctx(ex, tmp_path)
+    models = ex.build_models(ctx, "alpha:7b")
+    rows = models["rows"]
+    assert [r["tag"]["text"] for r in rows] == ["alpha:7b", "zeta:1b"]          # sorted by tag, no ranking
+    alpha = rows[0]
+    assert alpha["source"] == "results/governance/20261018T070000Z_alpha" and alpha["mode"]["text"] == "LIVE"
+    assert alpha["headline"] is True and rows[1]["headline"] is False
+    from lab import metrics
+
+    w = metrics.wilson(12, LIVE_SIZE["attack"])        # the gate files were made with the default size
+    assert alpha["rc001"]["x_of_n"]["text"] == f"12 of {LIVE_SIZE['attack']}"
+    assert alpha["rc001"]["asr"]["text"] == f"{w.rate:.1%}" and alpha["rc001"]["range"]["text"] == f"[{w.lo:.1%}, {w.hi:.1%}]"
+    assert alpha["benign"]["text"] == f"{LIVE_SIZE['benign']} of {LIVE_SIZE['benign']}"
+    assert alpha["errors"]["text"] == f"0 of {LIVE_SIZE['attack'] + LIVE_SIZE['benign']} runs errored"
+    assert [(v["id"], v["verdict"]["text"]) for v in alpha["verdicts"]] == [("RC-001", "FAIL"), ("RC-002", "FAIL"),
+                                                                           ("RC-003", "PASS")]
+    assert alpha["digest"]["text"] == "sha256:" + "ab" * 6
+    assert ex.self_check(ctx, list(ctx.prov.values())) == []
+
+
+def test_models_take_the_tool_check_from_status_jsonl(ex, tmp_path, cli_mod):
+    put_model_run(tmp_path, cli_mod, "20261018T060000Z_a", "a:1", started="2026-10-18T06:00:00+00:00")
+    put_model_run(tmp_path, cli_mod, "20261018T061000Z_b", "b:1", started="2026-10-18T06:10:00+00:00")
+    put_model_run(tmp_path, cli_mod, "20261018T062000Z_c", "c:1", started="2026-10-18T06:20:00+00:00")
+    put_status(tmp_path, "20261018T050000Z", [
+        {"ts": "2026-10-18T05:00:00+00:00", "event": "queued", "slug": "a-1", "tag": "a:1", "position": 1},
+        smoke_done("a:1", "yes"),
+        smoke_done("b:1", "no", "every run errored"),
+        {"ts": "2026-10-18T05:30:00+00:00", "event": "skipped", "slug": "b-1", "tag": "b:1", "reason": "no tool support"}])
+    ctx = make_ctx(ex, tmp_path)
+    by = {r["tag"]["text"]: r for r in ex.build_models(ctx, None)["rows"]}
+    assert (by["a:1"]["tool_calls"]["text"], by["a:1"]["tool_calls"]["status"]) == ("yes", ex.REAL)
+    assert by["b:1"]["tool_calls"]["text"] == "no (every run errored)"
+    assert (by["c:1"]["tool_calls"]["text"], by["c:1"]["tool_calls"]["status"]) == ("not checked", ex.PENDING)
+    assert by["a:1"]["asr_note"] is None and by["c:1"]["asr_note"] is None
+    assert "no tool calls" in by["b:1"]["asr_note"]          # a model that cannot call tools never reads as safe
+    assert ex.self_check(ctx, list(ctx.prov.values())) == []
+
+
+def test_a_model_that_only_has_a_smoke_run_shows_it_as_a_smoke_run(ex, tmp_path, cli_mod):
+    put_model_run(tmp_path, cli_mod, "20261018T050000Z_x_smoke", "x:1", started="2026-10-18T05:00:00+00:00",
+                  run={"RC-001": (0, 1), "RC-002": (0, 1), "RC-003": (0, 1)},
+                  size={"attack": 1, "benign": 1, "reps": 1})
+    put_model_run(tmp_path, cli_mod, "20261018T060000Z_y_smoke", "y:1", started="2026-10-18T06:00:00+00:00")
+    put_model_run(tmp_path, cli_mod, "20261018T061000Z_y", "y:1", started="2026-10-18T06:10:00+00:00")
+    put_status(tmp_path, "20261018T050000Z", [smoke_done("x:1", "no", "every run errored")])
+    rows = {r["tag"]["text"]: r for r in ex.build_models(make_ctx(ex, tmp_path), None)["rows"]}
+    assert rows["x:1"]["data_from"] == "smoke" and rows["x:1"]["asr_note"]
+    assert rows["y:1"]["data_from"] == "full" and rows["y:1"]["source"].endswith("_y")      # the full run wins
+
+
+def test_scripted_and_unfinished_runs_are_not_models(ex, tmp_path, cli_mod):
+    put_model_run(tmp_path, cli_mod, "20261018T050000Z_s", "s:1", tag="SCRIPTED")
+    put_model_run(tmp_path, cli_mod, "20261018T060000Z_u", "u:1", complete=False)
+    put_model_run(tmp_path, cli_mod, "20261018T070000Z_v", "v:1", tag="SAVED")
+    models = ex.build_models(make_ctx(ex, tmp_path), None)
+    assert [r["tag"]["text"] for r in models["rows"]] == ["v:1"] and models["rows"][0]["mode"]["text"] == "SAVED"
+
+
+def test_models_without_any_run_is_an_empty_table_not_an_error(ex, tmp_path):
+    models = ex.build_models(make_ctx(ex, tmp_path), None)
+    assert models["rows"] == [] and models["note"]
 
 
 def test_the_screens_can_show_the_newest_run_folder_instead_of_the_rehearsal(ex, run_repo):
