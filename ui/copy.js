@@ -1,8 +1,8 @@
 /* Redline: every word the dashboard shows.
    Edit a word here and reload the page. No code change is needed.
    Rules:
-   - No digit in this file. A number comes from data and fills a {placeholder}.
-     The only token with digits is a beat id. tests/test_ui_copy.py checks this.
+   - No digit anywhere in this file, ids included. A number comes from data and fills a {placeholder}.
+     tests/test_ui_copy.py checks this.
    - A beat names its screen by name. app.js maps the names to the screen keys.
    - A beat focus is the id of an element on that screen, the word cover, or null.
    - To reorder or cut beats, edit the beats list. app.js reads it in order.
@@ -49,7 +49,7 @@ window.COPY = {
       "note": "Start or replay the attack run. The checker is plain code, not another model."
     },
     {
-      "id": "rc001",
+      "id": "baseline",
       "title": "The gate and the first candidate",
       "screen": "console",
       "focus": "c-verdict",

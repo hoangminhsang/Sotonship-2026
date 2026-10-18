@@ -1,7 +1,8 @@
 """Checks for ui/copy.js, the one file that holds every word the dashboard shows.
 
 The rules (PLAN.md, "Design for change"):
-- No number is typed in copy.js. Numbers come from data, through {placeholders}.
+- No number is typed in copy.js, and no digit appears anywhere in the file, ids included.
+  Numbers come from data, through {placeholders}.
 - Every {placeholder} is in the allowed list below, so a typo cannot reach the screen.
 - Screens are named, never numbered. app.js maps the names to the keys one to seven.
 - The words are plain: no banned wording, and the claims the plan corrected stay corrected.
@@ -26,11 +27,8 @@ COPY_JS = UI / "copy.js"
 #   n    a count of rows that are listed on the screen
 ALLOWED_PLACEHOLDERS = {"t", "cmd", "cand", "team", "first", "last", "who", "n"}
 
-# The only token with digits that copy.js may hold: the beat id the plan fixes.
-# Lane G writes its script against the same ids. Nothing shown on screen may use it.
-ALLOWED_DIGIT_TOKENS = ("rc001",)
-
-BEAT_IDS = ["problem", "why_now", "pivot", "rc001", "duties", "tamper",
+# The beat ids. Lane G writes its script against the same ids (fill_script.py, SCRIPT_CUT.md).
+BEAT_IDS = ["problem", "why_now", "pivot", "baseline", "duties", "tamper",
             "safeguard", "limits", "business", "close"]
 SCREEN_NAMES = ["console", "attacks", "compare", "decisions", "assurance", "pipeline", "models"]
 NODE_IDS = [
@@ -67,19 +65,8 @@ def _strings(node, path=""):
 
 def test_copy_js_has_no_digit():
     text, _ = _load()
-    for token in ALLOWED_DIGIT_TOKENS:
-        text = text.replace(token, "")
     digits = sorted(set(re.findall(r"\d", text)))
     assert not digits, f"copy.js holds digits {digits}: numbers come from data through placeholders"
-
-
-def test_digit_token_is_only_a_beat_id():
-    _, copy = _load()
-    for path, value in _strings(copy):
-        if path.endswith(".id") and path.startswith("beats["):
-            continue
-        for token in ALLOWED_DIGIT_TOKENS:
-            assert token not in value, f"{path} shows the id token {token}"
 
 
 def test_every_placeholder_is_allowed():
@@ -109,6 +96,16 @@ def test_beats_use_the_plan_ids_in_order_and_name_their_screens():
         assert beat["title"].strip() and beat["note"].strip()
         assert beat["screen"] in SCREEN_NAMES, f"{beat['id']}: unknown screen {beat['screen']!r}"
         assert beat["focus"] is None or (isinstance(beat["focus"], str) and beat["focus"]), beat["id"]
+
+
+def test_beat_ids_are_unique_plain_words():
+    # A new beat (for example a live attack beat on the pipeline screen) is one more entry in the
+    # list. Its id is lower-case letters and underscores, so lane G can cite it without a digit.
+    _, copy = _load()
+    ids = [b["id"] for b in copy["beats"]]
+    assert len(ids) == len(set(ids)), "beat ids must be unique"
+    for beat_id in ids:
+        assert re.fullmatch(r"[a-z]+(_[a-z]+)*", beat_id), f"beat id {beat_id!r} is not plain words"
 
 
 def test_all_seven_screens_have_a_title_and_a_nav_label():
