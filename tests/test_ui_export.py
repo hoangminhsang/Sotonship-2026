@@ -1257,6 +1257,9 @@ def test_a_run_folder_becomes_a_real_batch_from_its_manifest(ex, run_repo):
     assert (batch["model"]["text"], batch["model"]["status"]) == (m["model"], ex.REAL)
     assert (batch["digest"]["text"], batch["digest"]["status"]) == ("sha256:" + "cd" * 6, ex.REAL)
     assert (batch["defences"]["text"], batch["driver"]["text"]) == ("D2", "native")
+    for name in ("model", "digest", "defences", "driver"):       # each one points at the manifest, not at a lab default
+        prov = ctx.prov[batch[name]["prov"]]
+        assert prov["source_file"].endswith("/manifest.json") and prov["locator"]["kind"] == "text", name
     when = dt.datetime.fromisoformat(m["started_at"]).isoformat(timespec="seconds")
     assert batch["replay_label"] == f"REPLAY · run of {when}"
     assert batch["produced"]["text"] == f"run of {when}" and batch["produced"]["raw"] == m["started_at"]
@@ -1415,6 +1418,10 @@ def test_gov_dir_may_be_given_as_a_path_inside_the_repo(ex, run_repo, cli_mod):
     ctx.args.gov = "../elsewhere"
     with pytest.raises(ex.FatalError):
         ex.governance_folder(ctx)
+    for not_a_governance_folder in (".", "./", str(run_repo.root), "results/governance/does-not-exist"):
+        ctx.args.gov = not_a_governance_folder
+        with pytest.raises(ex.FatalError):
+            ex.governance_folder(ctx)
 
 
 def test_governance_pick_fixed_uses_the_folder_of_sources_json(ex, run_repo, cli_mod):
@@ -1497,6 +1504,7 @@ def test_scripted_folders_need_allow_sample_and_need_no_evidence_batch(ex, repo)
     _ctx, held = multi_demo(ex, repo, ["--gov", folder])
     assert held["console"]["gate"]["status"] == ex.PENDING
     assert "--allow-sample" in held["console"]["gate"]["reason"]
+    assert [c["gate"]["status"] for c in held["governance"]["candidates"]] == [ex.PENDING] * 3   # every candidate
     _ctx, shown = multi_demo(ex, repo, ["--gov", folder], allow_sample=True)
     gate = shown["console"]["gate"]
     assert gate["status"] == ex.SAMPLE and gate["candidate_id"]["text"] == "RC-003"
