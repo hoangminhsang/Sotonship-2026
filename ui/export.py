@@ -3164,12 +3164,16 @@ def build_console(ctx: Ctx, batch, gate: dict, latest) -> dict:
     else:
         cand.update(model=ctx.field(NOT_RECORDED, PENDING), digest=ctx.field(NOT_RECORDED, PENDING),
                     defences=ctx.field(NOT_RECORDED, PENDING))
-    missing.insert(0, "a candidate id")
-    if len(missing) > 1:
-        lst = ", ".join(missing[:-1]) + " or " + missing[-1]
+    gid = (gate or {}).get("candidate_id") or {}
+    if (gate or {}).get("status") in (REAL, SAMPLE) and gid.get("prov"):
+        cand["id"] = gid       # the gate output names the candidate
     else:
-        lst = missing[0]
-    cand["note"] = f"Candidate details come from the evidence batch. This batch does not record {lst}."
+        missing.insert(0, "a candidate id")
+    if not missing:
+        cand["note"] = "Candidate details come from the evidence batch and the gate output."
+    else:
+        lst = ", ".join(missing[:-1]) + " or " + missing[-1] if len(missing) > 1 else missing[0]
+        cand["note"] = f"Candidate details come from the evidence batch. This batch does not record {lst}."
     return {"candidate": cand, "evidence_batch": batch["id"] if batch else None, "gate": gate,
             "latest_decision": latest}
 
@@ -3522,7 +3526,8 @@ def build_demo(ctx: Ctx) -> dict:
         for c in gov_eff["candidates"]:
             rd = candidate_run_dir(ctx, c, runs, candidate_digest(ctx, folder, c["id"]))
             if rd is None:
-                ctx.warn("info", f"No usable run folder found for {c['id']}; its gate is not compared with run data.")
+                if detect_mode(ctx, gov_eff, None, folder_mode_tags(ctx, gov_eff)) != MODE_SCRIPTED:
+                    ctx.warn("info", f"No usable run folder found for {c['id']}; its gate is not compared with run data.")
                 continue
             run = next((r for r in runs if r["run_dir"] == rd), {"name": Path(rd).name, "run_dir": rd, "manifest": None})
             cfg = run_folder_config(run)

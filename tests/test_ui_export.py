@@ -1406,6 +1406,20 @@ def test_gov_dir_shows_every_candidate_and_selects_the_last(ex, run_repo, cli_mo
     assert ex.self_check(ctx, demo["provenance"]) == []
 
 
+def test_the_console_names_the_candidate_of_the_gate_and_the_model_of_the_manifest(ex, run_repo, cli_mod):
+    make_multi(run_repo, cli_mod)
+    _ctx, demo = multi_demo(ex, run_repo.root, ["--gov", GOV_DIR])
+    cand = demo["console"]["candidate"]
+    assert cand["id"]["text"] == "RC-003" and cand["id"]["status"] == ex.REAL
+    assert cand["model"]["text"] and cand["digest"]["status"] == ex.REAL and cand["defences"]["status"] == ex.REAL
+    assert "does not record" not in cand["note"]
+
+
+def test_a_scripted_folder_does_not_warn_about_run_folders_it_never_had(ex, repo):
+    _ctx, demo = multi_demo(ex, repo, ["--gov", "governance_out"], allow_sample=True)
+    assert not [w for w in demo["warnings"] if "No usable run folder" in w["text"]], demo["warnings"]
+
+
 def test_gov_dir_may_be_given_as_a_path_inside_the_repo(ex, run_repo, cli_mod):
     make_multi(run_repo, cli_mod)
     for given in (str(run_repo.root / GOV_DIR), GOV_DIR + "/", "./" + GOV_DIR):
