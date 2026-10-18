@@ -320,3 +320,51 @@ def test_main_off_the_main_thread_still_runs(gov, monkeypatch):
     thread.join(10)
     assert result == {"code": 7}
 
+
+# --------------------------------------------------------------------------- #
+# Proof paths in the evidence register: repo-relative inside the repo, absolute outside it.
+# --------------------------------------------------------------------------- #
+def test_display_path_is_repo_relative_only_for_files_inside_the_repo(gov, tmp_path):
+    assert gov._display_path(ROOT / "results" / "runs" / "x" / "runs.csv") == "results/runs/x/runs.csv"
+    assert gov._display_path(ROOT / "governance_out" / ".." / "results" / "runs.csv") == "results/runs.csv"
+    outside = tmp_path / "gov" / "RC-002" / "runs.csv"
+    assert gov._display_path(outside) == str(outside)                     # the old text, unchanged
+    sibling = Path(str(ROOT) + "-other") / "runs.csv"                     # same prefix, different folder
+    assert gov._display_path(sibling) == str(sibling)
+    assert "\\" not in gov._display_path(ROOT / "a" / "b.csv")
+
+
+def test_evidence_register_shows_repo_relative_proof_paths_for_a_run_inside_the_repo(gov):
+    import shutil
+    import uuid
+
+    out = ROOT / "governance_out" / ("test_proof_paths_" + uuid.uuid4().hex[:8])
+    try:
+        assert _demo(gov, out) == 0
+        rel = out.relative_to(ROOT).as_posix()
+        for cid in ("RC-002", "RC-003"):
+            text = (out / f"evidence_register_{cid}.md").read_text()
+            assert f"`{rel}/{cid}/runs.csv`" in text
+            assert str(ROOT) not in text                                   # no machine path in a shareable file
+            assert (ROOT / rel / cid / "runs.csv").is_file()               # and the relative path really resolves
+        assert str(ROOT) not in (out / "evidence_register.md").read_text()
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
+def test_progress_evidence_rows_keep_the_repo_relative_path_whatever_the_working_folder(gov, monkeypatch, tmp_path):
+    import json
+    import shutil
+    import uuid
+
+    out = ROOT / "governance_out" / ("test_proof_cwd_" + uuid.uuid4().hex[:8])
+    monkeypatch.chdir(tmp_path)                                            # a relative path must not resolve here
+    try:
+        assert _demo(gov, out) == 0
+        rel = out.relative_to(ROOT).as_posix()
+        events = [json.loads(x) for x in (out / "progress.jsonl").read_text(encoding="utf-8").splitlines()]
+        rows = [r for e in events if e["type"] == "evidence" for r in e["rows"]]
+        assert rows and {r["proof_file"] for r in rows} == {f"{rel}/RC-002/runs.csv", f"{rel}/RC-003/runs.csv"}
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
