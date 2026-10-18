@@ -156,7 +156,9 @@ writes — no new tests here, all deterministic and unit-tested:
   exactly what was tested; `gate` compares the metrics to `policy.yaml` and emits
   PASS/FAIL with reasons; `decision` enforces roles (the engineer can't approve
   their own work) and Approve/Block/Override; `audit` writes a hash-chained,
-  append-only log so any edit is detectable (`verify_log`).
+  append-only log so any edit is detectable (`verify_log`). A small head anchor
+  (`audit_log_head.json`, the newest `seq` + `hash`) is rewritten on every append
+  so cutting off the most recent entries is caught too.
 - **Long loop (assurance).** Every violation class becomes a risk whose
   **likelihood is the measured attack rate, not a guess** (`risks`); each risk
   maps to a control (`fixes.py`) and to OWASP / MITRE ATLAS / NIST labels
@@ -260,3 +262,10 @@ that distinction is the payoff. Results are specific to this model, corpus, and
 world; the confidence intervals quantify sampling noise, not every source of
 error. A low ASR would mean this corpus under-sampled what works, not that the
 agent is safe.
+
+The audit log is tamper-*evident*, not tamper-*proof*: the hash chain catches
+edits and deletions anywhere in the log, and the head anchor catches truncation
+of the newest entries, but someone with write access to `governance_out/` can
+rewrite the log and the anchor together (or delete both). A log written before
+the anchor existed verifies with a caveat until its next append. A real
+deployment would copy the head to a second, separately-controlled place.

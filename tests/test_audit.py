@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from lab.governance import audit
 
 
@@ -56,3 +58,87 @@ def test_deleting_an_entry_is_detected(tmp_path):
 
 def test_missing_log_is_empty(tmp_path):
     assert audit.read_log(tmp_path / "nope.jsonl") == []
+
+
+def test_append_writes_a_head_anchor(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    last = audit.read_log(path)[-1]
+    assert audit.read_anchor(path) == {"seq": 3, "hash": last["hash"]}
+
+
+def test_deleting_the_last_entry_is_detected(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")  # cut off entry 3
+
+    check = audit.verify_log(path)
+    assert not check.ok
+    assert check.truncated_after == 2
+    assert "truncated after entry 2" in check.detail
+
+
+def test_deleting_the_whole_log_is_detected(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    path.unlink()
+    check = audit.verify_log(path)
+    assert not check.ok and check.truncated_after == 0
+
+
+def test_log_without_anchor_still_verifies_but_says_so(tmp_path):
+    # A log written before anchors existed: the chain still checks, with a caveat.
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    audit.anchor_path(path).unlink()
+    check = audit.verify_log(path)
+    assert check.ok and "truncation cannot be checked" in check.detail
+
+
+def test_a_garbled_line_is_reported_not_crashed_on(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[1] = lines[1][:40]  # cut entry 2 mid-record
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(audit.LogCorruptError, match="entry 2"):
+        audit.read_log(path)
+    check = audit.verify_log(path)
+    assert not check.ok and check.bad_seq == 2 and "not valid JSON" in check.detail
+
+
+def test_a_line_that_is_not_an_object_is_reported(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("42\n")
+    check = audit.verify_log(path)
+    assert not check.ok and check.bad_seq == 4
+
+
+def test_a_garbled_head_anchor_is_reported(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    _seed(path)
+    audit.anchor_path(path).write_text("{oops", encoding="utf-8")
+    check = audit.verify_log(path)
+    assert not check.ok and "head anchor" in check.detail
+
+
+def test_each_log_has_its_own_head_anchor(tmp_path):
+    main, demo = tmp_path / "audit_log.jsonl", tmp_path / "demo_audit_log.jsonl"
+    assert audit.anchor_path(main) == tmp_path / "audit_log_head.json"
+    assert audit.anchor_path(demo) == tmp_path / "demo_audit_log_head.json"
+
+    _seed(main)                                            # 3 entries
+    audit.append(demo, {"event": "submit", "candidate_id": "RC-900", "by": "tom"})  # 1 entry
+    assert audit.read_anchor(main)["seq"] == 3
+    assert audit.read_anchor(demo)["seq"] == 1             # appending to one never moves the other
+    assert audit.verify_log(main).ok and audit.verify_log(demo).ok
+
+    # Truncating one log is caught against its own anchor; the other stays intact.
+    lines = main.read_text(encoding="utf-8").splitlines()
+    main.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")
+    assert audit.verify_log(main).truncated_after == 2
+    assert audit.verify_log(demo).ok

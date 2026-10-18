@@ -45,3 +45,15 @@ def test_a_newly_added_reviewer_can_review_but_still_not_their_own(policy):
     with pytest.raises(decision.DecisionError, match="cannot review"):
         decision.decide(candidate_id="RC-011", submitted_by="bob", verdict_passed=True,
                         policy=policy, reviewer="bob", action="APPROVE")
+
+
+def test_removing_someone_not_in_the_role_is_refused(policy):
+    with pytest.raises(roles.RoleError, match="REFUSED: bob is not in reviewers"):
+        roles.change_role(policy, actor="security-lead", person="bob", role="reviewers", action="remove")
+    assert policy["roles"]["reviewers"] == ["sarah"]  # unchanged
+
+
+def test_adding_someone_already_in_the_role_is_refused(policy):
+    with pytest.raises(roles.RoleError, match="REFUSED: sarah is already in reviewers"):
+        roles.change_role(policy, actor="security-lead", person="sarah", role="reviewers", action="add")
+    assert policy["roles"]["reviewers"] == ["sarah"]  # unchanged
