@@ -12,6 +12,12 @@ the point of the project is the tools around it, not that one agent.
 Everything runs on your own machine. All data is fake. Nothing is sent to the
 internet.
 
+## Watch the demo
+
+[![Redline: a release gate for AI agents (Team Gatekeepers, SotonShip 26)](https://img.youtube.com/vi/eiKCX80wphU/hqdefault.jpg)](https://youtu.be/eiKCX80wphU)
+
+Video: [Redline: a release gate for AI agents](https://youtu.be/eiKCX80wphU) (Team Gatekeepers, SotonShip 26).
+
 ---
 
 ## What is this project? (in plain words)
