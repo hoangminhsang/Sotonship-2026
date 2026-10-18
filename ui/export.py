@@ -3399,7 +3399,13 @@ def time_numbers(ctx: Ctx, gov: dict, batches: dict, tags: dict, folder_mode, go
     times of those run folders added up. A run without usable times leaves the key PENDING.
     """
     mode = tags.get("run_index.json") or folder_mode
-    status = SAMPLE if mode == MODE_SCRIPTED else REAL
+    if mode == MODE_SCRIPTED:
+        # A scripted run still writes started and ended times to run_index.json, but nobody measured a decision.
+        # A time on screen would read as a result, so both keys stay PENDING.
+        got["time.to_decision"] = got["time.runs"] = num_pending(
+            "scripted run: its start and end times are not a measured time to decision")
+        return
+    status = REAL
     try:
         folder = governance_dir(gov)
         rel = "run_index.json" if folder in ("", ".") else f"{folder}/run_index.json"
