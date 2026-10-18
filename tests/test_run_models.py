@@ -175,6 +175,20 @@ STUB_GOV = textwrap.dedent(
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
+
+    class _Corpus:
+        """Stands in for lab.corpus. The old build_and_write() rewrote corpus/*.jsonl on every run."""
+
+        def check_matches_generator(self):
+            return {}
+
+        def build_and_write(self):
+            return None
+
+
+    corpus = _Corpus()
+    # @CORPUS_CALL@
+
     tag = os.environ.get("LAB_MODEL", "")
     beh = json.loads((repo / "stub_behaviour.json").read_text()) if (repo / "stub_behaviour.json").exists() else {}
     kind = beh.get("traces", {}).get(tag, beh.get("traces", {}).get("*", "tools"))
@@ -235,9 +249,8 @@ def make_repo(tmp_path: Path, tags=("alpha:1b", "beta:2b"), *, race_fixed: bool 
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
     (repo / "config").mkdir()
-    gov = STUB_GOV
-    if not race_fixed:
-        gov += "\n# the corpus race, still present:\n# corpus.build_and_write()\n"
+    # The race fix is read from the code: a call to check_matches_generator and none to build_and_write.
+    gov = STUB_GOV.replace("# @CORPUS_CALL@", f"corpus.{'check_matches_generator' if race_fixed else 'build_and_write'}()")
     (repo / "scripts" / "run_governance.py").write_text(gov, encoding="utf-8")
     (repo / "scripts" / "preflight.py").write_text(STUB_PREFLIGHT, encoding="utf-8")
     (repo / "config" / "models.txt").write_text("\n".join(tags) + "\n", encoding="utf-8")
@@ -269,7 +282,8 @@ def _plan(rm, tmp_path, argv=(), tags=("alpha:1b", "beta:2b"), race_fixed=True):
     opts = rm.parse_args(list(argv))
     layout = rm.Layout(root=repo, results=repo / "results")
     models = rm.read_models(repo / "config" / "models.txt")
-    return rm.build_plan(opts, layout, models, STAMP, race_fixed=rm.corpus_race_fixed(repo))
+    race = rm.race_fix_check(repo)
+    return rm.build_plan(opts, layout, models, STAMP, race_fixed=race.fixed, race_why=race.why)
 
 
 def test_plan_commands_are_the_documented_ones(rm, tmp_path):
@@ -408,15 +422,140 @@ def test_python_override_must_exist(rm, tmp_path, capsys):
 
 
 # --------------------------------------------------------------------------- #
-# --parallel and the corpus race.
+# --parallel and the corpus race. The fix is read from the CODE of run_governance.py: a call to
+# check_matches_generator and no call to build_and_write. A comment, a docstring or a string
+# that mentions build_and_write( must not count (lane A's file has such a comment).
 # --------------------------------------------------------------------------- #
-def test_race_fix_detection(rm, tmp_path):
-    assert rm.corpus_race_fixed(make_repo(tmp_path / "a", race_fixed=True)) is True
-    assert rm.corpus_race_fixed(make_repo(tmp_path / "b", race_fixed=False)) is False
-    assert rm.corpus_race_fixed(tmp_path / "nowhere") is False  # cannot read it: assume the race is there
-    # the repo's own checkout: absent today, present once lane A has replaced the call
-    text = (ROOT / "scripts" / "run_governance.py").read_text(encoding="utf-8")
-    assert rm.corpus_race_fixed(ROOT) is ("build_and_write(" not in text)
+FIXED_BUT_MENTIONS_THE_OLD_CALL = '''\
+"""Run the pipeline.
+
+The old build_and_write() rewrote corpus/*.jsonl on every run.
+"""
+import sys
+
+
+def run(corpus):
+    # Read-only check. The old build_and_write() rewrote corpus/*.jsonl on every
+    # run, so two runs started together raced each other on the same files.
+    was = "corpus.build_and_write( )"
+    try:
+        corpus.check_matches_generator()
+    except corpus.CorpusMismatch as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    return 0
+'''
+
+STILL_REWRITES_THE_CORPUS = '''\
+from lab import corpus
+
+
+def run():
+    corpus.build_and_write()
+    return 0
+'''
+
+
+def test_the_old_call_named_only_in_a_comment_and_a_docstring_is_not_the_race(rm):
+    """The plain text search the first version used would have said "absent" here."""
+    assert "build_and_write(" in FIXED_BUT_MENTIONS_THE_OLD_CALL
+    check = rm.race_fix_in_source(FIXED_BUT_MENTIONS_THE_OLD_CALL)
+    assert check.fixed is True and check.problem == ""
+
+
+def test_a_real_build_and_write_call_is_the_race(rm):
+    check = rm.race_fix_in_source(STILL_REWRITES_THE_CORPUS)
+    assert check.fixed is False and "build_and_write(" in check.why and check.problem == ""
+
+
+@pytest.mark.parametrize("source, fixed", [
+    ("corpus.check_matches_generator()\n", True),
+    ("check_matches_generator()\n", True),                                      # imported by name
+    ("lab.corpus.check_matches_generator(seed=7)\n", True),
+    ("def f():\n    corpus.check_matches_generator()\n", True),                  # inside a function
+    ("try:\n    corpus.check_matches_generator()\nexcept Exception:\n    pass\n", True),
+    ("corpus.check_matches_generator()\ncorpus.build_and_write()\n", False),    # both: the rewrite is still there
+    ("corpus.check_matches_generator()\nbuild_and_write()\n", False),           # imported by name
+    ("def f():\n    return lab.corpus.build_and_write()\n", False),
+    ("x = 1\n", False),                                                          # neither: no read-only check either
+    ("# corpus.check_matches_generator()\nx = 1\n", False),                      # a comment is not a call
+    ('"""corpus.check_matches_generator()"""\nx = 1\n', False),                  # nor is a docstring
+    ("x = 'corpus.check_matches_generator()'\n", False),                         # nor a string
+    ("f = corpus.check_matches_generator\n", False),                             # a reference is not a call
+    ("def check_matches_generator():\n    pass\n", False),                       # a definition is not a call
+])
+def test_the_race_fix_is_judged_by_calls_only(rm, source, fixed):
+    check = rm.race_fix_in_source(source)
+    assert check.fixed is fixed and check.why
+
+
+def test_the_source_may_be_bytes_with_a_bom_or_a_coding_line(rm):
+    assert rm.race_fix_in_source(b"\xef\xbb\xbfcorpus.check_matches_generator()\r\n").fixed is True
+    latin = b"# -*- coding: latin-1 -*-\ncorpus.check_matches_generator()  # caf\xe9\n"
+    assert rm.race_fix_in_source(latin).fixed is True
+
+
+@pytest.mark.parametrize("source", [
+    "def broken(:\n",
+    "x = (\n",
+    "corpus.check_matches_generator()\n\x00\n",
+    b"x = '\xff'\ncorpus.check_matches_generator()\n",    # not UTF-8 and no coding line
+])
+def test_a_file_that_does_not_parse_counts_as_no_fix_and_says_why(rm, source):
+    check = rm.race_fix_in_source(source)
+    assert check.fixed is False
+    assert check.problem.startswith("cannot parse scripts/run_governance.py (")
+    assert check.problem in check.why
+
+
+def test_race_fix_check_reads_the_file(rm, tmp_path):
+    assert rm.race_fix_check(make_repo(tmp_path / "a", race_fixed=True)).fixed is True
+    assert rm.race_fix_check(make_repo(tmp_path / "b", race_fixed=False)).fixed is False
+    assert rm.corpus_race_fixed(make_repo(tmp_path / "c", race_fixed=True)) is True      # the plain bool form
+    assert rm.corpus_race_fixed(make_repo(tmp_path / "d", race_fixed=False)) is False
+    nowhere = rm.race_fix_check(tmp_path / "nowhere")                                     # cannot read: assume the race
+    assert nowhere.fixed is False and nowhere.problem.startswith("cannot read scripts/run_governance.py (")
+    assert str(tmp_path) not in nowhere.problem, "the plan must not carry absolute paths"
+
+
+def test_the_stand_in_run_governance_names_the_old_call_without_calling_it(rm, tmp_path):
+    """The fake repo is itself a regression case: a def and a docstring name build_and_write, only a call counts."""
+    text = (make_repo(tmp_path, race_fixed=True) / "scripts" / "run_governance.py").read_text(encoding="utf-8")
+    assert "def build_and_write(" in text and "build_and_write()" in text
+    assert rm.race_fix_in_source(text).fixed is True
+
+
+def test_the_repos_own_run_governance_is_judged_by_its_calls(rm):
+    """Absent today, present once lane A's change is in: either way the verdict follows the calls."""
+    source = (ROOT / "scripts" / "run_governance.py").read_bytes()
+    assert rm.corpus_race_fixed(ROOT) is rm.race_fix_in_source(source).fixed
+
+
+def test_lane_a_run_governance_has_the_race_fix(rm):
+    """Lane A's real file mentions build_and_write() in a comment (line 548) and calls check_matches_generator()."""
+    import subprocess
+    try:
+        shown = subprocess.run(["git", "show", "lane/A:scripts/run_governance.py"], cwd=ROOT,
+                               capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("git is not available")
+    if shown.returncode != 0:
+        pytest.skip("the ref lane/A is not in this repository")
+    check = rm.race_fix_in_source(shown.stdout)
+    assert check.fixed is True, check.why
+
+
+def test_main_warns_when_run_governance_cannot_be_parsed(rm, tmp_path, capsys):
+    repo = make_repo(tmp_path)
+    (repo / "scripts" / "run_governance.py").write_text("def broken(:\n", encoding="utf-8")
+    assert rm.main(["--dry-run", "--parallel", "2"], root=repo, stamp=STAMP) == 0
+    captured = capsys.readouterr()
+    assert "warning: cannot parse scripts/run_governance.py (" in captured.err
+    assert "forced to 1" in captured.out and "cannot parse" in captured.out    # the note carries the reason too
+    # one model, or --parallel 1: nothing is forced, but the problem is still printed
+    assert rm.main(["--dry-run", "--parallel", "1"], root=repo, stamp=STAMP) == 0
+    captured = capsys.readouterr()
+    assert "cannot parse" in captured.err and "forced" not in captured.out
 
 
 def test_parallel_is_forced_to_one_while_the_race_fix_is_absent(rm, tmp_path, capsys):

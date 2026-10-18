@@ -55,10 +55,13 @@ status.jsonl: every line has ``ts`` (UTC), ``event``, ``slug``, ``tag``, plus th
                          that did not reach full_done (no tool support, a failed step, --smoke-only, Ctrl-C).
 
 Concurrency: ``--parallel N`` (default 2, at most 4) runs N models at once on a thread pool, one child
-process at a time per model. The same model never runs twice at once. N is forced to 1 while
-scripts/run_governance.py still contains ``build_and_write(`` (a plain text search, so keep that string out
-of its comments too): every run then rewrites corpus/*.jsonl at its start, and two runs at once would
-write the same files at the same time (the corpus race). The fix replaces the call by a read-only check.
+process at a time per model. The same model never runs twice at once. N is forced to 1 until the corpus
+race fix is in scripts/run_governance.py. Without the fix every run rewrites corpus/*.jsonl at its start
+(``corpus.build_and_write()``), and two runs at once would write the same files at the same time. The fix
+replaces that call by a read-only check (``corpus.check_matches_generator()``). The script reads the
+file with the ``ast`` module and looks at calls only: the fix is there when the code calls
+check_matches_generator and does not call build_and_write. A comment, a docstring or a string that names
+build_and_write does not count. A file that cannot be read or parsed counts as "no fix", with a warning.
 
 Stopping: Ctrl-C or SIGTERM stops the batch. Each running child gets exactly one interrupt, so its run
 folders still lock, and the queued models are skipped. A second Ctrl-C, or 60 s without an exit, ends the
@@ -77,6 +80,7 @@ Standard library only; Python 3.9 or newer; no shell is ever used (argument list
 from __future__ import annotations
 
 import argparse
+import ast
 import concurrent.futures
 import contextlib
 import json
@@ -88,6 +92,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,9 +105,10 @@ PLAN_SCHEMA = "run-models/1"
 SMOKE_SAMPLE, SMOKE_REPS = 1, 1       # the smoke run: 1 attack + 1 benign test, 1 rep
 FULL_SAMPLE, FULL_REPS = 26, 3        # the full run (overridable with --sample / --reps)
 DEFAULT_PARALLEL, MAX_PARALLEL = 2, 4
-# The corpus race: while run_governance.py still calls corpus.build_and_write(, every run rewrites
-# corpus/*.jsonl at start, so two runs at once are not safe. The fix replaces the call by a read-only check.
-RACE_MARKER = "build_and_write("
+# The corpus race: while run_governance.py calls build_and_write, every run rewrites corpus/*.jsonl at its
+# start, so two runs at once are not safe. The fix replaces that call by the read-only check_matches_generator.
+RACE_REWRITE_CALL = "build_and_write"
+RACE_CHECK_CALL = "check_matches_generator"
 OLLAMA_CMD = ["ollama"]               # tests point this at a stand-in
 GRACE_S = 60.0                        # after Ctrl-C: how long a child gets to lock its run folders
 TEXT_TOOL_CALL = "<tool_call>"        # a model that writes its calls as text puts this in final_text
@@ -282,28 +288,81 @@ def utc_stamp(when: Optional[datetime] = None) -> str:
     return (when or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
 
 
-def corpus_race_fixed(root: Path) -> bool:
-    """False while scripts/run_governance.py still calls ``corpus.build_and_write(``.
+@dataclass(frozen=True)
+class RaceCheck:
+    """Is the corpus race fixed in scripts/run_governance.py?"""
 
-    Plain text search, as agreed: it does not parse the file, so keep the string out of comments too.
-    A file that cannot be read counts as "not fixed" (the safe answer).
+    fixed: bool
+    why: str            # the verdict in one sentence; no absolute paths (it goes into plan.json)
+    problem: str = ""   # set when the file could not be read or parsed. The verdict is then "not fixed".
+
+
+def _called_names(tree: ast.AST) -> Set[str]:
+    """Names of everything the code calls: ``f()`` gives "f", ``a.b.f()`` gives "f".
+
+    Comments are not in the tree, and docstrings, strings, definitions and plain references are not calls.
+    """
+    names: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                names.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                names.add(node.func.attr)
+    return names
+
+
+def race_fix_in_source(source) -> RaceCheck:
+    """Judge the source of run_governance.py (text or bytes) by its CALLS only.
+
+    The fix is there when the code calls ``check_matches_generator`` and does not call ``build_and_write``.
+    Neither call counts as "not fixed": the read-only check must be there. A comment or a docstring that
+    names build_and_write does not count (the fixed file has one). A source that does not parse counts as
+    "not fixed", and ``problem`` says why.
     """
     try:
-        text = (Path(root) / "scripts" / "run_governance.py").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return RACE_MARKER not in text
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")    # e.g. SyntaxWarning for an invalid escape in a string
+            tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError) as exc:   # ValueError: a null byte, in older Pythons
+        if isinstance(exc, SyntaxError):
+            detail = f"SyntaxError: {exc.msg}" + (f", line {exc.lineno}" if exc.lineno else "")
+        else:
+            detail = f"{type(exc).__name__}: {exc}"
+        problem = f"cannot parse scripts/run_governance.py ({detail})"
+        return RaceCheck(False, f"{problem}, so the corpus race fix is not confirmed", problem)
+    names = _called_names(tree)
+    if RACE_REWRITE_CALL in names:
+        return RaceCheck(False, f"scripts/run_governance.py still calls {RACE_REWRITE_CALL}(), which rewrites "
+                                "corpus/*.jsonl at the start of every run")
+    if RACE_CHECK_CALL not in names:
+        return RaceCheck(False, f"scripts/run_governance.py does not call {RACE_CHECK_CALL}(), "
+                                "the read-only corpus check")
+    return RaceCheck(True, f"scripts/run_governance.py calls {RACE_CHECK_CALL}() and not {RACE_REWRITE_CALL}()")
 
 
-def effective_parallel(requested: int, n_models: int, race_fixed: bool) -> Tuple[int, Optional[str]]:
+def race_fix_check(root: Path) -> RaceCheck:
+    """Read ``<root>/scripts/run_governance.py`` and judge it. Unreadable or unparseable counts as "not fixed"."""
+    try:
+        source = (Path(root) / "scripts" / "run_governance.py").read_bytes()
+    except OSError as exc:
+        problem = f"cannot read scripts/run_governance.py ({type(exc).__name__}: {exc.strerror or 'error'})"
+        return RaceCheck(False, f"{problem}, so the corpus race fix is not confirmed", problem)
+    return race_fix_in_source(source)
+
+
+def corpus_race_fixed(root: Path) -> bool:
+    return race_fix_check(root).fixed
+
+
+def effective_parallel(requested: int, n_models: int, race_fixed: bool,
+                       why: str = "") -> Tuple[int, Optional[str]]:
     """The number of models to run at once, and the note to print when it differs from the request."""
     count = max(1, min(requested, n_models))   # more workers than models would only sit idle
     if count > 1 and not race_fixed:
-        note = (
-            f"parallel {count} forced to 1: scripts/run_governance.py still calls "
-            f"corpus.{RACE_MARKER}) at the start of every run, and two runs at once would rewrite "
-            "corpus/*.jsonl at the same time"
-        )
+        reason = why or (f"the corpus race fix is not in scripts/run_governance.py (it must call "
+                         f"{RACE_CHECK_CALL}() and not {RACE_REWRITE_CALL}())")
+        note = f"parallel {count} forced to 1: {reason}. Two runs at once could write corpus/*.jsonl at the same time"
         return 1, note
     return count, None
 
@@ -318,14 +377,14 @@ def child_env(tag: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]
 
 
 def build_plan(opts: argparse.Namespace, layout: Layout, models: Sequence[Model], stamp: str,
-               *, race_fixed: bool) -> dict:
+               *, race_fixed: bool, race_why: str = "") -> dict:
     """The whole batch as data: what runs, with which arguments, writing where. No absolute paths.
 
     Commands are argument lists with ``python`` (and ``ollama``) as the first item; the real interpreter
-    replaces it when the command runs.
+    replaces it when the command runs. ``race_fixed`` and ``race_why`` come from :func:`race_fix_check`.
     """
     scripted = bool(opts.scripted)
-    parallel, note = effective_parallel(opts.parallel, len(models), race_fixed)
+    parallel, note = effective_parallel(opts.parallel, len(models), race_fixed, race_why)
     batch_dir = layout.rel(layout.models_dir / stamp)
     live = [] if scripted else ["--live"]
     rows = []
@@ -1008,7 +1067,10 @@ def main(argv: Optional[Sequence[str]] = None, *, root: Optional[Path] = None,
         while not opts.dry_run and (layout.models_dir / stamp).exists():   # another batch began this second
             time.sleep(1.0)
             stamp = utc_stamp()
-    plan = build_plan(opts, layout, models, stamp, race_fixed=corpus_race_fixed(layout.root))
+    race = race_fix_check(layout.root)
+    if race.problem:   # say so even when nothing is forced (one model, or --parallel 1)
+        print(f"warning: {race.problem}; treating the corpus race fix as absent", file=sys.stderr)
+    plan = build_plan(opts, layout, models, stamp, race_fixed=race.fixed, race_why=race.why)
     if opts.dry_run:
         say(render_plan(plan, dry_run=True))
         return 0
