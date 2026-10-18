@@ -2207,7 +2207,7 @@ STAMP_RE = r"\d{8}T\d{6}Z"
 
 
 def test_run_argv_is_a_fixed_list():
-    assert bridge.RUN_KEYS == ("demo", "live-short", "live-smoke", "models")
+    assert bridge.RUN_KEYS == ("demo", "live-short", "live-smoke", "live-full", "models")
     assert bridge.run_argv("demo", "PY", "S") == (
         ["PY", "scripts/run_governance.py", "--out", "governance_out/bridge/demo_S"], "governance_out/bridge/demo_S")
     assert bridge.run_argv("live-short", "PY", "S")[0] == [
@@ -2704,3 +2704,610 @@ def test_run_models_follows_the_batch_and_exports_everything(tmp_path, fake_env,
     assert live["source"]["log"] == "results/governance/99991231T235959Z_other-1b/progress.jsonl"
     assert record(rec, "export.json")["argv"] == ["--quiet"]            # no single run folder to name
     assert live["done"]["export"]["status"] == "ok"
+
+
+# --------------------------------------------------------------------------- #
+# Step 6: page-started runs (the /api routes). Fake children, no model, no Ollama.
+# --------------------------------------------------------------------------- #
+import types  # noqa: E402
+
+
+def test_live_full_argv_is_fixed_and_names_the_model_in_its_folder():
+    out = "results/governance/S_qwen2.5-7b-instruct"
+    assert bridge.run_argv("live-full", "PY", "S", model="qwen2.5:7b-instruct") == (
+        ["PY", "scripts/run_governance.py", "--live", "--sample", "26", "--reps", "3", "--out", out], out)
+    with pytest.raises(bridge.BridgeError):
+        bridge.run_argv("live-full", "PY", "S")                      # the folder name needs the model
+    assert bridge.model_slug("ibm/granite3.3:8b") == "ibm-granite3.3-8b"
+    assert bridge.model_slug("../..") == "model" and "/" not in bridge.model_slug("a/b:c d")
+    assert bridge.API_KINDS == ("demo", "live-short", "live-full", "models")
+
+
+def test_the_command_line_runs_live_full_with_preflight_and_a_model(tmp_path, fake_env):
+    rec, _ = fake_env
+    code, _live = run_main(tmp_path, make_root(tmp_path), "--run", "live-full", "--model", "other:1b")
+    assert code == 0
+    assert record(rec, "preflight.json")["argv"] == ["--model", "other:1b"]
+    assert record(rec, "run_governance.json")["argv"][:5] == ["--live", "--sample", "26", "--reps", "3"]
+
+
+def test_the_command_line_refuses_live_full_without_a_model(tmp_path, fake_env, capsys):
+    rec, _ = fake_env
+    code, _live = run_main(tmp_path, make_root(tmp_path), "--run", "live-full")
+    assert code == 2 and "live-full needs a model" in capsys.readouterr().err
+    assert record(rec, "run_governance.json") is None
+
+
+@pytest.fixture
+def api(tmp_path, fake_env):
+    """A bridge web server with a RunController over a fake repo folder; fake children only."""
+    rec, events = fake_env
+    root = make_root(tmp_path, with_models_script=True)
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "index.html").write_text("<!doctype html><title>t</title>", encoding="utf-8")
+    data = tmp_path / "data"
+    controller = bridge.RunController(root=root, data_dir=data, python=sys.executable, scale=0.0)
+    server = bridge.make_server(port=0, root=site, controller=controller)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    yield types.SimpleNamespace(port=server.server_address[1], controller=controller, root=root, data=data,
+                                rec=rec, events=events, token=controller.token)
+    controller.shutdown(timeout=30)
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
+def call(port, method, path, payload=None, token=None, headers=None, raw=None, ctype="application/json"):
+    """(status, lower-case headers, parsed JSON or None)."""
+    hdrs = dict(headers or {})
+    body = raw
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+    if body is not None and ctype and "Content-Type" not in hdrs:
+        hdrs["Content-Type"] = ctype
+    if token is not None:
+        hdrs["X-Redline-Token"] = token
+    status, resp_headers, data = fetch(port, method, path, headers=hdrs, body=body)
+    try:
+        obj = json.loads(data) if data else None
+    except ValueError:
+        obj = None
+    return status, resp_headers, obj
+
+
+def no_cors(headers):
+    return not any(h.startswith("access-control-") for h in headers)
+
+
+def post_run(a, payload, token="good", **kw):
+    return call(a.port, "POST", "/api/run", payload, token=a.token if token == "good" else token, **kw)
+
+
+def get_status(a):
+    return call(a.port, "GET", "/api/status")[2]
+
+
+def wait_until(fn, timeout=20.0, step=0.05):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = fn()
+        if value:
+            return value
+        time.sleep(step)
+    raise AssertionError("timed out")
+
+
+def wait_idle(a):
+    return wait_until(lambda: not get_status(a)["running"])
+
+
+def read_live(data):
+    text = (data / "live.js").read_text(encoding="utf-8")
+    return json.loads(text[len("window.LIVE = "):-2])
+
+
+def hold_run_open(a, monkeypatch):
+    """Make the next fake run stay alive after it has written its first events (so it can be stopped)."""
+    head = Run()
+    head.head()
+    head.ev("stage_start", "RC-001", "RC-001:runs", title="runs")
+    a.events.write_text("".join(json.dumps(e) + "\n" for e in head.events), encoding="utf-8")
+    monkeypatch.setenv("FAKE_SLEEP", "60")
+
+
+def wait_running_on_screen(a):
+    wait_until(lambda: (a.data / "live.js").exists() and read_live(a.data)["state"] == "running")
+
+
+def test_session_returns_a_random_token_and_no_cors_headers(api):
+    status, headers, obj = call(api.port, "GET", "/api/session")
+    assert status == 200 and set(obj) == {"token"}
+    assert _re.fullmatch(r"[0-9a-f]{32}", obj["token"]) and obj["token"] == api.token
+    assert headers["content-type"].startswith("application/json")
+    assert headers["cache-control"] == "no-store" and headers["x-content-type-options"] == "nosniff"
+    assert no_cors(headers)
+    assert call(api.port, "GET", "/api/session")[2] == obj                    # one token for the whole server
+    other = bridge.RunController(root=api.root, data_dir=api.data)
+    assert other.token != api.token and _re.fullmatch(r"[0-9a-f]{32}", other.token)
+
+
+def test_status_has_the_contract_shape_when_idle(api):
+    status, headers, obj = call(api.port, "GET", "/api/status")
+    assert status == 200 and no_cors(headers)
+    assert obj == {"running": False, "kind": None, "model": None, "started": None, "last": None,
+                   "models": ["qwen2.5:7b-instruct", "other:1b"],
+                   "kinds": ["demo", "live-short", "live-full", "models"]}
+
+
+def test_status_lists_no_models_when_the_model_file_is_missing(api):
+    (api.root / "config" / "models.txt").unlink()
+    assert get_status(api)["models"] == []
+
+
+def test_a_run_without_a_token_is_refused_and_nothing_starts(api):
+    for headers in ({}, {"X-Redline-Token": ""}):
+        status, resp_headers, obj = call(api.port, "POST", "/api/run", {"kind": "demo"}, headers=headers)
+        assert status == 403 and "token" in obj["error"] and no_cors(resp_headers)
+    assert record(api.rec, "run_governance.json") is None
+    assert get_status(api)["running"] is False
+
+
+def test_a_wrong_token_is_refused(api):
+    for bad in ("0" * 32, api.token[:-1], api.token + "0", api.token.upper(), "t\u00f6k\u00e9n"):
+        status, _h, obj = post_run(api, {"kind": "demo"}, token=bad)
+        assert status == 403 and "token" in obj["error"], bad
+    assert call(api.port, "POST", "/api/stop", token="wrong")[0] == 403
+    assert record(api.rec, "run_governance.json") is None
+
+
+def test_the_token_is_compared_in_constant_time(api, monkeypatch):
+    calls = []
+    real = bridge.hmac.compare_digest
+
+    def spy(a, b):
+        calls.append((type(a), type(b)))
+        return real(a, b)
+
+    monkeypatch.setattr(bridge.hmac, "compare_digest", spy)
+    assert post_run(api, {"kind": "demo"}, token="wrong")[0] == 403
+    assert call(api.port, "POST", "/api/run", {"kind": "demo"})[0] == 403          # no token header at all
+    assert len(calls) == 2 and all(kinds == (bytes, bytes) for kinds in calls)
+
+
+def test_a_foreign_origin_is_refused_even_with_the_right_token(api):
+    for origin in ("http://evil.example", f"http://evil.example:{api.port}", "null", "https://127.0.0.1:%d" % api.port,
+                   f"http://127.0.0.1:{api.port + 1}", f"http://127.0.0.1.evil.example:{api.port}", ""):
+        status, headers, obj = post_run(api, {"kind": "demo"}, headers={"Origin": origin})
+        assert status == 403 and no_cors(headers), origin
+    assert call(api.port, "GET", "/api/session", headers={"Origin": "http://evil.example"})[0] == 403
+    assert call(api.port, "GET", "/api/status", headers={"Origin": "http://evil.example"})[0] == 403
+    assert call(api.port, "POST", "/api/stop", token=api.token, headers={"Origin": "http://evil.example"})[0] == 403
+    assert record(api.rec, "run_governance.json") is None and get_status(api)["running"] is False
+
+
+def test_the_servers_own_origins_and_no_origin_are_accepted(api):
+    for origin in (f"http://127.0.0.1:{api.port}", f"http://localhost:{api.port}", None):
+        headers = {"Origin": origin} if origin else {}
+        assert call(api.port, "GET", "/api/session", headers=headers)[0] == 200
+        status, _h, obj = post_run(api, {"kind": "demo"}, headers=headers, ctype="application/json; charset=utf-8")
+        assert status == 202 and obj == {"ok": True}, origin
+        wait_idle(api)
+
+
+def test_a_foreign_host_is_refused_on_the_api(api):
+    assert call(api.port, "GET", "/api/session", headers={"Host": "evil.example"})[0] == 403
+    assert call(api.port, "GET", "/api/status", headers={"Host": f"evil.example:{api.port}"})[0] == 403
+    assert post_run(api, {"kind": "demo"}, headers={"Host": "evil.example"})[0] == 403
+    assert call(api.port, "GET", "/api/status", headers={"Host": f"localhost:{api.port}"})[0] == 200
+    assert record(api.rec, "run_governance.json") is None
+
+
+def test_a_body_that_is_not_json_is_refused(api):
+    good = json.dumps({"kind": "demo"}).encode()
+    cases = [
+        dict(raw=good, ctype="text/plain"),
+        dict(raw=good, ctype="application/x-www-form-urlencoded"),
+        dict(raw=good, ctype="application/jsonp"),
+        dict(raw=good, ctype=None),                                   # no Content-Type at all
+        dict(raw=b"{not json", ctype="application/json"),
+        dict(raw=b"", ctype="application/json"),
+        dict(raw=b'["demo"]', ctype="application/json"),             # JSON, but not an object
+        dict(raw=b'"demo"', ctype="application/json"),
+        dict(raw=b'{"kind": NaN}', ctype="application/json"),
+        dict(raw=b'{"kind": "\xff\xfe"}', ctype="application/json"),   # not UTF-8
+    ]
+    for case in cases:
+        status, headers, obj = call(api.port, "POST", "/api/run", token=api.token, **case)
+        assert status == 400 and obj["error"], case
+        assert no_cors(headers)
+    assert record(api.rec, "run_governance.json") is None
+
+
+def test_a_body_over_4_kilobytes_is_refused(api):
+    big = {"kind": "demo", "pad": "x" * 5000}
+    status, _h, obj = post_run(api, big)
+    assert status == 400 and "4096" in obj["error"]
+    assert record(api.rec, "run_governance.json") is None
+    just_fits = {"kind": "demo", "pad": "x" * 3900}
+    assert len(json.dumps(just_fits)) <= 4096
+    assert post_run(api, just_fits)[0] == 202
+    wait_idle(api)
+
+
+def test_an_unknown_kind_is_refused(api):
+    for kind in ("shell", "demo; rm -rf /", "", "Demo", "live", "live-smoke", "../demo", None, 1, ["demo"], True):
+        status, _h, obj = post_run(api, {"kind": kind})
+        assert status == 400 and "kind" in obj["error"], kind
+    assert post_run(api, {})[0] == 400
+    assert record(api.rec, "run_governance.json") is None
+
+
+def test_a_model_that_is_not_in_the_model_file_is_refused(api):
+    for model in ("not-a-listed:model", "ibm/granite:placeholder", "qwen2.5", "QWEN2.5:7B-INSTRUCT",
+                  "other:1b ; rm -rf /", "other:1b\n", "$(whoami)", "--out=/tmp/x"):
+        for kind in ("live-short", "live-full", "demo"):
+            status, _h, obj = post_run(api, {"kind": kind, "model": model})
+            assert status == 400 and "config/models.txt" in obj["error"], (kind, model)
+    for bad_type in (5, ["other:1b"], {"tag": "other:1b"}, True, ""):
+        assert post_run(api, {"kind": "live-short", "model": bad_type})[0] == 400, bad_type
+    assert record(api.rec, "preflight.json") is None and record(api.rec, "run_governance.json") is None
+
+
+def test_the_live_kinds_need_a_model_and_models_takes_none(api):
+    for kind in ("live-short", "live-full"):
+        for body in ({"kind": kind}, {"kind": kind, "model": None}):
+            status, _h, obj = post_run(api, body)
+            assert status == 400 and "needs a model" in obj["error"], body
+    status, _h, obj = post_run(api, {"kind": "models", "model": "other:1b"})
+    assert status == 400 and "does not apply" in obj["error"]
+    assert record(api.rec, "preflight.json") is None and record(api.rec, "run_governance.json") is None
+
+
+def test_parallel_must_be_1_or_2(api):
+    for value in (0, 3, 4, -1, "2", 2.0, True, [2], {"n": 2}):
+        status, _h, obj = post_run(api, {"kind": "models", "parallel": value})
+        assert status == 400 and "parallel" in obj["error"], value
+    assert record(api.rec, "run_models.json") is None
+
+
+def test_a_missing_script_or_interpreter_is_a_400_with_one_line(api):
+    (api.root / "scripts" / "run_governance.py").unlink()
+    (api.root / "scripts" / "run_models.py").unlink()
+    status, _h, obj = post_run(api, {"kind": "demo"})
+    assert status == 400 and obj["error"] == "scripts/run_governance.py not found"
+    status, _h, obj = post_run(api, {"kind": "models"})
+    assert status == 400 and obj["error"] == "scripts/run_models.py not found"
+    api.controller.python = str(api.root / "no-such-python")
+    status, _h, obj = post_run(api, {"kind": "demo"})
+    assert status == 400 and "file not found" in obj["error"] and str(api.root) not in obj["error"]
+    assert get_status(api)["running"] is False
+
+
+def test_a_demo_run_end_to_end_through_the_api(api):
+    status, headers, obj = post_run(api, {"kind": "demo"})
+    assert status == 202 and obj == {"ok": True} and no_cors(headers)
+    wait_idle(api)
+    st = get_status(api)
+    assert st["running"] is False and st["kind"] is None and st["model"] is None and st["started"] is None
+    gov = record(api.rec, "run_governance.json")
+    assert gov["argv"][0] == "--out" and _re.fullmatch(rf"governance_out/bridge/demo_{STAMP_RE}", gov["argv"][1])
+    assert len(gov["argv"]) == 2 and gov["unbuffered"] == "1" and gov["utf8"] == "1" and gov["model"] is None
+    assert record(api.rec, "preflight.json") is None                    # a scripted run needs no preflight
+    assert record(api.rec, "export.json")["argv"] == ["--quiet", "--gov", gov["argv"][1]]
+    assert st["last"] == {"kind": "demo", "model": None, "exit_code": 0, "export_status": "ok",
+                          "export_text": "Evidence screens updated: press R.", "out": gov["argv"][1], "error": None}
+    live = read_live(api.data)
+    assert live["state"] == "done" and live["source"]["kind"] == "run"
+    assert str(api.root) not in json.dumps(st) and str(api.root) not in json.dumps(live)
+
+
+def test_status_says_what_is_running_and_when_it_started(api, monkeypatch):
+    hold_run_open(api, monkeypatch)
+    assert post_run(api, {"kind": "live-short", "model": "other:1b"})[0] == 202
+    st = get_status(api)
+    assert st["running"] is True and st["kind"] == "live-short" and st["model"] == "other:1b"
+    assert _re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", st["started"]) and st["last"] is None
+    assert st["models"] == ["qwen2.5:7b-instruct", "other:1b"]
+    assert call(api.port, "POST", "/api/stop", token=api.token)[0] == 202
+    wait_idle(api)
+
+
+def test_a_second_run_while_one_is_running_is_a_409(api, monkeypatch):
+    hold_run_open(api, monkeypatch)
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    status, headers, obj = post_run(api, {"kind": "demo"})
+    assert status == 409 and obj == {"error": "a run is in progress"} and no_cors(headers)
+    assert post_run(api, {"kind": "models"})[0] == 409
+    assert post_run(api, {"kind": "live-short", "model": "other:1b"})[0] == 409
+    assert get_status(api)["kind"] == "demo"                              # the first run is untouched
+    assert call(api.port, "POST", "/api/stop", token=api.token)[0] == 202
+    wait_idle(api)
+    assert record(api.rec, "preflight.json") is None                      # the refused live run never reached its preflight
+
+
+@posix_only
+def test_stop_ends_the_run_and_last_records_the_exit(api, monkeypatch):
+    hold_run_open(api, monkeypatch)
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    wait_running_on_screen(api)                                           # the fake child has its SIGINT handler now
+    status, headers, obj = call(api.port, "POST", "/api/stop", token=api.token)
+    assert status == 202 and obj == {"ok": True} and no_cors(headers)
+    wait_idle(api)
+    st = get_status(api)
+    assert st["running"] is False and st["kind"] is None
+    gov = record(api.rec, "run_governance.json")["argv"][1]
+    assert st["last"] == {"kind": "demo", "model": None, "exit_code": 130, "export_status": "skipped",
+                          "export_text": "The run was stopped, so the evidence screens were not updated.",
+                          "out": gov, "error": "stopped by you"}
+    assert (api.rec / "interrupted.txt").read_text() == "got SIGINT"      # an interrupt first, as with Ctrl-C
+    assert record(api.rec, "export.json") is None
+    live = read_live(api.data)
+    assert live["state"] == "stopped" and "stopped by you" in live["warnings"]
+
+
+def test_stop_with_nothing_running_is_a_409(api):
+    status, headers, obj = call(api.port, "POST", "/api/stop", token=api.token)
+    assert status == 409 and obj == {"error": "nothing is running"} and no_cors(headers)
+
+
+def test_a_new_run_can_start_after_the_last_one_ended(api, monkeypatch):
+    hold_run_open(api, monkeypatch)
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    assert call(api.port, "POST", "/api/stop", token=api.token)[0] == 202
+    wait_idle(api)
+    first = get_status(api)["last"]
+    assert first["exit_code"] != 0 and first["error"] == "stopped by you"
+    monkeypatch.delenv("FAKE_SLEEP")
+    api.events.write_text("".join(json.dumps(e) + "\n" for e in Run().full()), encoding="utf-8")
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    wait_idle(api)
+    second = get_status(api)["last"]
+    assert second["exit_code"] == 0 and second["error"] is None and second["export_status"] == "ok"
+
+
+def test_live_full_through_the_api_uses_the_fixed_argv_and_the_preflight(api):
+    assert post_run(api, {"kind": "live-full", "model": "other:1b"})[0] == 202
+    wait_idle(api)
+    pre = record(api.rec, "preflight.json")
+    assert pre["argv"] == ["--model", "other:1b"] and pre["model"] == "other:1b"
+    gov = record(api.rec, "run_governance.json")
+    argv = gov["argv"]
+    assert argv[:6] == ["--live", "--sample", "26", "--reps", "3", "--out"] and len(argv) == 7
+    assert _re.fullmatch(rf"results/governance/{STAMP_RE}_other-1b", argv[6])
+    assert gov["model"] == "other:1b" and gov["unbuffered"] == "1" and gov["utf8"] == "1"
+    assert (api.rec / "preflight.json").stat().st_mtime <= (api.rec / "run_governance.json").stat().st_mtime
+    assert record(api.rec, "export.json")["argv"] == ["--quiet", "--gov", argv[6]]
+    last = get_status(api)["last"]
+    assert last["kind"] == "live-full" and last["model"] == "other:1b" and last["out"] == argv[6]
+    assert last["exit_code"] == 0 and last["export_status"] == "ok" and last["error"] is None
+
+
+def test_live_short_through_the_api_runs_the_preflight_first(api):
+    assert post_run(api, {"kind": "live-short", "model": "qwen2.5:7b-instruct"})[0] == 202
+    wait_idle(api)
+    assert record(api.rec, "preflight.json")["argv"] == ["--model", "qwen2.5:7b-instruct"]
+    gov = record(api.rec, "run_governance.json")
+    assert gov["argv"][:5] == ["--live", "--sample", "2", "--reps", "1"] and gov["model"] == "qwen2.5:7b-instruct"
+    assert _re.fullmatch(rf"governance_out/bridge/live_{STAMP_RE}", gov["argv"][6])
+
+
+def test_a_failed_preflight_refuses_the_run_and_says_why(api, monkeypatch):
+    monkeypatch.setenv("FAKE_PREFLIGHT_EXIT", "1")
+    for kind in ("live-short", "live-full"):
+        assert post_run(api, {"kind": kind, "model": "other:1b"})[0] == 202       # the check itself takes time: 202
+        wait_idle(api)
+        last = get_status(api)["last"]
+        assert last["kind"] == kind and last["model"] == "other:1b" and last["exit_code"] == 2
+        assert last["error"].startswith("preflight failed. FAIL ollama: not answering") and last["error"].endswith("(+1 more)")
+        assert last["export_status"] == "skipped" and last["export_text"] == "Not started: " + last["error"]
+        assert last["out"] is None
+        assert record(api.rec, "run_governance.json") is None and record(api.rec, "export.json") is None
+        live = read_live(api.data)
+        assert live["state"] == "error" and live["done"]["text"].startswith("Not started: preflight failed.")
+
+
+def test_the_models_run_through_the_api(api, monkeypatch):
+    monkeypatch.setenv("FAKE_STAMP", "99991231T235959Z")
+    monkeypatch.setenv("FAKE_SLUG", "other-1b")
+    monkeypatch.setenv("FAKE_TAG", "other:1b")
+    assert post_run(api, {"kind": "models", "parallel": 1})[0] == 202
+    wait_idle(api)
+    assert record(api.rec, "run_models.json")["argv"] == ["--models", "config/models.txt", "--parallel", "1"]
+    last = get_status(api)["last"]
+    assert last == {"kind": "models", "model": None, "exit_code": 0, "export_status": "ok",
+                    "export_text": "Evidence screens updated: press R.", "out": None, "error": None}
+    assert [m["slug"] for m in read_live(api.data)["batch"]["models"]] == ["other-1b"]
+    assert record(api.rec, "export.json")["argv"] == ["--quiet"]
+
+
+def test_models_defaults_to_two_in_parallel(api, monkeypatch):
+    monkeypatch.setenv("FAKE_STAMP", "99991231T235958Z")
+    monkeypatch.setenv("FAKE_SLUG", "other-1b")
+    monkeypatch.setenv("FAKE_TAG", "other:1b")
+    assert post_run(api, {"kind": "models", "parallel": None, "model": None})[0] == 202
+    wait_idle(api)
+    assert record(api.rec, "run_models.json")["argv"][-2:] == ["--parallel", "2"]
+
+
+def test_a_failed_run_is_recorded_with_its_exit_code(api, monkeypatch):
+    cut = [e for e in Run().full() if e["type"] != "pipeline_done"][:40]
+    api.events.write_text("".join(json.dumps(e) + "\n" for e in cut), encoding="utf-8")
+    monkeypatch.setenv("FAKE_EXIT", "3")
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    wait_idle(api)
+    last = get_status(api)["last"]
+    assert last["exit_code"] == 3 and last["error"] == "the run ended with exit code 3"
+    assert last["export_status"] == "skipped" and record(api.rec, "export.json") is None
+
+
+def test_request_text_never_reaches_the_command(api):
+    body = {"kind": "demo", "argv": ["--evil"], "cmd": "rm -rf /", "out": "/tmp/x", "env": {"LAB_MODEL": "x"},
+            "shell": True}
+    assert post_run(api, body)[0] == 202
+    wait_idle(api)
+    gov = record(api.rec, "run_governance.json")
+    assert len(gov["argv"]) == 2 and gov["argv"][0] == "--out" and gov["argv"][1].startswith("governance_out/bridge/demo_")
+    assert gov["model"] is None
+
+
+def test_the_worker_never_leaves_the_controller_stuck_when_something_unexpected_happens(api, monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("boom at " + str(api.root))
+
+    monkeypatch.setattr(bridge, "execute_run", boom)
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    wait_idle(api)
+    last = get_status(api)["last"]
+    assert last["exit_code"] == 2 and last["error"] == "the run failed (RuntimeError)" and last["out"] is None
+    assert post_run(api, {"kind": "demo"})[0] == 202                       # and the next one is accepted
+    wait_idle(api)
+
+
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "PROPFIND", "HEAD"])
+@pytest.mark.parametrize("path", ["/api/run", "/api/stop", "/api/session", "/api/status"])
+def test_other_methods_on_the_api_are_405_without_cors_headers(api, method, path):
+    headers = {"Origin": f"http://127.0.0.1:{api.port}", "Access-Control-Request-Method": "POST",
+               "Access-Control-Request-Headers": "x-redline-token, content-type"}
+    status, resp_headers, _ = fetch(api.port, method, path, headers=headers,
+                                    body=b"x" if method in ("PUT", "PATCH") else None)
+    assert status == 405
+    assert resp_headers["allow"] == bridge.API_ROUTES[path]
+    assert resp_headers["cache-control"] == "no-store" and resp_headers["x-content-type-options"] == "nosniff"
+    assert no_cors(resp_headers)
+
+
+def test_a_get_on_a_post_route_and_a_post_on_a_get_route_are_405(api):
+    status, headers, _ = call(api.port, "GET", "/api/run")
+    assert status == 405 and headers["allow"] == "POST" and no_cors(headers)
+    status, headers, _ = call(api.port, "GET", "/api/stop")
+    assert status == 405 and headers["allow"] == "POST"
+    status, headers, _ = call(api.port, "POST", "/api/status", {"kind": "demo"}, token=api.token)
+    assert status == 405 and headers["allow"] == "GET" and no_cors(headers)
+    status, headers, _ = call(api.port, "POST", "/api/session", {"kind": "demo"}, token=api.token)
+    assert status == 405 and headers["allow"] == "GET"
+    assert record(api.rec, "run_governance.json") is None
+
+
+def test_unknown_api_paths_are_404_and_files_are_still_served(api):
+    for method in ("GET", "POST"):
+        status, headers, obj = call(api.port, method, "/api/nothing", {"kind": "demo"} if method == "POST" else None,
+                                    token=api.token)
+        assert status == 404 and obj == {"error": "not found"} and no_cors(headers)
+    assert call(api.port, "GET", "/api")[0] == 404
+    assert call(api.port, "GET", "/api/status/")[0] == 404
+    assert call(api.port, "GET", "/api/status?x=1")[0] == 200            # a query string is ignored, as for files
+    status, headers, data = fetch(api.port, "GET", "/index.html")
+    assert status == 200 and data == b"<!doctype html><title>t</title>"
+    status, headers, _ = fetch(api.port, "POST", "/index.html", body=b"x")           # a POST to a file stays 405
+    assert status == 405 and headers["allow"] == "GET, HEAD" and no_cors(headers)
+
+
+def test_a_server_without_a_controller_has_no_api(served):
+    _, port, _ = served
+    assert fetch(port, "GET", "/api/session")[0] == 404
+    assert fetch(port, "GET", "/api/status")[0] == 404
+    status, headers, _ = fetch(port, "POST", "/api/run", headers={"Content-Type": "application/json",
+                                                                 "X-Redline-Token": "x"}, body=b"{}")
+    assert status == 405 and headers["allow"] == "GET, HEAD"
+
+
+def test_a_run_started_by_the_command_line_cannot_be_stopped_from_the_page():
+    ctl = bridge.RunController(root=".", data_dir=".")
+    ctl.begin_external("demo", None)
+    assert ctl.status()["running"] is True and ctl.status()["kind"] == "demo"
+    with pytest.raises(bridge.ApiError) as exc:
+        ctl.stop()
+    assert exc.value.status == 409 and "command line" in exc.value.message
+    with pytest.raises(bridge.BridgeError):
+        ctl.begin_external("demo", None)
+    ctl.end_external("demo", None, bridge.RunOutcome(0, out="o", export={"status": "ok", "text": "t"}), None)
+    st = ctl.status()
+    assert st["running"] is False and st["last"]["exit_code"] == 0 and st["last"]["out"] == "o"
+
+
+@posix_only
+def test_shutdown_stops_a_page_started_run_so_no_child_is_left_behind(api, monkeypatch):
+    hold_run_open(api, monkeypatch)
+    assert post_run(api, {"kind": "demo"})[0] == 202
+    wait_running_on_screen(api)
+    api.controller.shutdown(timeout=30)
+    assert get_status(api)["running"] is False
+    assert (api.rec / "interrupted.txt").read_text() == "got SIGINT"
+
+
+def _serve_main(tmp_path, monkeypatch, capsys, extra, during):
+    """Run bridge.main with --serve; `during(port, seen)` runs where the bridge would wait for Ctrl-C."""
+    seen = {}
+
+    def fake_wait():
+        out = capsys.readouterr().out
+        port = int(_re.search(r"http://127\.0\.0\.1:(\d+)/", out).group(1))
+        seen["out"] = out
+        during(port, seen)
+
+    monkeypatch.setattr(bridge, "_wait_for_ctrl_c", fake_wait)
+    root = make_root(tmp_path)
+    code = bridge.main(["--serve", "--port", "0", "--root", str(root), "--python", sys.executable,
+                        "--data-dir", str(tmp_path / "data"), "--pace-scale", "0", *extra])
+    return code, seen, root
+
+
+def test_main_serve_alone_accepts_page_started_runs(tmp_path, fake_env, monkeypatch, capsys):
+    rec, _ = fake_env
+
+    def during(port, seen):
+        seen["token"] = call(port, "GET", "/api/session")[2]["token"]
+        seen["post"] = call(port, "POST", "/api/run", {"kind": "demo"}, token=seen["token"])[0]
+        wait_until(lambda: not call(port, "GET", "/api/status")[2]["running"])
+        seen["status"] = call(port, "GET", "/api/status")[2]
+
+    code, seen, _root = _serve_main(tmp_path, monkeypatch, capsys, [], during)
+    assert code == 0 and "The page can start runs." in seen["out"]
+    assert seen["post"] == 202
+    assert seen["status"]["last"]["kind"] == "demo" and seen["status"]["last"]["exit_code"] == 0
+    assert record(rec, "run_governance.json")["argv"][0] == "--out"
+    assert read_live(tmp_path / "data")["state"] == "done"
+
+
+def test_main_serve_with_run_still_works_and_the_page_sees_the_result(tmp_path, fake_env, monkeypatch, capsys):
+    rec, _ = fake_env
+
+    def during(port, seen):
+        seen["status"] = call(port, "GET", "/api/status")[2]
+        token = call(port, "GET", "/api/session")[2]["token"]
+        stop = call(port, "POST", "/api/stop", token=token)
+        seen["stop"] = (stop[0], stop[2])
+
+    code, seen, _root = _serve_main(tmp_path, monkeypatch, capsys, ["--run", "demo"], during)
+    assert code == 0
+    assert seen["status"]["running"] is False
+    assert seen["status"]["last"]["kind"] == "demo" and seen["status"]["last"]["exit_code"] == 0
+    assert seen["status"]["last"]["export_status"] == "ok"
+    assert seen["stop"] == (409, {"error": "nothing is running"})
+    assert record(rec, "run_governance.json")["argv"][0] == "--out"
+
+
+def test_main_serve_with_follow_has_no_run_api(tmp_path, monkeypatch, capsys):
+    log = tmp_path / "progress.jsonl"
+    log.write_text("", encoding="utf-8")
+    seen = {}
+
+    def interrupt(_s):
+        out = capsys.readouterr().out
+        port = int(_re.search(r"http://127\.0\.0\.1:(\d+)/", out).group(1))
+        seen["status"] = fetch(port, "GET", "/api/status")[0]
+        seen["out"] = out
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bridge.time, "sleep", interrupt)
+    bridge.main(["--serve", "--port", "0", "--follow", str(log), "--data-dir", str(tmp_path / "data")])
+    assert seen["status"] == 404 and "The page can start runs." not in seen["out"]
+
+
+def test_python_and_no_export_still_need_run_or_serve():
+    for argv in (["--follow", "x", "--python", "py"], ["--replay", "x", "--no-export"]):
+        with pytest.raises(SystemExit) as exc:
+            bridge.main(argv)
+        assert exc.value.code == 2
