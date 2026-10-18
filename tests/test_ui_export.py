@@ -1225,6 +1225,46 @@ def test_run_folders_are_listed_newest_first_and_capped(ex, run_repo):
             ex.run_folder_configs(ctx, {"enabled": True, "glob": bad})
 
 
+# --------------------------------------------------------------------------- #
+# A5.6: proof paths are shown relative to the repo, never as an absolute path.
+# --------------------------------------------------------------------------- #
+def test_proof_paths_are_cut_to_a_path_inside_the_repo(ex, tmp_path):
+    (tmp_path / "results" / "runs" / "x").mkdir(parents=True)
+    (tmp_path / "results" / "runs" / "x" / "runs.csv").write_text("a\n", encoding="utf-8")
+    ctx = make_ctx(ex, tmp_path)
+    cases = [
+        ("/Users/someone/Other Folder/results/runs/x/runs.csv", "results/runs/x/runs.csv", True),     # the file is here
+        ("/home/ci/work/results/runs/y/runs.csv", "results/runs/y/runs.csv", False),                  # not here: cut at results
+        ("C:\\Users\\x\\Repo\\results\\runs\\y\\runs.csv", "results/runs/y/runs.csv", False),         # a Windows path
+        ("/Users/x/Repo/governance_out/audit_log.jsonl", "governance_out/audit_log.jsonl", False),
+        ("/tmp/work/out.csv", "<outside repo>/out.csv", False),
+        ("../elsewhere/out.csv", "<outside repo>/out.csv", False),
+        ("./results/runs/x/runs.csv", "results/runs/x/runs.csv", True),
+        ("results/runs/x/runs.csv", "results/runs/x/runs.csv", True),
+        ("", "", False),
+    ]
+    for raw, want, exists in cases:
+        assert ex.proof_path(ctx, raw) == (want, exists), raw
+
+
+def test_evidence_rows_never_carry_an_absolute_path(ex, tmp_path):
+    (tmp_path / "results" / "runs" / "x").mkdir(parents=True)
+    (tmp_path / "results" / "runs" / "x" / "runs.csv").write_text("a\n", encoding="utf-8")
+    ctx = make_ctx(ex, tmp_path)
+    ev = ("| Control | Proof needed | Proof file | Result |\n| --- | --- | --- | --- |\n"
+          "| D2 | no reads | `/Users/someone/Repo/results/runs/x/runs.csv` | ok |\n"
+          "| D3 | no tickets | `/Users/someone/Repo/results/runs/y/runs.csv` | ok |\n")
+    risks = ("| ID | Risk | Violation class | Likelihood | Impact | Control | Owner | Status |\n"
+             "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+             "| R-01 | r | `V_read_restricted` | Low (0/3, 0%) | High | D2 | a | Open |\n")
+    body = ex.assurance_from_md(ctx, risks, ev, None, ex.REAL, {"risk": "r.md"}, {"risk": {"kind": "text"}})
+    rows = body["evidence"]
+    assert [r["proof_file"] for r in rows] == ["results/runs/x/runs.csv", "results/runs/y/runs.csv"]
+    assert [r["proof_file_exists"] for r in rows] == [True, False]
+    assert rows[0]["proof_file_note"] is None and rows[1]["proof_file_note"] == "file not found"
+    assert "/Users/" not in json.dumps(body)
+
+
 def test_the_screens_can_show_the_newest_run_folder_instead_of_the_rehearsal(ex, run_repo):
     older = run_repo.make("RC-001")
     newer = run_repo.make("RC-002", defences=("D2",))

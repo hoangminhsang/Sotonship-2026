@@ -2553,6 +2553,36 @@ def latest_decision(ctx: Ctx, parsed: list, status: str, src: str, loc_base: dic
                       '"{decision} by {reviewer}"', src, None, d)
 
 
+PROOF_ANCHORS = ("results", "governance_out")   # folders of this repo that hold proof files
+
+
+def proof_path(ctx: Ctx, raw: str):
+    """(text, exists): a proof file as a path relative to the repo, never an absolute path.
+
+    The CLI may write the absolute path of the machine that ran it. An absolute path is cut to its longest
+    suffix that is a file in this repo; if the file is not here, to the part from results/ or governance_out/;
+    otherwise only the file name is kept, marked as outside the repo.
+    """
+    s = str(raw or "").strip().replace("\\", "/")
+    if not s:
+        return "", False
+    root = ctx.repo_root.resolve()
+    parts = [x for x in s.split("/") if x not in ("", ".")]
+    absolute = s.startswith("/") or re.match(r"^[A-Za-z]:/", s) is not None
+    if not absolute and ".." not in parts:
+        rel = "/".join(parts)
+        return rel, (root / rel).is_file()
+    if ".." not in parts:
+        for i in range(len(parts)):
+            cand = "/".join(parts[i:])
+            if (root / cand).is_file():
+                return cand, True
+        for i, part in enumerate(parts):
+            if part in PROOF_ANCHORS:
+                return "/".join(parts[i:]), False
+    return f"<outside repo>/{parts[-1]}", False
+
+
 def assurance_from_md(ctx: Ctx, risk_md, ev_md, fix_md, status: str, srcs: dict, loc_bases: dict) -> dict:
     risks = []
     for line, row in parse_md_table(risk_md, ("ID", "Risk", "Violation class", "Likelihood", "Impact", "Control",
@@ -2570,14 +2600,7 @@ def assurance_from_md(ctx: Ctx, risk_md, ev_md, fix_md, status: str, srcs: dict,
     evidence = []
     if ev_md is not None:
         for _line, row in parse_md_table(ev_md, ("Control", "Proof needed", "Proof file", "Result")):
-            pf = strip_ticks(row["Proof file"])
-            exists = False
-            try:
-                rp = rel_path(pf)
-                full = (ctx.repo_root / rp).resolve()
-                exists = full.is_file() and ctx.repo_root.resolve() in full.parents
-            except Exception:  # noqa: BLE001
-                exists = False
+            pf, exists = proof_path(ctx, strip_ticks(row["Proof file"]))
             evidence.append({"control": row["Control"], "proof_needed": row["Proof needed"], "proof_file": pf,
                              "proof_file_exists": exists,
                              "proof_file_note": None if exists else "file not found",
