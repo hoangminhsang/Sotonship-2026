@@ -157,6 +157,10 @@ RE_GATE_CAND = re.compile(r"^(?:\[(" + _MODE_RX + r")\] )?Candidate (\S+)\s*$")
 RE_GATE_CHECK = re.compile(r"^  (OK  |FAIL)  (\S+) +(\S+)  limit (\S+)\s*(?:\((.*)\))?\s*$")
 # A figure the gate prints for information only. It is not a release limit and never counts as a check.
 RE_GATE_INFO = re.compile(r"^  info  (\S+) +(\S+)  not a limit  \((.*)\)\s*$")
+# First line of a .md file: "**Mode: [TAG]**", then (scripted mode) one sentence on what the numbers are.
+RE_MODE_LINE = re.compile(r"^\*\*Mode: \[(" + _MODE_RX + r")\]\*\*(?: (.*))?$")
+# First line of a .txt file: "[TAG] <the usual first line>".
+RE_TXT_MODE = re.compile(r"^\[(" + _MODE_RX + r")\] ")
 RE_GATE_VERDICT = re.compile(r"^VERDICT: (PASS|FAIL)(?: \((\d+) reasons?\))?\s*$")
 RE_GATE_XN = re.compile(r"^(\d+)/(\d+) ")
 # lab/agent.py MODEL default.
@@ -1133,6 +1137,26 @@ def parse_likelihood(cell: str) -> dict:
             "pct": m.group(4) + "%"}
 
 
+def split_mode_line(text: str):
+    """Split off the mode line that Report.label puts on top of every .md file.
+
+    Returns (tag, note, body, offset):
+      tag     SCRIPTED, the real-model tag or SAVED; None when the first line is no mode line
+      note    the sentence after the tag ("" when there is none)
+      body    the text without the mode line and the blank line under it
+      offset  how many lines were taken off the top, so line n of body is line n + offset of the file
+
+    The mode line starts with "**" but does not always end with "**", so a parser that skips bold
+    title lines by their two ends must not see it. Untagged text comes back unchanged.
+    """
+    lines = text_lines(text)
+    m = RE_MODE_LINE.match(lines[0]) if lines else None
+    if not m:
+        return None, "", text, 0
+    offset = 2 if len(lines) > 1 and not lines[1].strip() else 1
+    return m.group(1), (m.group(2) or "").strip(), "\n".join(lines[offset:]), offset
+
+
 def parse_fix_ticket_line(line: str) -> dict:
     if not line.startswith("- "):
         raise SourceError("ticket line must start with '- '")
@@ -1149,8 +1173,9 @@ def parse_fix_ticket_line(line: str) -> dict:
 
 
 def parse_fix_tickets(text: str) -> list:
+    _tag, _note, body, offset = split_mode_line(text)
     out = []
-    for no, line in enumerate(text_lines(text), start=1):
+    for no, line in enumerate(text_lines(body), start=offset + 1):
         s = line.strip()
         if not s or s == "**Fix tickets**":
             continue
@@ -1163,8 +1188,9 @@ def parse_fix_tickets(text: str) -> list:
 
 def parse_md_bullets(text: str) -> list:
     """'- **Key:** value' lines (inventory card, manager summary)."""
+    _tag, _note, body, offset = split_mode_line(text)
     out = []
-    for no, line in enumerate(text_lines(text), start=1):
+    for no, line in enumerate(text_lines(body), start=offset + 1):
         s = line.strip()
         if not s or (s.startswith("**") and s.endswith("**")):
             continue
@@ -1177,8 +1203,9 @@ def parse_md_bullets(text: str) -> list:
 
 def parse_md_steps(text: str) -> list:
     """Traceability markdown: a bold title, a `chain`, then numbered steps."""
+    _tag, _note, body, offset = split_mode_line(text)
     out = []
-    for no, line in enumerate(text_lines(text), start=1):
+    for no, line in enumerate(text_lines(body), start=offset + 1):
         s = line.strip()
         if not s or (s.startswith("**") and s.endswith("**")) or (s.startswith("`") and s.endswith("`")):
             continue
@@ -2040,6 +2067,65 @@ def fixture_produced(obj: dict) -> dict:
     return {"basis": "fixture", "text": f"hand-written fixture, prepared {prep}", "raw": prep}
 
 
+def governance_dir(gov: dict) -> str:
+    """The repo-relative folder that holds the governance files ("" when none is configured)."""
+    d = gov.get("dir")
+    if isinstance(d, str) and d.strip():
+        return rel_path(d)
+    gate = gov.get("gate_report")
+    if isinstance(gate, str) and gate.strip():
+        return Path(rel_path(gate)).parent.as_posix()
+    return ""
+
+
+def folder_mode_tags(ctx: Ctx, gov: dict) -> dict:
+    """{file name: mode tag} for every file in the governance folder that states its mode.
+
+    Reads the "mode" of run_index.json and audit_verify.json, the "[TAG] " that starts gate_*.txt
+    and the "**Mode: [TAG]**" line that starts each .md file. Files without a tag are left out.
+    An unreadable file is left out too: the code that parses it reports the problem.
+    """
+    out: dict = {}
+    try:
+        folder = governance_dir(gov)
+        names = sorted(p.name for p in (ctx.repo_root / folder).iterdir() if p.is_file())
+    except (OSError, SourceError):
+        return out
+    for name in names[:400]:
+        rel = name if folder in ("", ".") else f"{folder}/{name}"
+        try:
+            if name in ("run_index.json", "audit_verify.json"):
+                obj = json.loads(read_text(ctx, rel)[0])
+                tag = obj.get("mode") if isinstance(obj, dict) else None
+            elif name.startswith("gate_") and name.endswith(".txt"):
+                first = (text_lines(read_text(ctx, rel)[0]) or [""])[0]
+                m = RE_TXT_MODE.match(first)
+                tag = m.group(1) if m else None
+            elif name.endswith(".md"):
+                tag = split_mode_line(read_text(ctx, rel)[0])[0]
+            else:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        if tag in MODE_TAGS:
+            out[name] = tag
+    return out
+
+
+def warn_mixed_modes(ctx: Ctx, tags: dict) -> bool:
+    """Warn when the files of one governance folder carry different mode tags. True if they do."""
+    kinds = sorted(set(tags.values()))
+    if len(kinds) < 2:
+        return False
+    parts = []
+    for k in kinds:
+        names = [n for n in sorted(tags) if tags[n] == k]
+        parts.append(f"{k}: {', '.join(names[:4])}{', ...' if len(names) > 4 else ''}")
+    ctx.warn("integrity", "Governance output mixes run modes (" + "; ".join(parts) + "). The files are not all "
+                          "from one run; run the CLI again into an empty folder.")
+    return True
+
+
 def detect_scripted(ctx: Ctx, gov: dict, batch) -> bool:
     for fp in gov.get("fingerprint") or []:
         try:
@@ -2284,6 +2370,7 @@ def build_governance(ctx: Ctx, batches: dict):
     latest = None
 
     if connected:
+        warn_mixed_modes(ctx, folder_mode_tags(ctx, gov))
         scripted = detect_scripted(ctx, gov, ev_batch)
         g_status = SAMPLE if scripted else REAL
         if scripted and not allow:

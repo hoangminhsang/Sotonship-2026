@@ -166,3 +166,152 @@ def test_scripted_gate_reaches_the_dashboard_data(ex, repo):
     assert gate["status"] == ex.SAMPLE and gate["candidate_id"]["text"] == "RC-001"
     assert [c["name"] for c in gate["checks"]] == GATE_CHECKS
     assert [i["name"] for i in gate["info"]] == ["attempted_incl_blocked"]
+
+
+# --------------------------------------------------------------------------- #
+# Breakage 4: the first line of every .md file is "**Mode: [TAG]** <note>".
+# --------------------------------------------------------------------------- #
+LIVE_FIX_TICKETS = """\
+**Mode: [LIVE]**
+
+**Fix tickets**
+
+- FIX-01: Build D2 (Input checks in tool code) for V_read_restricted  (owner tom, due 2026-10-24, risk R-01)
+- FIX-02: Build D3 (Human approval for high-impact actions) for V_tool_misuse  (owner unassigned, due 2026-10-24, risk R-03)
+"""
+
+GOV_FILES = {"connected": True, "candidate_id": "RC-001", "evidence_batch": "b",
+             "gate_report": "governance_out/gate_RC-001.txt",
+             "fingerprint": ["governance_out/RC-001.json"],
+             "audit_log": "governance_out/audit_log.jsonl",
+             "risk_register_md": "governance_out/risk_register_before.md",
+             "evidence_md": "governance_out/evidence_register.md",
+             "fix_tickets_md": "governance_out/fix_tickets.md"}
+
+
+def _read(repo: Path, name: str) -> str:
+    return (repo / "governance_out" / name).read_text(encoding="utf-8")
+
+
+def _stub_batch_for(ex, repo: Path) -> dict:
+    """An evidence batch with the same attack count as the gate, so the gate is not held back."""
+    note = ex.parse_gate_report(_read(repo, "gate_RC-001.txt"))["checks"][0]["note"]
+    x, n = (int(v) for v in note.split(" ")[0].split("/"))
+    return {"id": "b", "title": "stub", "summary": {"attack_success_rate": {"measured": True, "successes": x, "n": n}}}
+
+
+def _build(ex, repo: Path):
+    ctx = make_ctx(ex, repo, dict(GOV_FILES), allow_sample=True)
+    return ctx, ex.build_governance(ctx, {"b": _stub_batch_for(ex, repo)})
+
+
+def test_split_mode_line_returns_tag_note_body_and_offset(ex):
+    text = "**Mode: [SCRIPTED]** Scripted traces, not measured.\n\n**Fix tickets**\n\n- one\n"
+    tag, note, body, offset = ex.split_mode_line(text)
+    assert (tag, note, offset) == ("SCRIPTED", "Scripted traces, not measured.", 2)
+    assert body.split("\n")[0] == "**Fix tickets**"
+    for k, line in enumerate(body.split("\n")):  # body line k is file line k + offset
+        assert text.split("\n")[k + offset] == line
+
+
+def test_split_mode_line_without_a_note_or_a_blank_line(ex):
+    assert ex.split_mode_line("**Mode: [LIVE]**\n\nbody\n") == ("LIVE", "", "body", 2)
+    assert ex.split_mode_line("**Mode: [SAVED]**\nbody\n") == ("SAVED", "", "body", 1)
+    assert ex.split_mode_line("**Mode: [LIVE]**\r\n\r\nbody\r\n") == ("LIVE", "", "body", 2)
+    assert ex.split_mode_line("**Mode: [LIVE]**\n") == ("LIVE", "", "", 1)
+
+
+def test_split_mode_line_leaves_untagged_text_alone(ex):
+    plain = "**Fix tickets**\n\n- one\n"
+    assert ex.split_mode_line(plain) == (None, "", plain, 0)
+    assert ex.split_mode_line("") == (None, "", "", 0)
+    unknown = "**Mode: [DEMO]** note\n\nbody\n"
+    assert ex.split_mode_line(unknown) == (None, "", unknown, 0)
+    assert ex.split_mode_line("intro\n**Mode: [LIVE]**\n\nbody\n")[0] is None
+
+
+def test_fix_tickets_of_the_scripted_cli_output_parse_with_their_line_numbers(ex, repo):
+    text = _read(repo, "fix_tickets.md")
+    assert text.startswith("**Mode: [SCRIPTED]** "), "the CLI tags every .md file with its mode"
+    tickets = ex.parse_fix_tickets(text)
+    lines = text.split("\n")
+    assert [no for no, _t in tickets] == [i for i, ln in enumerate(lines, start=1) if ln.startswith("- ")]
+    assert len(tickets) >= 3
+    for no, t in tickets:
+        assert lines[no - 1].startswith(f"- {t['id']}: ")
+
+
+def test_fix_tickets_of_a_real_model_run_parse(ex):
+    tickets = ex.parse_fix_tickets(LIVE_FIX_TICKETS)
+    assert [(no, t["id"], t["owner"]) for no, t in tickets] == [(5, "FIX-01", "tom"), (6, "FIX-02", "unassigned")]
+
+
+def test_bullet_files_of_the_scripted_cli_output_parse_with_their_line_numbers(ex, repo):
+    for name in ("inventory_card.md", "manager_summary.md"):
+        text = _read(repo, name)
+        assert text.startswith("**Mode: [SCRIPTED]** ")
+        bullets = ex.parse_md_bullets(text)
+        lines = text.split("\n")
+        assert len(bullets) >= 4, name
+        for no, key, _value in bullets:
+            assert lines[no - 1].startswith(f"- **{key}:**"), (name, no, key)
+
+
+def test_traceability_steps_of_the_scripted_cli_output_parse_with_their_line_numbers(ex, repo):
+    text = _read(repo, "traceability.md")
+    steps = ex.parse_md_steps(text)
+    lines = text.split("\n")
+    assert [n for _no, n, _t in steps] == list(range(1, len(steps) + 1))
+    for no, n, _t in steps:
+        assert lines[no - 1].startswith(f"{n}. ")
+
+
+def test_bullets_and_steps_of_a_real_model_run_parse(ex):
+    bullets = ex.parse_md_bullets("**Mode: [LIVE]**\n\n**Manager summary**\n\n- **Live version:** none approved\n"
+                                  "- **Open risks (3):** a, b, c\n")
+    assert bullets == [(5, "Live version", "none approved"), (6, "Open risks (3)", "a, b, c")]
+    steps = ex.parse_md_steps("**Mode: [LIVE]**\n\n**Traceability for ATK-0001**\n\n`ATK-0001`\n\n"
+                              "1. ATK-0001: not found in runs\n")
+    assert steps == [(7, 1, "ATK-0001: not found in runs")]
+
+
+def test_an_untagged_file_and_a_foreign_first_line_behave_as_before(ex):
+    plain = "**Fix tickets**\n\n- FIX-01: t  (owner tom, due 2026-10-24, risk R-01)\n"
+    assert ex.parse_fix_tickets(plain)[0][0] == 3
+    with pytest.raises(ex.SourceError):
+        ex.parse_fix_tickets("**Mode: [DEMO]** x\n\n" + plain)
+    with pytest.raises(ex.SourceError):
+        ex.parse_fix_tickets("**Fix tickets**\n\nnot a ticket\n")
+
+
+def test_assurance_of_the_scripted_cli_output_reaches_the_dashboard_data(ex, repo):
+    """Before the fix the mode line killed the fix-ticket parser and with it the whole assurance block."""
+    ctx, (_gate, _audit, assurance, _latest) = _build(ex, repo)
+    assert not [w for w in ctx.warnings if w["text"].startswith("Assurance:")], ctx.warnings
+    assert assurance["status"] == ex.SAMPLE
+    assert len(assurance["risks"]) >= 1 and len(assurance["tickets"]) >= 3
+
+
+def test_files_from_one_run_raise_no_mixed_mode_warning(ex, repo):
+    ctx, _built = _build(ex, repo)
+    assert not [w for w in ctx.warnings if "mixes" in w["text"]], ctx.warnings
+
+
+def test_mixed_mode_tags_in_one_folder_raise_an_integrity_warning(ex, repo):
+    path = repo / "governance_out" / "fix_tickets.md"
+    lines = path.read_text(encoding="utf-8").split("\n")
+    lines[0] = "**Mode: [LIVE]**"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    ctx, _built = _build(ex, repo)
+    mixed = [w for w in ctx.warnings if "mixes" in w["text"]]
+    assert len(mixed) == 1 and mixed[0]["level"] == "integrity"
+    assert "fix_tickets.md" in mixed[0]["text"] and "SCRIPTED" in mixed[0]["text"]
+    assert str(repo) not in mixed[0]["text"]
+
+
+def test_a_stale_gate_file_of_another_mode_is_noticed_too(ex, repo):
+    path = repo / "governance_out" / "gate_RC-003.txt"
+    path.write_text(path.read_text(encoding="utf-8").replace("[SCRIPTED]", "[SAVED]", 1), encoding="utf-8")
+    ctx, _built = _build(ex, repo)
+    mixed = [w for w in ctx.warnings if "mixes" in w["text"]]
+    assert len(mixed) == 1 and "gate_RC-003.txt" in mixed[0]["text"] and "SAVED" in mixed[0]["text"]
