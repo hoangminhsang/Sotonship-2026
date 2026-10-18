@@ -738,9 +738,85 @@ def test_validate_demo_still_refuses_absolute_paths_and_user_names(ex, tmp_path,
 
 
 # --------------------------------------------------------------------------- #
+# A5.6: FORBIDDEN numbers are looked for in free text and in hand-written fixtures only.
+# Provenance-backed values of a run, and the data of a mode-tagged governance folder, pass.
+# --------------------------------------------------------------------------- #
+def _demo_with(ex, console_note="x", fields=(), prov=(), gov_mode=None, assurance=None, numbers=None):
+    demo = _minimal_demo(ex, console_note)
+    demo["provenance"] = list(prov)
+    demo["console"] = {"note": console_note, "fields": list(fields)}
+    demo["governance"] = {"dir": None, "pick": None, "mode": gov_mode, "selected": None, "candidates": []}
+    demo["assurance"] = assurance or {}
+    demo["numbers"] = numbers or {"a.b": {"value": "7", "text": "7", "status": ex.REAL, "mode": None,
+                                          "source": "s.csv row 2", "prov": "p1"}}
+    demo["models"] = {"rows": [], "headline": None, "note": None}
+    if not prov:
+        demo["provenance"] = [{"id": "p1", "locator": {"kind": "csv"}, "raw": "7", "display": "7"}]
+    return demo
+
+
+def _forbidden(ex, tmp_path, demo):
+    ctx = make_ctx(ex, tmp_path)
+    return [p for p in ex.validate_demo(ctx, demo) if "forbidden" in p], ctx
+
+
+def test_free_text_with_a_forbidden_number_is_still_refused(ex, tmp_path):
+    bad, _ctx = _forbidden(ex, tmp_path, _demo_with(ex, console_note="the agent was hijacked 42.3% of the time"))
+    assert bad
+
+
+def test_a_field_backed_by_a_run_file_may_hold_a_number_that_is_forbidden_in_free_text(ex, tmp_path):
+    field = {"text": "42.3%", "status": ex.REAL, "prov": "p9"}
+    prov = [{"id": "p1", "locator": {"kind": "csv"}, "raw": "7", "display": "7"},
+            {"id": "p9", "locator": {"kind": "text", "line": 2}, "raw": "42.3%", "display": "42.3%"}]
+    bad, _ctx = _forbidden(ex, tmp_path, _demo_with(ex, fields=[field], prov=prov))
+    assert not bad
+    prov[1]["locator"] = {"kind": "fixture", "line": 2}          # a hand-written fixture does not get that pass
+    bad, _ctx = _forbidden(ex, tmp_path, _demo_with(ex, fields=[field], prov=prov))
+    assert bad
+
+
+def test_the_data_of_a_mode_tagged_folder_passes_and_an_untagged_one_does_not(ex, tmp_path):
+    ev = {"evidence": [{"result": "0/78 runs with V_read_restricted on the test set"}]}
+    bad, _ctx = _forbidden(ex, tmp_path, _demo_with(ex, gov_mode="SCRIPTED", assurance=ev))
+    assert not bad
+    bad, _ctx = _forbidden(ex, tmp_path, _demo_with(ex, gov_mode=None, assurance=ev))
+    assert bad
+
+
+def test_absolute_paths_and_the_user_name_stay_fatal_inside_backed_data(ex, tmp_path, monkeypatch):
+    monkeypatch.setattr(ex.getpass, "getuser", lambda: "tester-name")
+    ctx = make_ctx(ex, tmp_path)
+    ev = {"evidence": [{"proof_file": "/Users/someone/results/runs/x/runs.csv", "result": "ok tester-name"}]}
+    probs = ex.validate_demo(ctx, _demo_with(ex, gov_mode="LIVE", assurance=ev))
+    assert "an absolute path would be written" in probs
+    assert "the local user name would be written" in probs
+
+
+def test_the_real_model_tag_is_allowed_as_a_data_mode_but_not_as_free_text(ex, tmp_path):
+    tag = "LI" + "VE"
+    numbers = {"a.b": {"value": "7", "text": "7", "status": ex.REAL, "mode": tag, "source": "s", "prov": "p1"}}
+    ctx = make_ctx(ex, tmp_path)
+    ex.validate_demo(ctx, _demo_with(ex, gov_mode=tag, numbers=numbers,
+                                     assurance={"evidence": [{"result": f"[{tag}] Candidate RC-001"}]}))
+    assert not [w for w in ctx.warnings if "banned" in w["text"]], ctx.warnings
+    ex.validate_demo(ctx, _demo_with(ex, console_note=f"This is {tag}"))
+    assert [w for w in ctx.warnings if "banned" in w["text"]]
+
+
+def test_a_scripted_cli_run_can_be_exported_with_allow_sample(ex, repo):
+    """The scripted numbers (33 of 78 ...) are in the data, each one with a provenance entry and a mode tag."""
+    ctx, demo = multi_demo(ex, repo, ["--gov", "governance_out"], allow_sample=True)
+    dumped = json.dumps(demo)
+    assert "42.3%" in dumped and "(?<![" not in dumped
+    assert ex.validate_demo(ctx, demo) == []
+    assert "/Users/" not in dumped and "/private/" not in dumped
+
+
+# --------------------------------------------------------------------------- #
 # Numbers sheet: one flat table that holds every number the page and the script say.
 # --------------------------------------------------------------------------- #
-LIVE_SIZE = {"attack": 60, "benign": 30, "reps": 3}
+LIVE_SIZE ={"attack": 60, "benign": 30, "reps": 3}
 LIVE_RUN = {"RC-001": (21, 21), "RC-002": (9, 21), "RC-003": (0, 21)}   # (landed, attempted) of the attack runs
 LIVE_GOV = {"connected": True, "candidate_id": "RC-001", "evidence_batch": "b",
             "gate_report": "governance_out/gate_RC-001.txt", "fingerprint": ["governance_out/RC-001.json"],

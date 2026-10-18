@@ -2456,7 +2456,8 @@ def warn_mixed_modes(ctx: Ctx, tags: dict) -> bool:
     parts = []
     for k in kinds:
         names = [n for n in sorted(tags) if tags[n] == k]
-        parts.append(f"{k}: {', '.join(names[:4])}{', ...' if len(names) > 4 else ''}")
+        word = "real-model run" if k == MODE_REAL else k      # the banned word, spelled out only as a data tag
+        parts.append(f"{word}: {', '.join(names[:4])}{', ...' if len(names) > 4 else ''}")
     ctx.warn("integrity", "Governance output mixes run modes (" + "; ".join(parts) + "). The files are not all "
                           "from one run; run the CLI again into an empty folder.")
     return True
@@ -3732,6 +3733,42 @@ def has_sample(demo: dict) -> bool:
     return bool(found)
 
 
+GOV_DATA_PATHS = {("console", "gate"), ("audit",), ("assurance",), ("governance",)}
+
+
+def checkable(demo: dict) -> dict:
+    """The part of the demo in which FORBIDDEN numbers and banned words are looked for (A5.6).
+
+    A value backed by a provenance entry of a run file passes: a Field, an entry of the numbers sheet. So does all
+    the data of a governance folder that carries a mode tag: those are the words of the files themselves, and the
+    mode tag says what they are. Free text (labels, reasons, warnings) and hand-written fixtures are scanned.
+    Absolute paths, the user name and e-mail addresses are checked in the whole demo, not here.
+    """
+    prov = {p["id"]: p for p in demo.get("provenance", []) if isinstance(p, dict) and "id" in p}
+    tagged = (demo.get("governance") or {}).get("mode") in MODE_TAGS
+
+    def backed(pid):
+        p = prov.get(pid)
+        return p is not None and (p.get("locator") or {}).get("kind") != "fixture"
+
+    def prune(o, path=()):
+        if tagged and path in GOV_DATA_PATHS:
+            return None
+        if isinstance(o, dict):
+            if is_field(o):
+                return None if backed(o["prov"]) else o["text"]
+            if o.keys() >= {"value", "text", "status", "source", "prov"}:       # an entry of the numbers sheet
+                return None if backed(o["prov"]) else [o["text"], o["source"], o.get("reason")]
+            return {k: prune(v, path + (k,)) for k, v in o.items() if not (not path and k == "provenance")}
+        if isinstance(o, list):
+            return [prune(v, path) for v in o]
+        return o
+
+    out = prune(demo)
+    out["provenance"] = [[p.get("display"), p.get("raw")] for p in prov.values() if not backed(p["id"])]
+    return out
+
+
 def validate_demo(ctx: Ctx, demo: dict) -> list:
     """Return a list of fatal problems (empty when the export is valid)."""
     probs = []
@@ -3778,8 +3815,9 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
         probs.append(f"not serialisable: {exc}")
         return probs
     visible = json.dumps({k: v for k, v in demo.items()}, ensure_ascii=False)
+    scan = json.dumps(checkable(demo), ensure_ascii=False)
     for rx in FORBIDDEN:
-        if rx.search(visible):
+        if rx.search(scan):
             probs.append(f"forbidden number or phrase found: {rx.pattern}")
     if RE_ABS_PATH.search(visible):
         probs.append("an absolute path would be written")
@@ -3795,7 +3833,7 @@ def validate_demo(ctx: Ctx, demo: dict) -> list:
             probs.append("an e-mail address outside the synthetic .example domain would be written")
             break
     for rx in BANNED_WORDS:
-        if rx.search(visible):
+        if rx.search(scan):
             ctx.warn("integrity", f"Data text contains a banned UI word ({rx.pattern}); check before showing.")
     del body
     return probs
