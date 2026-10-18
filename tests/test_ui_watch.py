@@ -303,3 +303,11 @@ def test_clip_removes_terminal_control_characters():
     out = watch.clip("ok\x1b[2J\x1b]0;pwned\x07\x9bAend\x00")
     assert not any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in out)
     assert out.startswith("ok") and out.endswith("end?")
+
+
+def test_a_run_after_a_stopped_one_prints_a_new_header_even_without_a_uid():
+    w = watch.Watcher()
+    w.step(_live(state="stopped", source={}, feed=[], feed_pin=None, done={"text": "stopped"}))
+    w.step(_live(state="waiting", source={}, feed=[], feed_pin=None))
+    texts = _texts(w.step(_live(state="running", source={}, feed=[], feed_pin=None)))
+    assert any(" run  SCRIPTED" in t for t in texts)

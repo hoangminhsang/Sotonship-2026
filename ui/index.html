@@ -347,7 +347,7 @@
     }
     $('badge').textContent = badge;
     /* a scripted feed on the canvas is labelled on the Live run view itself */
-    var mini = $('live-badge'), scripted = !!L && liveWord() === 'SCRIPTED';
+    var Lc = fresh(), mini = $('live-badge'), scripted = !!Lc && liveWord() === 'SCRIPTED';   /* an old run's file adds no second badge */
     mini.hidden = !scripted; mini.textContent = scripted ? C.scripted_badge : '';
   }
 
@@ -913,7 +913,10 @@
   }
   function progressText() {
     var Lf = liveFeed(), t = anyRunning() && Lf.tiles;
-    if (t && t.n && t.list && t.list.length) return t.list.length + ' ' + C.of + ' ' + t.n + ' ' + RUN.runs_done;
+    if (t && t.n && t.list && t.list.length) {   /* count finished runs only: idle and running tiles are not done */
+      var done = t.list.filter(function (x) { return x && x[1] !== 'idle' && x[1] !== 'running'; }).length;
+      return done + ' ' + C.of + ' ' + t.n + ' ' + RUN.runs_done;
+    }
     return '';
   }
   function paintRun() {
@@ -960,6 +963,12 @@
     if ((kind === 'live-full' || kind === 'models') && !window.confirm(RUN.confirm_long)) return;
     notice = ''; goBtn.disabled = true; runText.textContent = RUN.starting;
     call('POST', 'run', body).then(function (r) {
+      if (r.code !== 403) return r;   /* the bridge restarted: take its new token and try once more */
+      return call('GET', 'session').then(function (s) {
+        if (s.code === 200 && s.json && s.json.token) { api.token = s.json.token; return call('POST', 'run', body); }
+        return r;
+      }, function () { return r; });
+    }).then(function (r) {
       if (r.code !== 202) notice = RUN.could_not + (r.json.error ? ' ' + r.json.error : ''); else { startedHere(); paint(); }
       pollStatus();
     }, function () { notice = RUN.could_not; paintRun(); });

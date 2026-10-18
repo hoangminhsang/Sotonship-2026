@@ -2688,6 +2688,8 @@ def execute_run(root, py: str, key: str, model: Optional[str], parallel: int, no
             exporter = threading.Thread(target=work, daemon=True)
             exporter.start()
         while session.pacer.pending() or (exporter is not None and exporter.is_alive()):
+            if stop is not None and stop.is_set():   # a page Stop also ends the paced display tail
+                raise _StopRequested()
             follower.step(time.monotonic())
             time.sleep(POLL_S)
         follower.step(time.monotonic())

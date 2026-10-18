@@ -131,6 +131,7 @@ class Watcher:
             not self.started
             or (uid is not None and uid != self.uid)
             or (state == "running" and self.prev_state in ("done", "error", "stopped"))
+            or (self.prev_state == "waiting" and self.ended)   # a new run after a refused or stopped one
         ):
             new_run = True
         if new_run:
