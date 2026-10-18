@@ -22,6 +22,10 @@ One CLI run tests three release candidates of the same agent:
   `summary.csv` and `traces/`. A locked folder is never written again.
 - `--out` folder — the gate results (`gate_RC-00*.txt`), the audit log and the reports.
   Every file starts with the mode label (`[LIVE]` for real model runs).
+  It also holds `progress.jsonl`: one JSON line per event (for example `run_done`). The dashboard bridge reads it.
+- `scripts/run_models.py` (v2) writes one batch folder `results/models/<UTC time>/`: `plan.json`, `status.jsonl`
+  (one line per state change, with the tool-support result of each model) and a log per step (`<slug>.<step>.log`).
+  `scripts/run_governance.py` only checks `corpus/` now; it does not rewrite it.
 
 ## Terms
 
