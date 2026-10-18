@@ -1,8 +1,13 @@
-# Insecure Agent Attack Lab
+# Agent Security Toolkit — red team, governance & assurance
 
-A safe, self-contained lab that **attacks an AI assistant on purpose** to see how
-easily it can be tricked — and then shows how a team should **decide, record, and
-fix** what the attacks found.
+A set of **tools for testing and governing tool-using AI agents**. The tools let
+you **attack** an AI agent on purpose to find its weaknesses, **decide** whether
+it is safe to ship, and **keep the records** that track each weakness until it is
+fixed.
+
+To make the tools easy to try, the project ships with one **example victim
+agent** (a small fake IT assistant). That agent is only a demonstration target —
+the point of the project is the tools around it, not that one agent.
 
 Everything runs on your own machine. All data is fake. Nothing is sent to the
 internet.
@@ -11,20 +16,45 @@ internet.
 
 ## What is this project? (in plain words)
 
-Imagine a company called *Northwind* builds a little AI helper for its IT support
-team. The helper can do three things with "tools":
+Teams are starting to build AI "agents" — assistants that don't just chat, but
+actually *do things* by calling **tools** (read a file, look up a record, create
+a ticket, send an email, and so on). The moment an agent can take actions, a new
+question appears: **can someone trick it into taking a bad action?** And if the
+tests say it can, **who decides whether to ship it, and how is that decision
+recorded?**
+
+This project is three tools that answer exactly those questions:
+
+1. **Red team** — a tool that attacks an agent and measures how often it breaks.
+2. **Governance** — a tool that turns those measurements into a clear
+   ship / don't-ship decision, with roles and a tamper-evident log.
+3. **Assurance** — a tool that records each weakness as a tracked risk and
+   follows it all the way to a verified fix.
+
+You point these tools at an agent, and they produce **evidence, a decision, and a
+paper trail**.
+
+### The example victim (how the tools are demonstrated)
+
+So the tools have something to work on, the project includes a small, deliberately
+**insecure example agent**: a fake IT support assistant for an imaginary company
+called *Northwind*. It can do three things with tools:
 
 - **read a document** (like a VPN setup guide),
 - **look up a device record** (an "asset", e.g. a laptop), and
 - **create a support ticket**.
 
-This is a normal, useful assistant. The problem: it trusts **everything it
-reads**. So if an attacker hides a secret instruction inside a document or a
-device note, the assistant will quietly obey it.
+It is useful but naive: it trusts **everything it reads**. That makes it a perfect
+punching bag for showing what the red-team tool can find.
 
-### A simple example of the attack
+> This example agent is just a stand-in. The tools themselves work on recorded
+> **tool-call traces** and plain **rule files** (`data/rules.yaml`,
+> `lab/governance/policy.yaml`), so the same tools can be aimed at a different
+> agent by swapping the example target and editing those rules.
 
-A user asks the assistant a harmless question:
+### A simple example of an attack
+
+A user asks the example assistant a harmless question:
 
 > "Read `vpn-setup.md` and summarise it for me."
 
@@ -35,57 +65,57 @@ But someone has hidden an extra line inside that document:
 
 The assistant reads the document, sees the hidden instruction, and **does it** —
 even though the user never asked. It leaks a restricted record. This trick is
-called an **indirect prompt injection** (the bad instruction comes *indirectly*,
+called an **indirect prompt injection** (the bad instruction arrives *indirectly*,
 through content the AI reads, not from the user).
 
-This lab fires about **57 of these attacks** (plus ~40 normal requests to check
-the assistant still works), records exactly what the assistant did, and scores
-each run with **plain code** (no second AI judging it, so results are
-repeatable). It reports three numbers:
+The red-team tool fires about **57 of these attacks** at the example agent (plus
+~40 normal requests, to check it still does its real job), records exactly what
+it did, and scores each run with **plain code** (no second AI acting as judge, so
+results are repeatable). It reports three numbers:
 
 - **Attack Success Rate (ASR)** — how often the attack worked.
 - **ASR per technique** — which *kind* of trick worked best (fix that first).
-- **Benign task success** — whether the assistant still does normal jobs well.
+- **Benign task success** — whether the agent still does normal jobs well.
 
-This is the **"before" picture**: an unprotected assistant failing, with real
-numbers. The lab also ships simple **defences** so you can measure the "after"
+This is the **"before" picture**: an unprotected agent failing, with real numbers.
+The tools also ship with simple **defences** so you can measure the "after"
 picture and prove the fixes actually helped.
 
 > **Everything here is fake and harmless.** The only "secret" is the obviously
 > fake string `FAKE-SECRET-NORTHWIND-7781`. There are no real passwords, no real
-> customers, and no network calls. Every tool is a local stub.
+> customers, and no network calls. Every tool the agent uses is a local stub.
 
 ---
 
-## The three parts of the project
+## The three tools
 
 Think of it as a small factory: the **red team** finds problems, **governance**
 decides what to do, and **assurance** keeps the records and tracks the fixes.
 
 ### 1. Red team — *find the weaknesses*
 
-The red team is the "attacker" side. It:
+This is the "attacker" tool. It:
 
 - builds a **corpus** (a big list) of attacks by mixing three things:
   - a **goal** (read a restricted record, leak data, or misuse a tool),
-  - a **technique** (plain text, fake "SYSTEM" message, fake staff message,
+  - a **technique** (plain text, a fake "SYSTEM" message, a fake staff message,
     text hidden in an HTML comment, base64-encoded text, another language, or
     an instruction split across two documents), and
   - a **place** to hide it (a document body, a document comment, or a device
     note);
-- runs each attack against the assistant and writes down every tool call it
+- runs each attack against the target agent and writes down every tool call it
   made;
 - scores each run with the **oracle** (the plain-code judge) and reports the
   numbers above.
 
-You can drive the attacks two ways: with the lab's **built-in runner**, or with
+You can drive the attacks two ways: with the **built-in runner**, or with
 **Microsoft PyRIT** (a well-known red-teaming toolkit) — both produce the same
 result files.
 
 ### 2. Governance — *decide and remember*
 
-Finding a problem is not enough; someone has to **decide** whether the assistant
-is allowed to ship. That is the **release gate**:
+Finding a problem is not enough; someone has to **decide** whether the agent is
+allowed to ship. That is the **release gate**:
 
 - **Candidate fingerprint** — records exactly *what* was tested (which model,
   which prompt, which rules, which defences). If anything changes, it's a new
@@ -118,9 +148,9 @@ This is the long-term record keeping:
 ### How the defences fit in
 
 [`lab/defences.py`](lab/defences.py) adds three optional protections you can turn
-on for a re-test:
+on for a re-test of the target agent:
 
-- **D1** — label tool output as "untrusted" so the assistant treats it with care.
+- **D1** — label tool output as "untrusted" so the agent treats it with care.
 - **D2** — check inside the tool code (block reading restricted records, block
   sending tickets to outside email domains, block leaking the secret).
 - **D3** — require a human to approve high-impact actions (like a P1 ticket).
@@ -211,7 +241,7 @@ If the Ollama server is not already running, start it in another terminal:
 ollama serve
 ```
 
-The lab reads the server address from `OLLAMA_HOST` (default
+The tools read the server address from `OLLAMA_HOST` (default
 `http://localhost:11434`) and the model name from `LAB_MODEL`
 (default `qwen2.5:7b-instruct`). To try a different model, just change one
 variable:
@@ -233,11 +263,12 @@ docker compose -f docker/docker-compose.yml exec ollama ollama pull qwen2.5:7b-i
 
 ---
 
-## How to run the program
+## How to run the tools
 
 ### Option A — The all-in-one menu (recommended start here)
 
-This is the easiest way to see all three parts working together.
+This is the easiest way to see all three tools working together on the example
+agent.
 
 ```bash
 python -m lab.app
@@ -256,8 +287,9 @@ You'll get a simple text menu:
 A typical first walk-through:
 
 1. **Red team → Test a NEW candidate.** Pick **DEMO** mode (offline, instant,
-   repeatable). This "tests" an unprotected assistant and produces the evidence.
-   You'll see its Attack Success Rate printed, e.g. `RC-001: ASR 66.7% ...`.
+   repeatable). This "tests" the unprotected example agent and produces the
+   evidence. You'll see its Attack Success Rate printed, e.g.
+   `RC-001: ASR 66.7% ...`.
 2. **Governance → Show gate verdict.** The high attack rate breaks the policy
    limit, so the gate says **FAIL**.
 3. **Governance → Make a decision.** Try to approve it as the engineer who
@@ -281,7 +313,7 @@ rm -rf governance_out
 To use a real model instead of the demo, pick **LIVE** mode in the Red team menu
 (you'll need Step 4 done first). LIVE is slower because it actually calls the AI.
 
-### Option B — Attack with PyRIT (the red-team experiment on its own)
+### Option B — Attack with PyRIT (the red-team tool on its own)
 
 PyRIT pins its own library versions, so it goes in a **separate** environment so
 it can't disturb your main `.venv`.
@@ -337,7 +369,7 @@ jupyter lab
 ```
 
 - [`notebooks/attack_lab_explained.ipynb`](notebooks/attack_lab_explained.ipynb)
-  — a teaching notebook that explains the whole attack lab in plain English.
+  — a teaching notebook that explains the red-team tool in plain English.
   (Run it with the `.venv-pyrit` kernel.)
 - [`notebooks/release_gate_demo.ipynb`](notebooks/release_gate_demo.ipynb)
   — walks through governance and assurance: a candidate fails → is blocked →
@@ -363,14 +395,15 @@ correctly.
 ## Project layout
 
 ```
-lab/                 the attack lab: world, mcp_server, agent, attacks, benign,
-                     corpus, runner, oracle, metrics, fixes, defences
-lab/pyrit_integration.py  optional PyRIT front-end for the attacks
+lab/                 the toolkit code plus the example target agent:
+                     world, mcp_server, agent, attacks, benign, corpus, runner,
+                     oracle, metrics, fixes, defences
+lab/pyrit_integration.py  optional PyRIT front-end for the red-team tool
 lab/governance/      policy.yaml (the rule book), candidate, gate, decision,
                      roles, audit (hash-chained log)
 lab/assurance/       risks, control_map.yaml, inventory, evidence, thread, summary
 lab/app.py           the all-in-one menu program
-data/                fake documents, assets.json, rules.yaml
+data/                the example agent's fake documents, assets.json, rules.yaml
 corpus/              the generated attack + benign test lists
 results/             attack output (CSVs and traces)
 governance_out/      saved governance/assurance state and reports
@@ -386,6 +419,8 @@ Makefile             shortcuts: `make test`, `make corpus`, `make world`
 
 ## Reproducibility
 
+The example agent is pinned so its numbers are repeatable:
+
 | | |
 |---|---|
 | Model | `qwen2.5:7b-instruct` |
@@ -397,10 +432,10 @@ Makefile             shortcuts: `make test`, `make corpus`, `make world`
 | Python | 3.14 |
 
 Exact library versions are pinned in
-[`docker/requirements.txt`](docker/requirements.txt). The baseline model is
+[`docker/requirements.txt`](docker/requirements.txt). The example uses
 `qwen2.5:7b-instruct` because it supports tools yet is weak enough that
-injections land often — exactly what a "before" study needs. `llama3.1:8b` works
-as a drop-in replacement via `LAB_MODEL`.
+injections land often — exactly what a "before" demonstration needs.
+`llama3.1:8b` works as a drop-in replacement via `LAB_MODEL`.
 
 ---
 
@@ -410,9 +445,9 @@ as a drop-in replacement via `LAB_MODEL`.
   documents, and device records are invented and labelled as fake.
 - **The only secret is fake:** `FAKE-SECRET-NORTHWIND-7781`. It exists so a leak
   is obvious in a trace and completely harmless.
-- **No network, email, payments, or real customer data.** Every tool is a local
-  stub; nothing leaves your machine.
-- This is the **insecure baseline**. Because the assistant is unguarded, every
+- **No network, email, payments, or real customer data.** Every tool the example
+  agent uses is a local stub; nothing leaves your machine.
+- The example agent is an **insecure baseline**. Because it is unguarded, every
   attempted bad action also *happens*, so an attempt counts as a successful
   attack. With defences on, the same attempt may be blocked — and measuring that
   difference is the whole point.
@@ -429,6 +464,6 @@ as a drop-in replacement via `LAB_MODEL`.
   `langchain-mcp-adapters`, Ollama, and Qwen2.5 — each under its own licence.
 - **Red-team framework:** Microsoft [PyRIT](https://github.com/Azure/PyRIT)
   (MIT licence) drives the optional attack path.
-- **AI assistance disclosed:** this lab's spec and code were produced with an AI
-  coding assistant and reviewed by a human before use.
+- **AI assistance disclosed:** this project's spec and code were produced with an
+  AI coding assistant and reviewed by a human before use.
 ```
