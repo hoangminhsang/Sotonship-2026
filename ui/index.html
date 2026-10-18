@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="connect-src 'none'; font-src data:; img-src data:; object-src 'none'">
-<title>Agent Release Gate</title>
+<title>Redline</title>
 <link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="app.css">
 </head>
@@ -12,13 +12,15 @@
 <div id="stage">
 
   <header id="top">
-    <div class="brand" data-static>Agent Release Gate</div>
+    <div class="brand" data-static><span class="brand-name">Redline</span> <span class="brand-team">Team Gatekeepers</span></div>
     <nav id="nav" aria-label="Screens">
       <button type="button" class="nav-item" data-screen="1" data-static>1 Console</button>
       <button type="button" class="nav-item" data-screen="2" data-static>2 Attacks</button>
       <button type="button" class="nav-item" data-screen="3" data-static>3 Compare</button>
       <button type="button" class="nav-item" data-screen="4" data-static>4 Decisions</button>
       <button type="button" class="nav-item" data-screen="5" data-static>5 Assurance</button>
+      <button type="button" class="nav-item" data-screen="6" data-static>6 Pipeline</button>
+      <button type="button" class="nav-item" data-screen="7" data-static>7 Models</button>
     </nav>
     <div id="chips" aria-label="Data status"></div>
     <div id="replay" role="status"></div>
@@ -75,6 +77,29 @@
     <div id="r-src"></div>
   </section>
 
+  <!-- Screen 6: the pipeline view. pipeline.js fills the mode chip, the rail, the status line, the
+       wires, the nodes, the tiles and the source line. app.js fills #p-decision, the release-decision card. -->
+  <section class="screen" id="screen-6" data-screen="6" aria-labelledby="title-6" hidden>
+    <h1 class="screen-title" id="title-6" tabindex="-1" data-static>From attack to decision</h1>
+    <div id="p-mode"></div>
+    <ol id="p-rail"></ol>
+    <p id="p-status" role="status"></p>
+    <div id="p-board">
+      <svg id="p-wires" aria-hidden="true" focusable="false"></svg>
+      <ol id="p-nodes"></ol>
+    </div>
+    <div id="p-tiles"></div>
+    <div id="p-src"></div>
+    <div id="p-decision" hidden></div>
+  </section>
+
+  <section class="screen" id="screen-7" data-screen="7" aria-labelledby="title-7" hidden>
+    <h1 class="screen-title" id="title-7" tabindex="-1" data-static>Models we tested</h1>
+    <div id="m-table"></div>
+    <div id="m-note"></div>
+    <div id="m-src"></div>
+  </section>
+
   <aside id="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title" hidden>
     <div class="d-head">
       <h2 id="d-title"></h2>
@@ -89,9 +114,23 @@
     <div id="warn"></div>
   </footer>
 
+  <!-- The cover: the first thing shown when the page opens with no screen in the address. Any key or a click starts. -->
+  <section id="cover" aria-labelledby="cover-name" tabindex="-1" hidden>
+    <p id="cover-track"></p>
+    <h1 id="cover-name" data-static>Redline</h1>
+    <p id="cover-what"></p>
+    <p id="cover-tagline"></p>
+    <p id="cover-team"></p>
+    <p id="cover-hint"></p>
+  </section>
+
 </div>
 <noscript><p class="noscript" data-static>This page needs JavaScript to show the data. It runs offline from this folder and uses no network.</p></noscript>
 <script src="data/demo.js"></script>
+<script src="data/replay.js"></script>
+<script src="copy.js"></script>
+<script src="pipeline-glyphs.js"></script>
+<script src="pipeline.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

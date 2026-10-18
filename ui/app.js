@@ -1,5 +1,7 @@
-/* Agent Release Gate: demo UI behaviour.
-   Reads window.DEMO (schema "ui-demo/1", written by ui/export.py) and draws five screens.
+/* Redline: demo UI behaviour.
+   Reads window.DEMO (schema "ui-demo/1", written by ui/export.py) and draws seven screens.
+   Words come from window.COPY (ui/copy.js). The pipeline view (screen 6) is drawn by pipeline.js;
+   every call into it is guarded, because the page must work without it.
    Rules kept here: every data value goes through F() or V() into an element with [data-prov];
    text is set with textContent only; no data number is formatted in this file (the only
    arithmetic on data is SVG geometry inside meter()); state is kept in location.hash only. */
@@ -8,6 +10,12 @@
 
   var D = window.DEMO;
   var doc = document;
+  var C = window.COPY || {};
+  /* The screens by name. A screen's key digit is its place in this list, so the digits live here and
+     nowhere else: copy.js names screens, never numbers them. */
+  var ORDER = ['console', 'attacks', 'compare', 'decisions', 'assurance', 'pipeline', 'models'];
+  var SCREEN_COUNT = ORDER.length;
+  var PIPELINE_SCREEN = ORDER.indexOf('pipeline') + 1;
   /* the SVG namespace, read from a parsed literal tag so no URL string sits in this file */
   var SVGNS = (function () {
     try { return doc.createRange().createContextualFragment('<svg></svg>').firstChild.namespaceURI; } catch (e) { return null; }
@@ -30,7 +38,8 @@
     missing: 'Trace file not found'
   };
 
-  var state = { s: 1, p: false, run: null, tech: null, batch: null, d: false };
+  var state = { s: 1, p: false, run: null, tech: null, batch: null, d: false, card: false };
+  var beatIndex = -1;       /* the beat shown now (index into COPY.beats), -1 before the first B */
   var lastHash = '';
   var deckReady = false;
   var drawerOpen = false;
@@ -43,6 +52,20 @@
   /* ---------- small DOM helpers ---------- */
 
   function $(id) { return doc.getElementById(id); }
+
+  /* copy('screens.console.nav'): one word from window.COPY, or '' when it is missing.
+     {name} placeholders are filled from vars; an unknown placeholder stays visible, so a typo shows. */
+  function copy(path, vars) {
+    var v = C;
+    var parts = String(path).split('.');
+    for (var i = 0; i < parts.length && v; i++) v = v[parts[i]];
+    if (typeof v !== 'string') return '';
+    if (!vars) return v;
+    return v.replace(/\{([a-z_]+)\}/g, function (m, k) { return vars[k] !== undefined ? vars[k] : m; });
+  }
+
+  /* the demo beats, in the order copy.js lists them; app.js never names a beat */
+  function beatList() { return Array.isArray(C.beats) ? C.beats : []; }
 
   function isNode(x) { return x && typeof x === 'object' && typeof x.nodeType === 'number'; }
 
@@ -191,7 +214,7 @@
 
   function guard(name, fn) {
     try { fn(); } catch (err) {
-      if (window.console) console.error('Agent Release Gate: could not draw ' + name, err);
+      if (window.console) console.error((copy('product.name') || 'Dashboard') + ': could not draw ' + name, err);
     }
   }
 
@@ -201,8 +224,9 @@
     var q;
     try { q = new URLSearchParams(location.hash.replace(/^#/, '')); } catch (e) { return; }
     var s = parseInt(q.get('s') || '', 10);
-    state.s = s >= 1 && s <= 5 ? s : 1;
+    state.s = s >= 1 && s <= SCREEN_COUNT ? s : 1;
     state.p = q.get('p') === '1';
+    state.card = q.get('card') === '1';
     state.run = q.get('run') || null;
     state.tech = q.get('tech') || null;
     state.batch = q.get('batch') || null;
@@ -213,6 +237,7 @@
     var q = new URLSearchParams();
     q.set('s', String(state.s));
     if (state.p) q.set('p', '1');
+    if (state.card && state.s === PIPELINE_SCREEN) q.set('card', '1');
     if (state.batch) q.set('batch', state.batch);
     if (state.tech) q.set('tech', state.tech);
     if (state.run) q.set('run', state.run);
@@ -372,6 +397,8 @@
       if (c.b && c.b.status !== 'PENDING' && c.b.replay_label) out.push('B: ' + c.b.replay_label);
       return out;
     }
+    /* the pipeline screen shows its own mode chip (LIVE, REPLAY, SCRIPTED); the Models table tags each row */
+    if (n === PIPELINE_SCREEN || n === ORDER.indexOf('models') + 1) return [];
     return [];
   }
 
@@ -387,10 +414,20 @@
     r.hidden = labels.length === 0;
   }
 
+  /* The key hints; the digits come from the router, the words from copy.js.
+     While a beat is active the line names the beat instead (hidden in presenter mode with the other hints). */
   function renderHints() {
     var h = $('hints');
-    if (!h || h.childNodes.length) return;
-    add(h, 'Keys 1 to 5, Enter, Esc, P, R');
+    if (!h) return;
+    clear(h);
+    var b = beatList()[beatIndex];
+    if (b && b.title) {
+      add(h, (copy('hints.beat_label') || 'Beat') + ': ' + b.title);
+      return;
+    }
+    var keys = state.s === PIPELINE_SCREEN && copy('hints.pipeline') ? copy('hints.pipeline')
+      : copy('hints.keys', { first: '1', last: String(SCREEN_COUNT) });
+    add(h, keys || ('Keys 1 to ' + SCREEN_COUNT));
   }
 
   /* ---------- meter: the only place that turns data numbers into geometry ---------- */
@@ -1284,11 +1321,47 @@
 
   function screens() { return Array.prototype.slice.call(doc.querySelectorAll('section.screen')); }
 
+  /* The pipeline view (pipeline.js) may be missing or may throw; the page works without it. */
+  function pipelineVisible(flag) {
+    try {
+      if (window.Pipeline && typeof window.Pipeline.visible === 'function') window.Pipeline.visible(flag);
+    } catch (err) {
+      if (window.console) console.error('Pipeline view: ' + err);
+    }
+  }
+
+  function pipelineKey(name) {
+    try {
+      if (window.Pipeline && typeof window.Pipeline.key === 'function') return !!window.Pipeline.key(name);
+    } catch (err) {
+      if (window.console) console.error('Pipeline view: ' + err);
+    }
+    return false;
+  }
+
+  /* The release-decision card sits over the board on screen 6, and only there. */
+  function syncCard() {
+    var card = $('p-decision');
+    var on = state.card && state.s === PIPELINE_SCREEN;
+    if (card) card.hidden = !on;
+    doc.body.classList.toggle('card-open', !!on);
+  }
+
+  function toggleCard(on) {
+    if (state.s !== PIPELINE_SCREEN) return;
+    state.card = on === undefined ? !state.card : !!on;
+    syncCard();
+    writeHash();
+    var card = $('p-decision');
+    if (state.card && card) { try { card.focus({ preventScroll: true }); } catch (e) { card.focus(); } }
+  }
+
   function show(n, opts) {
     opts = opts || {};
-    n = Math.max(1, Math.min(5, n | 0));
+    n = Math.max(1, Math.min(SCREEN_COUNT, n | 0));
     if (drawerOpen && n !== 2) closeDrawer(false);
     state.s = n;
+    if (n !== PIPELINE_SCREEN) state.card = false;
     screens().forEach(function (sec) {
       var k = Number(sec.getAttribute('data-screen')) || Number((sec.id || '').replace('screen-', ''));
       sec.hidden = k !== n;
@@ -1298,8 +1371,11 @@
       else b.removeAttribute('aria-current');
     });
     renderReplay(n);
+    renderHints();
+    syncCard();
     writeHash();
     placeDeck(opts.initial ? 'none' : 'glide');
+    pipelineVisible(n === PIPELINE_SCREEN);
     if (n === 4) scrollEntriesToEnd();
     if (!opts.noFocus) {
       var h = doc.querySelector('#screen-' + n + ' .screen-title');
@@ -1327,9 +1403,21 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     var k = e.key;
     if (drawerOpen && (k === 'Escape' || k === 'Tab')) { onDrawerKey(e); return; }
-    if (k.length === 1 && k >= '1' && k <= '5') { e.preventDefault(); show(Number(k)); return; }
+    if (k.length === 1 && k >= '1' && k <= String(SCREEN_COUNT)) { e.preventDefault(); show(Number(k)); return; }
     if (k === 'r' || k === 'R') { if (!e.repeat) { e.preventDefault(); location.reload(); } return; }
     if (k === 'p' || k === 'P') { if (!e.repeat) { e.preventDefault(); togglePresenter(); } return; }
+    /* on the pipeline screen: D shows or hides the release-decision card; Space, Home, [ and ] drive the
+       recorded run in pipeline.js (only while the card is hidden, so nothing moves out of sight) */
+    if (state.s === PIPELINE_SCREEN) {
+      if (k === 'd' || k === 'D') { if (!e.repeat) { e.preventDefault(); toggleCard(); } return; }
+      if (k === 'Escape' && state.card) { e.preventDefault(); toggleCard(false); return; }
+      var name = k === ' ' ? 'space' : k === 'Home' ? 'home' : k === '[' ? 'prev' : k === ']' ? 'next' : '';
+      if (name) {
+        e.preventDefault();
+        if (!state.card && !e.repeat) pipelineKey(name);
+        return;
+      }
+    }
   }
 
   function onHashChange() {
@@ -1344,6 +1432,41 @@
     if (drawerOpen && want !== drawerReturnKey) closeDrawer(false);
     show(state.s, { noFocus: !!want });
     if (want && state.s === 2 && !drawerOpen && !openDrawer(want)) { state.run = null; writeHash(); }
+  }
+
+  /* Put the words from copy.js into the static markup. index.html keeps a plain fallback for each one,
+     so the page still reads if copy.js is missing. The key digits come from the router, not from copy.js. */
+  function applyCopy() {
+    var name = copy('product.name');
+    if (name) doc.title = name;
+    var brand = doc.querySelector('.brand');
+    if (brand && name) {
+      clear(brand);
+      brand.appendChild(el('span', { class: 'brand-name' }, name));
+      var team = copy('product.team_line', { team: copy('product.team') });
+      if (team) {
+        brand.appendChild(doc.createTextNode(' '));
+        brand.appendChild(el('span', { class: 'brand-team' }, team));
+      }
+    }
+    ORDER.forEach(function (screenName, i) {
+      var n = i + 1;
+      var item = navItem(n);
+      var label = copy('screens.' + screenName + '.nav');
+      if (item && label) item.textContent = n + ' ' + label;
+      var title = copy('screens.' + screenName + '.title');
+      var h = $('title-' + n);
+      if (h && title) h.textContent = title;
+    });
+    var rail = $('p-rail');
+    if (rail && !rail.hasAttribute('aria-label') && copy('pipeline.rail_label')) rail.setAttribute('aria-label', copy('pipeline.rail_label'));
+    var board = $('p-board');
+    if (board && !board.hasAttribute('aria-label') && copy('pipeline.board_label')) board.setAttribute('aria-label', copy('pipeline.board_label'));
+    var missing = $('p-status');
+    if (missing && !window.Pipeline && copy('pipeline.not_loaded')) {
+      missing.textContent = copy('pipeline.not_loaded');
+      missing.setAttribute('data-static', '');
+    }
   }
 
   function bindNav() {
@@ -1386,6 +1509,7 @@
 
   function boot() {
     readHash();
+    applyCopy();
     bindNav();
     doc.addEventListener('keydown', onKey);
     addEventListener('hashchange', onHashChange);

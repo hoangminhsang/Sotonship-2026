@@ -163,3 +163,122 @@ def test_claims_the_plan_corrected_stay_corrected():
     for word in BANNED_WORDS:
         assert word not in lowered, f"copy.js uses banned wording: {word}"
     assert copy["decision"]["cost"] == "No API fees: runs on a local model"
+
+
+# ---------------------------------------------------------------------------------------------
+# The page shell (ui/index.html): script order, the seven screens, the skeletons other lanes fill.
+# ---------------------------------------------------------------------------------------------
+from html.parser import HTMLParser
+
+INDEX_HTML = UI / "index.html"
+APP_JS = UI / "app.js"
+APP_CSS = UI / "app.css"
+REPLAY_JS = UI / "data" / "replay.js"
+
+SCRIPT_ORDER = ["data/demo.js", "data/replay.js", "copy.js", "pipeline-glyphs.js", "pipeline.js", "app.js"]
+VOID_TAGS = {"meta", "link", "br", "img", "input", "hr"}
+
+
+class _Page(HTMLParser):
+    """Collects scripts in order and every element that has an id, with its parent id and prior sibling."""
+
+    def __init__(self):
+        super().__init__()
+        self.scripts = []
+        self.by_id = {}
+        self.nav_items = []
+        self._stack = []          # (tag, id or None)
+        self._last_child = {}     # depth -> last child (tag, id) seen at that depth
+        self.order = {}           # id -> previous sibling (tag, id) or None
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "script" and a.get("src"):
+            self.scripts.append(a["src"])
+        parent = self._stack[-1] if self._stack else (None, None)
+        depth = len(self._stack)
+        if a.get("id"):
+            self.order[a["id"]] = self._last_child.get(depth)
+            self.by_id[a["id"]] = {"tag": tag, "attrs": a, "parent": parent[1]}
+        self._last_child[depth] = (tag, a.get("id"))
+        if tag == "button" and "nav-item" in (a.get("class") or "").split():
+            self.nav_items.append(a.get("data-screen"))
+        if tag not in VOID_TAGS:
+            self._stack.append((tag, a.get("id")))
+            self._last_child[len(self._stack)] = None
+
+    def handle_endtag(self, tag):
+        if tag in VOID_TAGS:
+            return
+        while self._stack:
+            top = self._stack.pop()
+            if top[0] == tag:
+                break
+
+
+def _page():
+    page = _Page()
+    page.feed(INDEX_HTML.read_text(encoding="utf-8"))
+    return page
+
+
+def test_scripts_load_in_the_planned_order():
+    assert _page().scripts == SCRIPT_ORDER
+
+
+def test_nav_has_seven_items_keyed_one_to_seven():
+    assert _page().nav_items == [str(n) for n in range(1, 8)]
+
+
+def test_screen_six_has_the_skeleton_the_pipeline_view_expects():
+    page = _page()
+    ids = page.by_id
+    assert ids["screen-6"]["tag"] == "section"
+    assert ids["p-mode"]["parent"] == "screen-6"
+    assert ids["p-rail"]["tag"] == "ol" and ids["p-rail"]["parent"] == "screen-6"
+    assert ids["p-status"]["tag"] == "p" and ids["p-status"]["attrs"].get("role") == "status"
+    assert ids["p-board"]["parent"] == "screen-6"
+    assert ids["p-wires"]["tag"] == "svg" and ids["p-wires"]["parent"] == "p-board"
+    assert ids["p-nodes"]["tag"] == "ol" and ids["p-nodes"]["parent"] == "p-board"
+    assert page.order["p-nodes"] == ("svg", "p-wires"), "ol#p-nodes must follow svg#p-wires"
+    for name in ("p-tiles", "p-src", "p-decision"):
+        assert ids[name]["parent"] == "screen-6", name
+    assert "hidden" in ids["p-decision"]["attrs"], "the decision card starts hidden"
+
+
+def test_screen_seven_has_the_models_containers():
+    ids = _page().by_id
+    assert ids["screen-7"]["tag"] == "section"
+    for name in ("m-table", "m-note", "m-src"):
+        assert ids[name]["parent"] == "screen-7", name
+
+
+def test_replay_placeholder_is_the_agreed_one_line():
+    assert REPLAY_JS.read_text(encoding="utf-8") == "window.LIVE_REPLAY = null;\n"
+
+
+def test_files_the_browser_loads_hold_no_network_or_storage_strings():
+    banned = ["http", "fetch", "XMLHttpRequest", "localStorage", "sessionStorage", "WebSocket", "import("]
+    for path in (INDEX_HTML, APP_JS, COPY_JS, APP_CSS, REPLAY_JS):
+        text = path.read_text(encoding="utf-8").replace("http-equiv", "")
+        for word in banned:
+            assert word not in text, f"{path.name} holds {word!r}"
+        assert 'type="module"' not in text and "type='module'" not in text, path.name
+        assert not re.search(r"^\s*import\s", text, re.M), f"{path.name} uses an import"
+
+
+def test_the_content_security_policy_is_kept():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "connect-src 'none'" in html and "font-src data:" in html
+    assert "img-src data:" in html and "object-src 'none'" in html
+
+
+def test_app_js_never_names_a_beat():
+    # The beat list is data. A new beat is one more entry in copy.js and needs no change in app.js.
+    # (Words such as close or tamper also appear in app.js for other reasons, so the check looks for a
+    # beat id used as a key: compared with .id, in a case label, or as an index.)
+    _, copy = _load()
+    source = APP_JS.read_text(encoding="utf-8")
+    for beat in copy["beats"]:
+        keyed = re.compile(r"""(?:\bid\s*[!=]==?\s*|\bcase\s+|\[\s*)['"]%s['"]""" % re.escape(beat["id"]))
+        assert not keyed.search(source), f"app.js keys its logic on the beat {beat['id']!r}"

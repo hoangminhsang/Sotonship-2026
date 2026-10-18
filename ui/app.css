@@ -83,10 +83,13 @@ code,kbd,samp,pre{font-family:var(--mono);font-size:.92em}
 #top{flex:0 0 var(--head-h);display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:44px 40px;
   grid-template-areas:"brand chips" "nav replay";column-gap:56px;row-gap:10px;align-items:center;
   padding:22px var(--pad) 0}
-.brand{grid-area:brand;font:400 38px/1 var(--serif);font-variant-numeric:lining-nums;letter-spacing:-.005em;
-  color:var(--ink);white-space:nowrap}
-#nav{grid-area:nav;display:flex;align-items:center;gap:40px}
-.nav-item{font:400 24px/1 var(--sans);color:var(--label);padding:8px 0;white-space:nowrap}
+.brand{grid-area:brand;display:flex;align-items:baseline;gap:18px;font:400 38px/1 var(--serif);font-variant-numeric:lining-nums;
+  letter-spacing:-.005em;color:var(--ink);white-space:nowrap}
+.brand-name{font:400 44px/1 var(--serif);letter-spacing:-.01em}
+.brand-team{font:500 22px/1 var(--sans);letter-spacing:.02em;color:var(--label)}
+/* seven screens: 22px labels and 28px gaps keep the nav clear of the REPLAY label on the same row */
+#nav{grid-area:nav;display:flex;align-items:center;gap:28px}
+.nav-item{font:400 22px/1 var(--sans);color:var(--label);padding:8px 0;white-space:nowrap}
 .nav-item:hover{color:var(--ink)}
 .nav-item[aria-current="page"],.nav-item[aria-current="true"]{color:var(--ink);font-weight:500}
 #chips{grid-area:chips;justify-self:end;display:flex;align-items:center;gap:10px;flex-wrap:nowrap;min-width:0}
@@ -451,6 +454,19 @@ table.grid code{font-size:21px}
 #r-tickets ul,#r-tickets ol{display:grid}
 #r-tickets li{padding:10px 0;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
 #r-tickets li > * + *{display:block;font-size:22px;color:var(--label)}
+
+/* ---------- 13b pipeline shell (screen 6) and Models (screen 7) ----------
+   Screen 6: pipeline.js and pipeline.css place the board, the rail, the status line and the tiles by stage
+   coordinates, so #screen-6 stays unpositioned and the stage is the positioned ancestor. Without them the
+   screen shows its title and one status line. */
+#p-status{font:400 24px/1.4 var(--sans);color:var(--ink)}
+#p-rail,#p-nodes{list-style:none}
+#p-wires{display:block;width:0;height:0;overflow:visible}
+#screen-7{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(auto,1fr) auto auto;
+  grid-template-areas:"title" "table" "note" "src";row-gap:var(--row)}
+#m-table{grid-area:table;min-width:0;align-self:start}
+#m-note{grid-area:note;min-width:0}
+#m-src{grid-area:src;font:400 22px/1.45 var(--sans);color:var(--sec);min-width:0;align-self:end}
 
 /* ---------- 14 presenter ---------- */
 body.presenter #hints{display:none}
