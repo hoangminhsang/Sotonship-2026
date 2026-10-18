@@ -11,11 +11,10 @@ with `**Mode: [TAG]** <note>`.
 
 **This file has two parts.** Part A (sections 1 to 6) is the 17 Oct contract for
 the backend's own files. Part B (sections 7 to 13, added 18 Oct) lists the files
-that the pipeline screen, the Models screen and the numbers sheet read:
+that the dashboard pages (`ui/index.html`, the one-page demo, and `ui/details.html`, the old seven screens) and the numbers sheet read:
 `progress.jsonl`, `live.js` (`ui-live/1`), `replay.js` (`ui-replay/1`),
 `results/models/<STAMP>/`, `run_index.json`, `audit_verify.json`,
-`numbers.json`, and how the export reads run folders. Part B marks which
-files are on `demo/integrated` and which are still being added or merged.
+`numbers.json`, and how the export reads run folders. Part B marks where each file stands.
 
 Read this first:
 
@@ -380,17 +379,17 @@ are and are never overwritten.
 
 # Part B — files the dashboard reads (added 18 Oct 2026)
 
-Part A (sections 1 to 6) describes the backend's own files. Part B describes the files that the pipeline screen (screen 6), the Models screen (screen 7) and the numbers sheet read. It was checked on 18 Oct 2026 against `lab/progress.py`, `ui/bridge.py` and `scripts/run_models.py` on `demo/integrated` at `46a43b1`. For the files marked "being added" or "being merged", the text follows the plan and the lane branches. Those formats can still change. Check the code once the lane is merged.
+Part A (sections 1 to 6) describes the backend's own files. Part B describes the files that the dashboard pages and the numbers sheet read. §7 to §10 were checked on 18 Oct 2026 against `lab/progress.py`, `ui/bridge.py` and `scripts/run_models.py`. §11 to §13 were checked again against `scripts/run_governance.py`, `scripts/verify_log.py` and `ui/export.py` on the branch of this commit; they are on it, and the formats can still change.
 
 | § | File | Written by | State on 18 Oct |
 |---|---|---|---|
-| 7 | `<out>/progress.jsonl` | `lab/progress.py`, through `scripts/run_governance.py` | on `demo/integrated` |
-| 8 | `ui/data/live.js` (`ui-live/1`) | `ui/bridge.py` | on `demo/integrated` |
-| 9 | `ui/data/replay.js` (`ui-replay/1`) | `ui/bridge.py --bake` | on `demo/integrated` |
-| 10 | `results/models/<STAMP>/plan.json`, `status.jsonl`, `<slug>.<step>.log` | `scripts/run_models.py` | on `demo/integrated` |
-| 11 | `<out>/run_index.json`, `<out>/audit_verify.json` | `scripts/run_governance.py` | **being added** (lane A2) |
-| 12 | `ui/data/numbers.json` | `ui/export.py` | **being merged** (lane D) |
-| 13 | run folders, as the dashboard reads them | `ui/export.py` | **being merged** (lane D) |
+| 7 | `<out>/progress.jsonl` | `lab/progress.py`, through `scripts/run_governance.py` | on this branch |
+| 8 | `ui/data/live.js` (`ui-live/1`) | `ui/bridge.py` | on this branch |
+| 9 | `ui/data/replay.js` (`ui-replay/1`) | `ui/bridge.py --bake` | on this branch |
+| 10 | `results/models/<STAMP>/plan.json`, `status.jsonl`, `<slug>.<step>.log` | `scripts/run_models.py` | on this branch |
+| 11 | `<out>/run_index.json`, `<out>/audit_verify.json` | `scripts/run_governance.py` | on this branch |
+| 12 | `ui/data/numbers.json` | `ui/export.py` | on this branch |
+| 13 | run folders, as the dashboard reads them | `ui/export.py` | on this branch |
 
 ---
 
@@ -456,7 +455,7 @@ Stage ids: `setup`; then for each candidate `RC-00N:runs`, `RC-00N:gate`, `RC-00
 
 ## 8. `ui/data/live.js` — `window.LIVE`, schema `ui-live/1`
 
-**Producer:** `ui/bridge.py` (`--follow`, `--follow-latest`, `--replay`, `--run`, `--batch`). **Consumer:** `ui/pipeline.js`, which re-inserts the script tag every 500 ms while screen 6 is visible. The page has no fetch.
+**Producer:** `ui/bridge.py` (`--follow`, `--follow-latest`, `--replay`, `--run`, `--batch`). **Consumers:** `ui/index.html`, whose inline script re-inserts the script tag every 1000 ms, and `ui/pipeline.js` (the old page, `details.html`), which re-inserts it every 500 ms while screen 6 is visible. Neither page uses fetch for this file. The demo page reads `label.word`, `state`, `model`, `nodes`, `rail` and `tiles`.
 **Committed placeholder:** `window.LIVE = null;`. Restore it (`git checkout -- ui/data/live.js`) before every commit.
 **Format:** the file is `window.LIVE = <JSON>;` plus a newline. It is pure ASCII, and `<`, `>` and `&` are escaped as `<`, `>`, `&`. The bridge writes it through a temporary file in the same folder and `os.replace`, at most every 250 ms, and only when something changed. On Windows it retries `os.replace` 10 times at 50 ms when the browser holds the file. The bridge removes absolute paths and the user name before it writes. Every number in the file is formatted by the bridge from a backend value.
 
@@ -496,7 +495,7 @@ Stage ids: `setup`; then for each candidate `RC-00N:runs`, `RC-00N:gate`, `RC-00
 
 ## 9. `ui/data/replay.js` — `window.LIVE_REPLAY`, schema `ui-replay/1`
 
-**Producer:** `python ui/bridge.py --bake PATH` (a `progress.jsonl`, or a run folder that holds one). **Consumer:** `ui/pipeline.js`, when no bridge runs (the page opened from `file://`). Space plays or pauses it, Home restarts it, and `[` and `]` step to the previous or next recorded run (or one frame, when the file holds one run).
+**Producer:** `python ui/bridge.py --bake PATH` (a `progress.jsonl`, or a run folder that holds one). **Consumer:** `ui/pipeline.js` on `details.html`, when no bridge runs (the page opened from `file://`). `index.html` does not read this file. Space plays or pauses it, Home restarts it, and `[` and `]` step to the previous or next recorded run (or one frame, when the file holds one run).
 **Committed placeholder:** `window.LIVE_REPLAY = null;`.
 
 ```
@@ -559,9 +558,9 @@ Every line has `ts` (UTC, to the second), `event`, `slug` and `tag`, plus:
 
 ---
 
-## 11. `run_index.json` and `audit_verify.json` — **being added (lane A2)**
+## 11. `run_index.json` and `audit_verify.json`
 
-These two files are new in the CLI's output folder `<out>`. They are not on `demo/integrated` yet. The text below is the plan (PLAN A2, "Other lane A changes"). Read `scripts/run_governance.py` and its tests once lane A2 is merged, and correct this section.
+`scripts/run_governance.py` writes these two files into the CLI's output folder `<out>`. The keys below match `RunIndex` and `verify_log.verify_document`.
 
 ### `<out>/run_index.json` (schema `run-index/1`)
 
@@ -598,9 +597,9 @@ The result of verifying the audit log, written as raw JSON (not through the mode
 
 ---
 
-## 12. `ui/data/numbers.json` — the numbers sheet (**lane D, being merged**)
+## 12. `ui/data/numbers.json` — the numbers sheet
 
-**Producer:** `ui/export.py` (on `lane/D`). It writes the file next to `demo.js`, with the same content as `window.DEMO.numbers`. **Consumer:** `scripts/fill_script.py` (`--numbers ui/data/numbers.json`), which fills the demo script and the slides. The page does not read this file; it reads `DEMO.numbers`.
+**Producer:** `ui/export.py`. It writes the file next to `demo.js`, with the same content as `window.DEMO.numbers`. **Consumer:** `scripts/fill_script.py` (`--numbers ui/data/numbers.json`), which fills the demo script and the slides. The pages do not read this file; they read `DEMO.numbers`.
 
 A flat object. Each key is a lowercase dotted name. Each value is an entry:
 
@@ -620,17 +619,18 @@ A flat object. Each key is a lowercase dotted name. Each value is an entry:
 
 A key with no source is PENDING: `value`, `source` and `prov` are `null`, `text` is `not available`, and `reason` says why. A key is never guessed.
 
-Keys (26): `headline.model`, `policy.max_asr`; for each of `rc001`, `rc002`, `rc003`: `.asr`, `.asr_range`, `.violations`, `.attack_runs`, `.attempted`; and `runs.attack`, `runs.total`, `reps`, `benign.rate`, `benign.n`, `audit.entries`, `chain.status`, `tamper.entry`, `models.n`.
+Keys (28): `headline.model`, `policy.max_asr`; for each of `rc001`, `rc002`, `rc003`: `.asr`, `.asr_range`, `.violations`, `.attack_runs`, `.attempted`; and `runs.attack`, `runs.total`, `reps`, `benign.rate`, `benign.n`, `audit.entries`, `chain.status`, `tamper.entry`, `models.n`, `time.to_decision`, `time.runs`.
 
 - Rates are text with one decimal and `%`, in the backend's format. `*.asr_range` is the `[lo%, hi%]` text of the gate note, as `metrics.wilson` prints it.
 - `*.attempted` is the information line of the gate (`attempted_incl_blocked`), not a limit.
 - `tamper.entry` is the position `verify_log` names in the tampered copy. It is `#4` in the CLI demo and `#5` in the menu app.
+- `time.to_decision` and `time.runs` are measured from run times in files. A SCRIPTED run keeps both PENDING, because nobody measured a decision time.
 - `models.n` stays PENDING until `results/governance/*/run_index.json` exists (§11).
 - The demo script `SCRIPT_CUT.md` uses seven of these keys. `fill_script.py` reports a missing or PENDING key as missing and leaves the placeholder in the text.
 
 ---
 
-## 13. Run folders, as the dashboard reads them (**lane D, being merged**)
+## 13. Run folders, as the dashboard reads them
 
 The files are the ones in §6. The export treats a folder as a source of evidence only when `parse_manifest` accepts it:
 
