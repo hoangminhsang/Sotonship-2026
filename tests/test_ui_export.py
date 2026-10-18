@@ -1587,6 +1587,18 @@ def test_models_has_one_row_per_model_sorted_by_tag_with_the_newest_full_run(ex,
     assert ex.self_check(ctx, list(ctx.prov.values())) == []
 
 
+def test_models_show_a_bare_hex_digest_the_same_way(ex, tmp_path, cli_mod):
+    put_model_run(tmp_path, cli_mod, "20261018T060000Z_a", "a:1")
+    path = tmp_path / "results" / "governance" / "20261018T060000Z_a" / "run_index.json"
+    ri = json.loads(path.read_text(encoding="utf-8"))
+    ri["digest"] = "ab" * 32                                  # without the "sha256:" prefix
+    path.write_text(json.dumps(ri), encoding="utf-8")
+    ctx = make_ctx(ex, tmp_path)
+    row = ex.build_models(ctx, None)["rows"][0]
+    assert row["digest"]["text"] == "sha256:" + "ab" * 6 and row["digest"]["status"] == ex.REAL
+    assert ex.self_check(ctx, [ctx.prov[row["digest"]["prov"]]]) == []
+
+
 def test_models_take_the_tool_check_from_status_jsonl(ex, tmp_path, cli_mod):
     put_model_run(tmp_path, cli_mod, "20261018T060000Z_a", "a:1", started="2026-10-18T06:00:00+00:00")
     put_model_run(tmp_path, cli_mod, "20261018T061000Z_b", "b:1", started="2026-10-18T06:10:00+00:00")

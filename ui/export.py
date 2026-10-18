@@ -2919,7 +2919,10 @@ def build_models(ctx: Ctx, headline) -> dict:
             row["tag"] = ctx.pfield(f"models.{slug}.tag", tag, REAL, tag, "as written", ri_path, None,
                                     {"kind": "text", "json_path": "model"})
             if isinstance(ri.get("digest"), str) and ri["digest"]:
-                row["digest"] = ctx.pfield(f"models.{slug}.digest", short_digest(ri["digest"]), REAL, ri["digest"],
+                d = ri["digest"]       # "sha256:<hex>" or the bare hex digits
+                shown = short_digest(d if d.startswith("sha256:") or not re.fullmatch(r"[0-9a-f]{12,64}", d)
+                                     else "sha256:" + d)
+                row["digest"] = ctx.pfield(f"models.{slug}.digest", shown, REAL, d,
                                            "first 12 hex digits of the sha256", ri_path, None,
                                            {"kind": "text", "json_path": "digest"})
             row["mode"] = ctx.pfield(f"models.{slug}.mode", ri["mode"], REAL, ri["mode"], "as written", ri_path, None,
