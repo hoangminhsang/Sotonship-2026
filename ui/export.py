@@ -169,13 +169,29 @@ RE_MODEL = re.compile(r'^MODEL\s*=\s*os\.environ\.get\(\s*"LAB_MODEL"\s*,\s*"([^
 # Tool calls in runs.csv (lab/metrics.py _flatten_calls, joined by "; ").
 RE_CALL_SPLIT = re.compile(r"; (?=[A-Za-z_]\w*\()")
 RE_CALL_NAME = re.compile(r"^([A-Za-z_]\w*)\(")
-# Audit verify details (lab/governance/audit.py verify_log).
+# Audit verify details: the wordings of lab/governance/audit.py (_verify_entries and _classify).
+# Position numbers are "#n" except in the malformed case ("entry 3 is not valid JSON").
 RE_VERIFY_DETAIL = (
-    re.compile(r"^\d+ entries, chain intact$"),
+    re.compile(r"^\d+ entries, chain intact(?: \(head [0-9a-f]{6,64}\))?$"),
+    re.compile(r"^no entries \(log missing or empty\)$"),
+    re.compile(r"^entry \d+ is not valid JSON$"),
+    re.compile(r"^entry #\d+ inserted \(not in the chain: #\d+ links to #\d+\)$"),
+    re.compile(r"^entry #\d+ inserted \(duplicate of #\d+\)$"),
+    re.compile(r"^entry #\d+ out of order \(the entry that follows #\d+ is now at #\d+\)$"),
+    re.compile(r"^entry #\d+ edited \(contents changed after it was written\)$"),
+    re.compile(r"^entry #\d+ edited \(sequence number changed and re-hashed\)$"),
+    re.compile(r"^entry #\d+ missing \(between #\d+ and #\d+\)$"),
+    re.compile(r"^\d+ entries missing before #\d+ \(the entry at #\d+ claims seq \d+\)$"),
+    re.compile(r"^entry #\d+ does not link to #\d+ \(one of them was edited and re-hashed\)$"),
+    # Wordings of the earlier backend, so that saved output of that version still reads.
     re.compile(r"^sequence jumped at entry \d+ \(saw seq=.*\)$"),
     re.compile(r"^broken link at entry \d+: prev_hash does not match entry -?\d+$"),
     re.compile(r"^contents of entry \d+ were changed after it was written$"),
 )
+# repr() of lab.governance.audit.LogCheck, which the CLI prints. Later fields (kind, entries, last_hash) are optional.
+RE_LOGCHECK_REPR = re.compile(
+    r"^LogCheck\(ok=(True|False), bad_seq=(None|\d+), detail=(['\"])(.*?)\3"
+    r"(?:, kind=(?:None|'[a-z]+'))?(?:, entries=\d+)?(?:, last_hash=(?:None|'[0-9a-f]*'))?\)$")
 RE_LIKELIHOOD = re.compile(r"^(High|Medium|Low) \((\d+)/(\d+), (\d+)%\)$")
 RE_TICKET_LEFT = re.compile(r"^([A-Z]+-\d+): (.+)$")
 RE_TICKET_RIGHT = re.compile(r"^(.*), due (.*), risk (\S+)\)$")
@@ -1218,16 +1234,21 @@ def parse_md_steps(text: str) -> list:
 
 
 def parse_verify(text: str) -> dict:
-    """Audit verify result: JSON {ok, bad_seq, detail} or the LogCheck repr."""
+    """Audit verify result: audit_verify.json ({ok, bad_seq, detail, ...}) or the LogCheck repr.
+
+    Only ok, bad_seq and detail are used; the other fields of audit_verify.json are ignored.
+    """
     s = text.strip()
-    obj = None
     if s.startswith("{"):
-        obj = json.loads(s)
+        try:
+            obj = json.loads(s)
+        except ValueError:
+            raise SourceError("verify file is not valid JSON")
         if not isinstance(obj, dict):
             raise SourceError("verify file is not a JSON object")
         ok, bad, detail = obj.get("ok"), obj.get("bad_seq"), obj.get("detail")
     else:
-        m = re.match(r"^LogCheck\(ok=(True|False), bad_seq=(None|\d+), detail=(['\"])(.*)\3\)$", s)
+        m = RE_LOGCHECK_REPR.match(s)
         if not m:
             raise SourceError("verify output not in a known format")
         ok = m.group(1) == "True"
@@ -1235,11 +1256,12 @@ def parse_verify(text: str) -> dict:
         detail = m.group(4)
     if not isinstance(ok, bool) or not isinstance(detail, str):
         raise SourceError("verify result lacks ok/detail")
-    if bad is not None and not isinstance(bad, int):
+    if bad is not None and (isinstance(bad, bool) or not isinstance(bad, int)):
         raise SourceError("verify bad_seq is not a number")
     if not any(rx.match(detail) for rx in RE_VERIFY_DETAIL):
         raise SourceError("verify detail not in the backend's wording")
-    if ok != detail.endswith("chain intact"):
+    # An empty log is "ok" (nothing to tamper with) and says so; every tamper wording is not ok.
+    if ok != ("chain intact" in detail or detail.startswith("no entries")):
         raise SourceError("verify ok flag contradicts its detail")
     return {"ok": ok, "bad_seq": bad, "detail": detail}
 
@@ -2081,6 +2103,16 @@ def governance_dir(gov: dict) -> str:
     return ""
 
 
+def default_verify_source(ctx: Ctx, gov: dict):
+    """<governance folder>/audit_verify.json when the CLI wrote it and sources.json names no other file."""
+    try:
+        folder = governance_dir(gov)
+    except SourceError:
+        return None
+    rel = "audit_verify.json" if folder in ("", ".") else f"{folder}/audit_verify.json"
+    return rel if (ctx.repo_root / rel).is_file() else None
+
+
 def folder_mode_tags(ctx: Ctx, gov: dict) -> dict:
     """{file name: mode tag} for every file in the governance folder that states its mode.
 
@@ -2435,11 +2467,12 @@ def build_governance(ctx: Ctx, batches: dict):
                 parsed = parse_jsonl(text)
                 entries = audit_entries(ctx, parsed, g_status, p, {"kind": "jsonl"})
                 last_time = next((e["time"]["text"] for e in reversed(entries) if e["readable"]), None)
+                verify_src = gov.get("audit_verify") or default_verify_source(ctx, gov)
                 chain = {"status": PENDING, "text": None, "ok": None, "bad_seq": None,
-                         "source_file": gov.get("audit_verify"), "reason": VERIFY_TERMINAL_ONLY}
-                if gov.get("audit_verify"):
+                         "source_file": verify_src, "reason": VERIFY_TERMINAL_ONLY}
+                if verify_src:
                     try:
-                        vp = rel_path(gov["audit_verify"])
+                        vp = rel_path(verify_src)
                         vtext, _ = read_text(ctx, vp)
                         v = parse_verify(vtext)
                         chain = {"status": g_status,

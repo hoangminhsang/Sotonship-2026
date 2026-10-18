@@ -492,3 +492,205 @@ def test_an_unknown_mode_in_run_index_is_ignored_with_a_warning(ex, repo):
     assert ex.detect_mode(ctx, ctx.sources["governance"], None) == "SCRIPTED"   # the gate speaks instead
     assert [w["level"] for w in ctx.warnings] == ["integrity"]
     assert "run_index.json" in ctx.warnings[0]["text"] and "DEMO" in ctx.warnings[0]["text"]
+
+
+# --------------------------------------------------------------------------- #
+# Breakage 9: the audit chain check says "10 entries, chain intact (head ...)" and names the tampering.
+# The wordings come from the real lab.governance.audit, so a change there fails this test loudly.
+# --------------------------------------------------------------------------- #
+def _seed_log(path: Path, n: int = 6) -> None:
+    from lab.governance import audit
+
+    events = [{"event": "submit", "candidate_id": "RC-001", "by": "tom"},
+              {"event": "verdict", "candidate_id": "RC-001", "verdict": "FAIL"},
+              {"event": "decision", "candidate_id": "RC-001", "decision": "BLOCK", "reviewer": "sarah", "reason": "x"},
+              {"event": "submit", "candidate_id": "RC-002", "by": "tom"},
+              {"event": "verdict", "candidate_id": "RC-002", "verdict": "PASS"},
+              {"event": "decision", "candidate_id": "RC-002", "decision": "APPROVE", "reviewer": "sarah", "reason": ""}]
+    for ev in events[:n]:
+        audit.append(path, ev)
+
+
+def _edit_line(lines, i, **changes):
+    from lab.governance import audit
+
+    rec = json.loads(lines[i])
+    rehash = changes.pop("_rehash", False)
+    rec.update(changes)
+    if rehash:
+        rec["hash"] = audit._hash_record(rec)
+    lines[i] = json.dumps(rec, sort_keys=True)
+
+
+def _m_intact(lines):
+    pass
+
+
+def _m_edited(lines):
+    _edit_line(lines, 2, decision="APPROVE")
+
+
+def _m_seq_changed_and_rehashed(lines):
+    _edit_line(lines, 2, seq=99, _rehash=True)
+
+
+def _m_edited_and_rehashed(lines):
+    _edit_line(lines, 2, decision="APPROVE", _rehash=True)   # the chain breaks one entry later
+
+
+def _m_one_missing(lines):
+    del lines[2]
+
+
+def _m_two_missing(lines):
+    del lines[2:4]
+
+
+def _m_forged_insert(lines):
+    forged = json.loads(lines[2])
+    forged.update(seq=99, decision="APPROVE")
+    lines.insert(2, json.dumps(forged, sort_keys=True))
+
+
+def _m_duplicate_at_the_end(lines):
+    lines.append(lines[0])
+
+
+def _m_swapped(lines):
+    lines[2], lines[3] = lines[3], lines[2]
+
+
+def _m_malformed(lines):
+    lines[2] = lines[2][:-1]
+
+
+MUTATIONS = [_m_intact, _m_edited, _m_seq_changed_and_rehashed, _m_edited_and_rehashed, _m_one_missing,
+             _m_two_missing, _m_forged_insert, _m_duplicate_at_the_end, _m_swapped, _m_malformed]
+
+
+def _verify_json(check, mode: str = "SCRIPTED") -> str:
+    """audit_verify.json as the CLI writes it (audit-verify/1): the LogCheck fields plus bookkeeping."""
+    return json.dumps({"schema": "audit-verify/1", "ok": check.ok, "bad_seq": check.bad_seq, "kind": check.kind,
+                       "detail": check.detail, "entries": check.entries, "last_hash": check.last_hash,
+                       "verified_at": "2026-10-18T06:00:00+00:00", "mode": mode, "tamper_demo": None})
+
+
+@pytest.mark.parametrize("mutate", MUTATIONS, ids=lambda f: f.__name__.removeprefix("_m_"))
+def test_every_wording_of_the_real_audit_check_is_accepted(ex, tmp_path, mutate):
+    from lab.governance import audit
+
+    path = tmp_path / "audit_log.jsonl"
+    _seed_log(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    mutate(lines)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    check = audit.verify_log(path)
+    want = {"ok": check.ok, "bad_seq": check.bad_seq, "detail": check.detail}
+    assert ex.parse_verify(_verify_json(check)) == want            # audit_verify.json
+    assert ex.parse_verify(repr(check)) == want                    # the LogCheck line the CLI prints
+
+
+def test_the_mutations_cover_every_kind_of_tampering_and_the_intact_case(tmp_path):
+    from lab.governance import audit
+
+    kinds = set()
+    for i, mutate in enumerate(MUTATIONS):
+        path = tmp_path / f"audit_{i}.jsonl"
+        _seed_log(path)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        mutate(lines)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        kinds.add(audit.verify_log(path).kind)
+    assert kinds == {None, *audit.KINDS}
+
+
+def test_an_empty_or_missing_log_is_accepted_as_ok(ex, tmp_path):
+    from lab.governance import audit
+
+    check = audit.verify_log(tmp_path / "nope.jsonl")
+    assert check.ok and check.detail.startswith("no entries")
+    assert ex.parse_verify(_verify_json(check)) == {"ok": True, "bad_seq": None, "detail": check.detail}
+
+
+def test_the_older_wordings_are_still_accepted(ex):
+    for ok, bad, detail in ((True, None, "10 entries, chain intact"),
+                            (False, 3, "sequence jumped at entry 3 (saw seq=5)"),
+                            (False, 4, "broken link at entry 4: prev_hash does not match entry 3"),
+                            (False, 4, "contents of entry 4 were changed after it was written")):
+        got = ex.parse_verify(json.dumps({"ok": ok, "bad_seq": bad, "detail": detail}))
+        assert got == {"ok": ok, "bad_seq": bad, "detail": detail}
+
+
+def test_the_ok_flag_must_agree_with_the_wording(ex):
+    intact = "10 entries, chain intact (head 8709e0d29aed)"
+    tampered = "entry #4 edited (contents changed after it was written)"
+    for ok, bad, detail in ((False, None, intact), (True, None, tampered), (False, None, "no entries (log missing or empty)"),
+                            (True, 4, tampered)):
+        with pytest.raises(ex.SourceError, match="contradicts"):
+            ex.parse_verify(json.dumps({"ok": ok, "bad_seq": bad, "detail": detail}))
+
+
+def test_unknown_wording_and_broken_files_are_refused_as_source_errors(ex):
+    with pytest.raises(ex.SourceError, match="wording"):
+        ex.parse_verify(json.dumps({"ok": True, "bad_seq": None, "detail": "everything looks fine"}))
+    with pytest.raises(ex.SourceError, match="wording"):
+        ex.parse_verify(json.dumps({"ok": True, "bad_seq": None, "detail": "10 entries, chain intact (head xyz)"}))
+    for broken in ("{not json", "[]", '{"ok": "yes", "detail": "x"}', "plain text", ""):
+        with pytest.raises(ex.SourceError):
+            ex.parse_verify(broken)
+    with pytest.raises(ex.SourceError, match="bad_seq"):
+        ex.parse_verify(json.dumps({"ok": False, "bad_seq": "4", "detail": "entry #4 missing (between #3 and #5)"}))
+
+
+def _chain(ex, repo: Path, **extra):
+    gov = dict(GOV_FILES, **extra)
+    ctx = make_ctx(ex, repo, gov, allow_sample=True)
+    _gate, audit_block, _assurance, _latest = ex.build_governance(ctx, {"b": _stub_batch_for(ex, repo)})
+    return ctx, audit_block["chain"]
+
+
+def test_audit_verify_json_in_the_folder_reaches_the_chain_node(ex, repo):
+    from lab.governance import audit
+
+    out = repo / "governance_out"
+    check = audit.verify_log(out / "audit_log.jsonl")
+    assert check.ok and "chain intact (head " in check.detail
+    (out / "audit_verify.json").write_text(_verify_json(check), encoding="utf-8")
+    ctx, chain = _chain(ex, repo)                     # sources.json names no audit_verify file
+    assert chain["ok"] is True and chain["bad_seq"] is None and chain["reason"] is None
+    assert chain["text"]["text"] == check.detail and chain["text"]["status"] == ex.SAMPLE
+    assert chain["source_file"] == "governance_out/audit_verify.json"
+    assert not [w for w in ctx.warnings if w["level"] == "integrity"], ctx.warnings
+    assert ex.self_check(ctx, [ctx.prov[chain["text"]["prov"]]]) == []   # --check can re-read the detail
+
+
+def test_a_tampered_chain_is_shown_as_not_ok_with_its_position(ex, repo):
+    from lab.governance import audit
+
+    out = repo / "governance_out"
+    check = audit.verify_log(out / "audit_log_tampered_demo.jsonl")
+    assert not check.ok
+    (out / "verify_of_the_copy.json").write_text(_verify_json(check), encoding="utf-8")
+    ctx, chain = _chain(ex, repo, audit_verify="governance_out/verify_of_the_copy.json")   # a named file wins
+    assert chain["ok"] is False and chain["bad_seq"]["text"] == str(check.bad_seq)
+    assert chain["text"]["text"] == check.detail
+    assert not [w for w in ctx.warnings if w["level"] == "integrity"], ctx.warnings
+
+
+def test_without_a_verify_file_the_chain_stays_pending(ex, repo):
+    ctx, chain = _chain(ex, repo)
+    assert chain["ok"] is None and chain["text"] is None and chain["reason"] == ex.VERIFY_TERMINAL_ONLY
+    assert chain["source_file"] is None
+    assert not [w for w in ctx.warnings if w["level"] == "integrity"], ctx.warnings
+
+
+def test_a_contradicting_verify_file_is_reported_and_leaves_the_rest_of_the_audit_alone(ex, repo):
+    out = repo / "governance_out"
+    (out / "audit_verify.json").write_text(
+        json.dumps({"ok": True, "bad_seq": None, "detail": "entry #4 edited (contents changed after it was written)"}),
+        encoding="utf-8")
+    ctx = make_ctx(ex, repo, dict(GOV_FILES), allow_sample=True)
+    _gate, audit_block, _assurance, _latest = ex.build_governance(ctx, {"b": _stub_batch_for(ex, repo)})
+    assert audit_block["chain"]["ok"] is None and len(audit_block["entries"]) >= 5
+    assert any(w["level"] == "integrity" and "Audit verify" in w["text"] and "contradicts" in w["text"]
+               for w in ctx.warnings), ctx.warnings
