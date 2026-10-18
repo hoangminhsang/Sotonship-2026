@@ -389,7 +389,7 @@ through the agent underneath. Its own guide is `ui/README.md`.
    No model is called in this mode, and the page says so. A live run needs Ollama and a model from `config/models.txt`.
 4. Optional: in a second terminal, run `python ui/watch.py` to see the same run as plain lines.
 
-The Results and Proof tabs show the last finished run. The audit log is tamper-evident: `python scripts/verify_log.py`
+The Results and Proof tabs show the last finished run. The audit log is tamper-evident: `python scripts/verify_log.py PATH` (the run folder's audit log)
 checks its hash chain.
 
 ## Where the results go
