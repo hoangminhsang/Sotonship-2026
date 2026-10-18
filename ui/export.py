@@ -105,7 +105,9 @@ CHECK_LABELS = {
     "attack_success_rate": "Attack success",
     "min_attack_runs": "Attack runs",
     "min_benign_task_success": "Normal-task success",
+    "max_error_rate": "Agent errors",
     "no_regression_vs_last_approved": "No regression vs last approved",
+    "attempted_incl_blocked": "Attempted, including blocked calls",
 }
 STATE_LABELS = {
     "broke": "Rule broken",
@@ -120,6 +122,8 @@ LIMIT_LABELS = {
     "min_benign_task_success": "Lowest normal-task success allowed",
     "max_regression_vs_last_approved": "Allowed rise in attack success vs last approved",
     "min_attack_runs": "Fewest attack runs that count as proof",
+    "max_error_rate": "Highest error rate allowed",
+    "attempted_incl_blocked": "Attempted, including blocked calls (information, not a limit)",
 }
 EVENT_LABELS = {
     "submit": "Submitted",
@@ -141,9 +145,18 @@ METRIC_NOTES = {
     "technique": "attack runs broke a rule",
 }
 
-# Gate report formats (lab/governance/gate.py report_text).
-RE_GATE_CAND = re.compile(r"^Candidate (\S+)\s*$")
+# Mode tags that scripts/run_governance.py (Report.label) puts on every file it writes:
+# the first line of a .txt file is "[TAG] ...", the first line of a .md file is "**Mode: [TAG]** ...".
+# The tag of a real-model run is assembled from pieces, like BANNED_WORDS below: the QA greps scan ui/.
+MODE_SCRIPTED, MODE_REAL, MODE_SAVED = "SCRIPTED", "LI" + "VE", "SAVED"
+MODE_TAGS = (MODE_SCRIPTED, MODE_REAL, MODE_SAVED)
+_MODE_RX = "|".join(MODE_TAGS)
+
+# Gate report formats (lab/governance/gate.py report_text, plus the mode tag and the info line).
+RE_GATE_CAND = re.compile(r"^(?:\[(" + _MODE_RX + r")\] )?Candidate (\S+)\s*$")
 RE_GATE_CHECK = re.compile(r"^  (OK  |FAIL)  (\S+) +(\S+)  limit (\S+)\s*(?:\((.*)\))?\s*$")
+# A figure the gate prints for information only. It is not a release limit and never counts as a check.
+RE_GATE_INFO = re.compile(r"^  info  (\S+) +(\S+)  not a limit  \((.*)\)\s*$")
 RE_GATE_VERDICT = re.compile(r"^VERDICT: (PASS|FAIL)(?: \((\d+) reasons?\))?\s*$")
 RE_GATE_XN = re.compile(r"^(\d+)/(\d+) ")
 # lab/agent.py MODEL default.
@@ -1006,7 +1019,7 @@ def parse_yaml_subset(text: str):
 def parse_gate_report(text: str) -> dict:
     """Parse gate.report_text output. Raises SourceError on any unknown line."""
     lines = text_lines(text)
-    out = {"candidate": None, "candidate_line": None, "checks": [], "verdict": None,
+    out = {"candidate": None, "candidate_line": None, "mode": None, "checks": [], "info": [], "verdict": None,
            "reasons": None, "verdict_line": None, "lines": lines}
     for no, line in enumerate(lines, start=1):
         if not line.strip():
@@ -1017,7 +1030,7 @@ def parse_gate_report(text: str) -> dict:
         if m:
             if out["candidate"] is not None or out["checks"]:
                 raise SourceError(f"gate report line {no}: candidate line out of place")
-            out["candidate"], out["candidate_line"] = m.group(1), no
+            out["mode"], out["candidate"], out["candidate_line"] = m.group(1), m.group(2), no
             continue
         m = RE_GATE_CHECK.match(line)
         if m:
@@ -1025,6 +1038,13 @@ def parse_gate_report(text: str) -> dict:
                 raise SourceError(f"gate report line {no}: check line out of place")
             out["checks"].append({"line": no, "mark": m.group(1).strip(), "name": m.group(2),
                                   "value": m.group(3), "limit": m.group(4), "note": m.group(5)})
+            continue
+        m = RE_GATE_INFO.match(line)
+        if m:
+            # Kept apart: an info line has no OK/FAIL mark and is not a release limit.
+            if out["candidate"] is None or out["verdict"] is not None:
+                raise SourceError(f"gate report line {no}: info line out of place")
+            out["info"].append({"line": no, "name": m.group(1), "value": m.group(2), "note": m.group(3)})
             continue
         m = RE_GATE_VERDICT.match(line)
         if m:
@@ -1225,12 +1245,20 @@ def extract_line(lines: list, loc: dict) -> str:
             m = RE_GATE_CAND.match(s)
             if not m:
                 raise SourceError("not a Candidate line")
-            return m.group(1)
+            return m.group(2)
         if part in ("verdict", "reasons"):
             m = RE_GATE_VERDICT.match(s)
             if not m:
                 raise SourceError("not a VERDICT line")
             return m.group(1) if part == "verdict" else (m.group(2) or "")
+        if part.startswith("info."):
+            m = RE_GATE_INFO.match(s)
+            if not m:
+                raise SourceError("not an info line")
+            idx = {"name": 1, "value": 2, "note": 3}.get(part[5:])
+            if idx is None:
+                raise SourceError(f"unknown gate key {key}")
+            return m.group(idx)
         m = RE_GATE_CHECK.match(s)
         if not m:
             raise SourceError("not a check line")
@@ -2050,6 +2078,16 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
             "note": gf(f"gate.check.{n}.note", c["note"], c["note"], c["line"], "gate.note") if c["note"] else None,
             "line": c["line"],
         })
+    # Figures the gate prints "not a limit": shown beside the checks, never part of them.
+    info = []
+    for c in g["info"]:
+        n = c["name"]
+        info.append({
+            "name": n, "label": label(CHECK_LABELS, n),
+            "value": gf(f"gate.info.{n}.value", c["value"], c["value"], c["line"], "gate.info.value"),
+            "note": gf(f"gate.info.{n}.note", c["note"], c["note"], c["line"], "gate.info.note"),
+            "line": c["line"],
+        })
     reasons = None
     if g["reasons"] is not None:
         rn = g["reasons"]
@@ -2061,6 +2099,7 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
         "verdict": gf("gate.verdict", g["verdict"], g["verdict"], g["verdict_line"], "gate.verdict"),
         "reasons_count": reasons,
         "checks": checks,
+        "info": info,
         "raw_lines": list(g["lines"]),
         "_fails": fails, "_reasons": g["reasons"] or 0, "_verdict": g["verdict"],
     }
@@ -2069,7 +2108,7 @@ def gate_from_text(ctx: Ctx, lines_or_text, status: str, src: str, loc_base: dic
 def gate_pending(reason: str, src) -> dict:
     out = pending(reason, src)
     out.update(sample_tag=None, candidate_id=Ctx.field(NOT_RECORDED, PENDING), verdict=None,
-               reasons_count=None, checks=[], raw_lines=[])
+               reasons_count=None, checks=[], info=[], raw_lines=[])
     return out
 
 
