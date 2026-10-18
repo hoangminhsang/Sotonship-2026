@@ -64,15 +64,21 @@ Standard library only; Python 3.9 or newer; no shell is ever used (argument list
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODELS = "config/models.txt"
@@ -85,6 +91,8 @@ DEFAULT_PARALLEL, MAX_PARALLEL = 2, 4
 # corpus/*.jsonl at start, so two runs at once are not safe. The fix replaces the call by a read-only check.
 RACE_MARKER = "build_and_write("
 OLLAMA_CMD = ["ollama"]               # tests point this at a stand-in
+GRACE_S = 60.0                        # after Ctrl-C: how long a child gets to lock its run folders
+TEXT_TOOL_CALL = "<tool_call>"        # a model that writes its calls as text puts this in final_text
 
 # An Ollama reference: [host/][namespace/]name[:tag][@digest]. ASCII only, and it must start with a
 # letter or digit, so a tag can never be read as a command-line option.
@@ -381,12 +389,527 @@ def render_plan(plan: dict, *, dry_run: bool) -> str:
     return "\n".join(lines)
 
 
+_SAY_LOCK = threading.Lock()
+
+
 def say(text: str = "") -> None:
-    """print() that cannot crash on a console code page (Windows cp1252): bad characters become '?'."""
+    """Print one line. One write under a lock (lines from two models never mix), and it cannot crash on a
+    console code page (Windows cp1252): characters the console cannot show become '?'."""
+    with _SAY_LOCK:
+        try:
+            sys.stdout.write(text + "\n")
+        except UnicodeEncodeError:
+            sys.stdout.write(text.encode("ascii", "replace").decode("ascii") + "\n")
+        sys.stdout.flush()
+
+
+def _short(text: object, limit: int = 200) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+# --------------------------------------------------------------------------- #
+# Run folders and the tool-support check.
+# --------------------------------------------------------------------------- #
+def _read_json(path: Path):
+    """The parsed JSON file, or None when it is missing or damaged."""
     try:
-        print(text, flush=True)
-    except UnicodeEncodeError:
-        print(text.encode("ascii", "replace").decode("ascii"), flush=True)
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def snapshot_runs(runs_dir: Path) -> Set[str]:
+    """Names of the run folders that exist now. Taken before a step, to tell its new folders apart."""
+    try:
+        return {p.name for p in Path(runs_dir).iterdir() if p.is_dir()}
+    except OSError:
+        return set()
+
+
+def runs_for_model(runs_dir: Path, tag: str, before: Set[str]) -> List[Path]:
+    """Run folders made since ``before`` whose manifest says they ran ``tag``, oldest first.
+
+    The manifest is the key, not the folder name: two different tags can have names that start alike.
+    """
+    found = []
+    for name in sorted(snapshot_runs(runs_dir) - before):
+        manifest = _read_json(Path(runs_dir) / name / "manifest.json")
+        if isinstance(manifest, dict) and manifest.get("model") == tag:
+            found.append(Path(runs_dir) / name)
+    return found
+
+
+def read_traces(run_dirs: Sequence[Path]) -> Tuple[List[dict], int]:
+    """Every trace of the given run folders, and how many trace files could not be read."""
+    traces: List[dict] = []
+    unreadable = 0
+    for run_dir in run_dirs:
+        for path in sorted((Path(run_dir) / "traces").glob("*.json")):
+            data = _read_json(path)
+            if isinstance(data, dict):
+                traces.append(data)
+            else:
+                unreadable += 1
+    return traces, unreadable
+
+
+@dataclass(frozen=True)
+class ToolCheck:
+    tools: str            # "yes" | "no" | "not checked"
+    reason: str
+    detail: str = ""      # more for a reader of status.jsonl: the first error text, a count
+
+    @property
+    def text(self) -> str:
+        return f"{self.tools} ({self.reason})" if self.reason else self.tools
+
+
+def _has_structured_call(trace: dict) -> bool:
+    calls = trace.get("tool_calls")
+    return isinstance(calls, list) and any(isinstance(c, dict) and c.get("name") for c in calls)
+
+
+def classify_tool_support(traces: Sequence[dict]) -> ToolCheck:
+    """Does the model call tools properly? "yes" needs ALL of:
+
+    * at least one trace holds a structured tool call (blocked calls count: the model made them),
+    * no ``final_text`` contains ``<tool_call>`` (the model wrote its calls as text),
+    * not every run errored.
+
+    Anything else is "no", with the reason. Such a model gets no full run: with no working tools it
+    cannot be attacked, so it would read as a safe 0% attack rate.
+    """
+    total = len(traces)
+    if total == 0:
+        return ToolCheck("no", "no traces were written by the smoke run")
+    errors = [str(t["error"]) for t in traces if t.get("error")]
+    if len(errors) == total:
+        return ToolCheck("no", "every run errored", _short(errors[0]))
+    as_text = sum(1 for t in traces if TEXT_TOOL_CALL in str(t.get("final_text") or ""))
+    if as_text:
+        return ToolCheck("no", f"the model wrote tool calls as text ({TEXT_TOOL_CALL} in final_text)",
+                         f"{as_text} of {total} runs")
+    made = sum(1 for t in traces if _has_structured_call(t))
+    if made == 0:
+        return ToolCheck("no", "no structured tool call in any run", f"{total} runs")
+    return ToolCheck("yes", f"{made} of {total} runs made a structured tool call",
+                     f"{len(errors)} of {total} runs errored" if errors else "")
+
+
+# --------------------------------------------------------------------------- #
+# status.jsonl and the child processes.
+# --------------------------------------------------------------------------- #
+def _console_line(record: dict) -> str:
+    parts = []
+    for key in ("tools", "exit_code", "reason", "out", "detail"):
+        value = record.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}={value}")
+    return f"[{record['ts'][11:19]}] {record['slug']:<26} {record['event']:<17} " + " ".join(parts)
+
+
+class StatusLog:
+    """status.jsonl: one JSON line per state change, also echoed to the console.
+
+    Safe to call from several threads. A line is one write, so a reader that follows the file never sees
+    half a line. A write error is reported once and never raised: the batch goes on.
+    """
+
+    def __init__(self, path: Path, echo: bool = True) -> None:
+        self.path = Path(path)
+        self.echo = echo
+        self._lock = threading.Lock()
+        self._warned = False
+
+    def emit(self, event: str, model: Model, **fields) -> dict:
+        record = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
+                  "slug": model.slug, "tag": model.tag}
+        record.update(fields)
+        line = json.dumps(record)
+        with self._lock:
+            try:
+                with self.path.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(line + "\n")
+            except OSError as exc:
+                if not self._warned:
+                    self._warned = True
+                    print(f"warning: cannot write {self.path}: {exc}", file=sys.stderr)
+            if self.echo:
+                say(_console_line(record))
+        return record
+
+
+def _popen_kwargs() -> dict:
+    """Every child gets its own process group (Windows) or session (POSIX). A Ctrl-C typed in the terminal
+    then reaches this script only, and this script passes it on exactly once: a second interrupt could
+    cut short the child's cleanup, where it locks its run folders."""
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _send_interrupt(proc: "subprocess.Popen") -> None:
+    """Stop a child the way Ctrl-C would, so its ``finally`` blocks run and its run folders lock."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            # Not verified on Windows. The child sits in its own process group, which switches Ctrl-C off
+            # for it, so CTRL_BREAK_EVENT is the one console signal that can reach it. Python turns a
+            # break into KeyboardInterrupt only in a process that installs a SIGBREAK handler; without
+            # one, the child ends at once and its run folders stay unlocked (the end-of-batch report
+            # lists any such folder).
+            proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+        else:
+            proc.send_signal(signal.SIGINT)
+    except OSError:
+        pass
+
+
+def _exit_code(returncode: int) -> int:
+    """POSIX: a child killed by signal N reports -N. Show it the way a shell does (128 + N)."""
+    return 128 - returncode if returncode < 0 else returncode
+
+
+class ChildSet:
+    """The running child processes, so that a stop request reaches each of them exactly once."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._procs: Dict[int, "subprocess.Popen"] = {}
+        self._interrupted: Set[int] = set()
+        self.stopping = False
+
+    def start(self, argv: Sequence[str], **kwargs) -> Optional["subprocess.Popen"]:
+        """Start a child, or return None when a stop was requested already."""
+        with self._lock:
+            if self.stopping:
+                return None
+            proc = subprocess.Popen(list(argv), **kwargs)
+            self._procs[proc.pid] = proc
+            return proc
+
+    def finished(self, proc: "subprocess.Popen") -> None:
+        with self._lock:
+            self._procs.pop(proc.pid, None)
+
+    def interrupt(self) -> None:
+        """Ask every running child to stop like Ctrl-C does. A child is asked once, however often this is called."""
+        with self._lock:
+            self.stopping = True
+            todo = [p for pid, p in self._procs.items() if pid not in self._interrupted]
+            self._interrupted.update(p.pid for p in todo)
+        for proc in todo:
+            _send_interrupt(proc)
+
+    def terminate(self) -> None:
+        """End every running child now. Its run folders may stay unlocked."""
+        with self._lock:
+            self.stopping = True
+            todo = list(self._procs.values())
+        for proc in todo:
+            with contextlib.suppress(OSError):
+                proc.terminate()
+
+
+def _raise_keyboard_interrupt(signum, frame) -> None:  # pragma: no cover - runs in a signal handler
+    raise KeyboardInterrupt
+
+
+@contextlib.contextmanager
+def _stop_signals():
+    """While the batch runs, SIGTERM (and SIGBREAK on Windows) stop it the same way Ctrl-C does."""
+    saved = {}
+    for name in ("SIGTERM", "SIGBREAK"):   # SIGBREAK exists on Windows only. Not verified there.
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            saved[sig] = signal.signal(sig, _raise_keyboard_interrupt)
+        except (ValueError, OSError):      # not the main thread: leave the signal alone
+            pass
+    try:
+        yield
+    finally:
+        for sig, old in saved.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, old)
+
+
+@dataclass
+class StepResult:
+    exit_code: Optional[int]      # None: the child could not be started
+    interrupted: bool = False     # a stop was requested and the child did not end cleanly
+    error: str = ""
+
+
+@dataclass
+class ModelResult:
+    outcome: str = "pending"      # ok | no_tools | failed | interrupted
+    tools: str = "not checked"
+    tools_text: str = "not checked"
+    note: str = ""                # why the model has no full run, or how it ended
+    out: str = ""                 # the full run's output folder, when the full run started
+
+
+def _exit_text(step: StepResult) -> str:
+    return step.error if step.exit_code is None else f"exit code {step.exit_code}"
+
+
+class Batch:
+    """One run of the plan: a thread pool with one child process per model at a time."""
+
+    def __init__(self, plan: dict, layout: Layout, python: str, *, echo: bool = True) -> None:
+        self.plan = plan
+        self.layout = layout
+        self.python = python
+        self.scripted = plan["mode"] == "scripted"
+        self.batch_dir = layout.models_dir / plan["stamp"]
+        self.rows = {row["slug"]: row for row in plan["models"]}
+        self.models = [Model(tag=row["tag"], slug=row["slug"]) for row in plan["models"]]
+        self.status = StatusLog(self.batch_dir / "status.jsonl", echo=echo)
+        self.children = ChildSet()
+        self.results: Dict[str, ModelResult] = {}
+        self.run_dirs: Set[Path] = set()          # every run folder this batch made (for the unlocked report)
+        self._stop_asked_at: Optional[float] = None
+        self._terminated = False
+
+    # -- setup ----------------------------------------------------------------
+    def prepare(self) -> None:
+        """Create the batch folder (never reuse one) and write plan.json."""
+        self.batch_dir.mkdir(parents=True, exist_ok=False)
+        plan = dict(self.plan, created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        tmp = self.batch_dir / "plan.json.tmp"
+        tmp.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, self.batch_dir / "plan.json")
+
+    # -- running --------------------------------------------------------------
+    def run(self) -> int:
+        say(render_plan(self.plan, dry_run=False))
+        say(f"Logs      : {self.plan['batch_dir']}/<slug>.<step>.log")
+        say()
+        for position, model in enumerate(self.models, start=1):
+            self.status.emit("queued", model, position=position)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.plan["parallel"], thread_name_prefix="model")
+        futures = [pool.submit(self._worker, model) for model in self.models]
+        try:
+            with _stop_signals():
+                self._wait(futures)
+        except KeyboardInterrupt:
+            self.children.terminate()    # an interrupt while handling an interrupt: end the children now
+        finally:
+            pool.shutdown(wait=True)
+        return self._finish()
+
+    def _wait(self, futures: Sequence["concurrent.futures.Future"]) -> None:
+        """Wait for every model. The wait times out every 0.25 s so that Ctrl-C is noticed on Windows too."""
+        pending = set(futures)
+        while pending:
+            try:
+                _, pending = concurrent.futures.wait(pending, timeout=0.25)
+                self._end_stuck_children()
+            except KeyboardInterrupt:
+                self._stop()
+
+    def _stop(self) -> None:
+        """First interrupt: ask the children to stop (they lock their folders). Second: end them."""
+        if not self.children.stopping:
+            self._stop_asked_at = time.monotonic()
+            self.children.interrupt()
+            say("Interrupted: stopping the running models so that their run folders lock. "
+                "Press Ctrl-C again to end them at once.")
+        elif not self._terminated:
+            self._terminated = True
+            self.children.terminate()
+            say("Interrupted again: ending the running models now; their run folders may stay unlocked.")
+
+    def _end_stuck_children(self) -> None:
+        if (self.children.stopping and not self._terminated and self._stop_asked_at is not None
+                and time.monotonic() - self._stop_asked_at > GRACE_S):
+            self._terminated = True
+            say(f"The running models did not stop within {GRACE_S:.0f} s; ending them now.")
+            self.children.terminate()
+
+    def _worker(self, model: Model) -> ModelResult:
+        try:
+            result = self._pipeline(model)
+        except Exception as exc:  # noqa: BLE001 - a bug here must not take the other models down
+            result = ModelResult("failed", note=f"internal error: {type(exc).__name__}: {exc}")
+            self.status.emit("skipped", model, reason=result.note)
+        self.results[model.slug] = result
+        return result
+
+    # -- one model ------------------------------------------------------------
+    def _log_rel(self, model: Model, step: str) -> str:
+        return f"{self.plan['batch_dir']}/{model.slug}.{step}.log"
+
+    def _exec_argv(self, display: Sequence[str]) -> List[str]:
+        head, rest = display[0], list(display[1:])
+        if head == "python":
+            return [self.python] + rest
+        if head == "ollama":
+            return list(OLLAMA_CMD) + rest
+        raise ValueError(f"unknown command {head!r}")
+
+    def _run_step(self, model: Model, step: str, display: Sequence[str]) -> StepResult:
+        """Run one command with its output in ``<slug>.<step>.log``; wait for it."""
+        argv = self._exec_argv(display)
+        try:
+            with open(self.batch_dir / f"{model.slug}.{step}.log", "wb") as log:
+                log.write(("$ " + " ".join(display) + "\n").encode("utf-8"))
+                log.flush()
+                proc = self.children.start(
+                    argv, cwd=str(self.layout.root), env=child_env(model.tag), stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, shell=False, **_popen_kwargs(),
+                )
+                if proc is None:
+                    return StepResult(None, interrupted=True)
+                try:
+                    code = proc.wait()
+                finally:
+                    self.children.finished(proc)
+        except OSError as exc:
+            return StepResult(None, error=f"could not start {display[0]}: {exc}")
+        code = _exit_code(code)
+        return StepResult(code, interrupted=self.children.stopping and code != 0)
+
+    def _preflight_detail(self, model: Model, step: StepResult) -> str:
+        if step.error:
+            return step.error
+        try:
+            lines = (self.batch_dir / f"{model.slug}.preflight.log").read_text(
+                encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        fails = [ln.strip() for ln in lines if ln.startswith("FAIL")]
+        if fails:
+            return _short("; ".join(fails[:5]), 400)
+        tail = [ln.strip() for ln in lines if ln.strip() and not ln.startswith("$ ")]
+        return _short(tail[-1], 400) if tail else ""
+
+    def _pipeline(self, model: Model) -> ModelResult:
+        """pull -> preflight -> smoke -> tool-support check -> full, for one model."""
+        row = self.rows[model.slug]
+        cmds = row["commands"]
+        res = ModelResult()
+
+        def emit(event: str, **fields) -> None:
+            self.status.emit(event, model, **fields)
+
+        def skip(outcome: str, reason: str) -> ModelResult:
+            res.outcome, res.note = outcome, reason
+            emit("skipped", reason=reason)
+            return res
+
+        if self.children.stopping:
+            return skip("interrupted", "interrupted before it started")
+
+        if cmds["pull"]:
+            emit("pull_start", log=self._log_rel(model, "pull"))
+            step = self._run_step(model, "pull", cmds["pull"])
+            emit("pull_done", exit_code=step.exit_code, **({"error": step.error} if step.error else {}))
+            if step.interrupted:
+                return skip("interrupted", "interrupted")
+            if step.exit_code != 0:
+                return skip("failed", f"ollama pull failed ({_exit_text(step)}); check the tag with: "
+                                      f"ollama pull {model.tag}")
+
+        if cmds["preflight"]:
+            emit("preflight_start", log=self._log_rel(model, "preflight"))
+            step = self._run_step(model, "preflight", cmds["preflight"])
+            if step.interrupted:
+                emit("preflight_fail", exit_code=step.exit_code, detail="interrupted")
+                return skip("interrupted", "interrupted")
+            if step.exit_code == 0:
+                emit("preflight_ok", exit_code=0)
+            else:
+                emit("preflight_fail", exit_code=step.exit_code, detail=self._preflight_detail(model, step))
+                return skip("failed", f"preflight failed ({_exit_text(step)}); see {self._log_rel(model, 'preflight')}")
+        else:
+            emit("preflight_skipped", reason="scripted")
+
+        # Smoke run, then the tool-support check on the run folders it made.
+        before = snapshot_runs(self.layout.runs_dir)
+        emit("smoke_start", out=row["smoke_out"], log=self._log_rel(model, "smoke"))
+        step = self._run_step(model, "smoke", cmds["smoke"])
+        smoke_dirs = runs_for_model(self.layout.runs_dir, model.tag, before)
+        self.run_dirs.update(smoke_dirs)
+        if step.interrupted:
+            check = ToolCheck("not checked", "interrupted")
+        elif step.exit_code is None:
+            check = ToolCheck("not checked", step.error)
+        elif self.scripted:
+            check = ToolCheck("not checked", "scripted")
+        else:
+            traces, unreadable = read_traces(smoke_dirs)
+            check = classify_tool_support(traces)
+            if unreadable:
+                check = ToolCheck(check.tools, check.reason,
+                                  "; ".join(x for x in (check.detail, f"{unreadable} trace files unreadable") if x))
+        res.tools, res.tools_text = check.tools, check.text
+        fields = {"exit_code": step.exit_code, "tools": check.tools, "reason": check.reason, "text": check.text,
+                  "out": row["smoke_out"], "run_dirs": [p.name for p in smoke_dirs]}
+        if check.detail:
+            fields["detail"] = check.detail
+        emit("smoke_done", **fields)
+
+        if step.interrupted:
+            return skip("interrupted", "interrupted")
+        if step.exit_code != 0:
+            return skip("failed", f"smoke run failed ({_exit_text(step)}); see {self._log_rel(model, 'smoke')}")
+        if not self.scripted and check.tools != "yes":
+            return skip("no_tools", f"no tool support: {check.reason}")
+        if self.plan["smoke_only"]:
+            return skip("ok", "smoke-only: the full run was not requested")
+        if self.children.stopping:
+            return skip("interrupted", "interrupted")
+
+        # Full run.
+        before = snapshot_runs(self.layout.runs_dir)
+        emit("full_start", out=row["full_out"], log=self._log_rel(model, "full"))
+        step = self._run_step(model, "full", cmds["full"])
+        full_dirs = runs_for_model(self.layout.runs_dir, model.tag, before)
+        self.run_dirs.update(full_dirs)
+        fields = {"exit_code": step.exit_code, "out": row["full_out"], "run_dirs": [p.name for p in full_dirs]}
+        if step.interrupted:
+            fields["reason"] = "interrupted"
+        if step.error:
+            fields["error"] = step.error
+        emit("full_done", **fields)
+        res.out = row["full_out"]
+        if step.interrupted:
+            res.outcome, res.note = "interrupted", "interrupted during the full run"
+        elif step.exit_code == 0:
+            res.outcome = "ok"
+        else:
+            res.outcome, res.note = "failed", f"full run failed ({_exit_text(step)}); see {self._log_rel(model, 'full')}"
+        return res
+
+    # -- the end --------------------------------------------------------------
+    def _finish(self) -> int:
+        say()
+        say("Summary")
+        for model in self.models:
+            res = self.results.get(model.slug) or ModelResult("failed", note="no result")
+            if res.out:
+                tail = f"full run {'done' if res.outcome == 'ok' else res.outcome}: {res.out}"
+                if res.note and res.outcome != "ok":
+                    tail += f"  ({res.note})"
+            else:
+                tail = f"full run skipped: {res.note}"
+            say(f"  {model.slug:<26} tools: {res.tools_text}  |  {tail}")
+        if self.children.stopping:
+            unlocked = [p for p in sorted(self.run_dirs)
+                        if not (isinstance(_read_json(p / "manifest.json"), dict)
+                                and _read_json(p / "manifest.json").get("locked"))]
+            if unlocked:
+                say("These run folders are NOT locked (their run did not end cleanly). Nothing was deleted:")
+                for path in unlocked:
+                    say(f"  {self.layout.rel(path)}")
+            say("Interrupted: the batch stopped early.")
+            return 130
+        return 1 if any(r.outcome == "failed" for r in self.results.values()) else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -426,13 +949,28 @@ def main(argv: Optional[Sequence[str]] = None, *, root: Optional[Path] = None,
     except (ModelsFileError, UsageError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    stamp = stamp or utc_stamp()
+    if stamp is None:
+        stamp = utc_stamp()
+        while not opts.dry_run and (layout.models_dir / stamp).exists():   # another batch began this second
+            time.sleep(1.0)
+            stamp = utc_stamp()
     plan = build_plan(opts, layout, models, stamp, race_fixed=corpus_race_fixed(layout.root))
     if opts.dry_run:
         say(render_plan(plan, dry_run=True))
         return 0
-    print("error: running a batch is not implemented in this commit", file=sys.stderr)
-    return 2
+    batch = Batch(plan, layout, python)
+    try:
+        batch.prepare()
+    except FileExistsError:
+        print(f"error: {plan['batch_dir']} already exists; a batch folder is never reused", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error: cannot create {plan['batch_dir']}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        return batch.run()
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":
