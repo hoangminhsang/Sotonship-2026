@@ -3,11 +3,13 @@
    --fo-fg, --sec, --label, --lede, --hatch, --serif, --sans). Sections:
    1 screen frame, 2 mode chip and status line, 3 rail, 4 tile strip, 5 board and nodes,
    6 node states, 7 wires and wire labels, 8 reduced motion.
+   Kept calm on purpose: medium type (nothing above 40px on this screen), one fact line per node,
+   thin wires, no icons beside the state word.
    Coordinates are stage pixels (the 1920 x 1080 stage is the positioned ancestor); the content
    area is x 120-1800, y 150-1016. Inside #p-board the origin is (120, 150).
-   State is never colour alone: frame style (dotted, dashed, solid), a marker shape, a pattern
-   (hatch for scripted) and a word. Alarm and ok fills only for REAL fail and REAL pass.
-   Strokes that carry state are 3px; wires are 2px. */
+   State is never colour alone: frame style (dotted, dashed, solid), a pattern (hatch strip for
+   scripted data) and a word. Alarm and ok fills only for REAL fail and REAL pass.
+   Strokes that carry state are 3px; wires are thin. */
 
 /* ---------- 1 screen frame ---------- */
 /* Only the title stays in the flow; everything else is placed by stage coordinates.
@@ -17,14 +19,14 @@
 #screen-6 { --p-shift: 0px; }
 #stage:has(> #banner:not([hidden])) #screen-6 { --p-shift: 57px; }
 #stage:has(> #banner:not([hidden])) #p-src { display: none; }
-#screen-6 .screen-title { font-size: 64px; line-height: 1.04; white-space: nowrap; }
+#screen-6 .screen-title { font-size: 40px; line-height: 1.1; white-space: nowrap; }
 #p-mode, #p-rail, #p-status, #p-board, #p-tiles, #p-src { position: absolute; margin: 0; padding: 0; }
 
 /* ---------- 2 mode chip and status line ---------- */
-#p-mode { left: 120px; top: calc(219px + var(--p-shift)); max-width: 860px; height: 28px; display: flex; align-items: center; }
+#p-mode { left: 120px; top: calc(200px + var(--p-shift)); max-width: 860px; height: 28px; display: flex; align-items: center; }
 .p-chip {
   display: inline-flex; align-items: center; height: 28px; box-sizing: border-box; max-width: 100%;
-  padding: 0 12px; font: 500 22px/1 var(--sans); letter-spacing: .02em; color: var(--ink);
+  padding: 0 12px; font: 500 22px/1 var(--sans); color: var(--ink);
   background: var(--paper); border: 3px solid var(--ink); white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -37,15 +39,18 @@
   background: var(--hatch); border-right: 3px solid var(--ink);
 }
 #p-status {
-  left: 120px; top: calc(252px + var(--p-shift)); width: 680px; height: 30px; font: 400 22px/30px var(--sans); letter-spacing: -.01em;
+  left: 120px; top: calc(238px + var(--p-shift)); width: 780px; height: 34px; font: 400 26px/34px var(--sans);
   color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* a long end-of-run line (the export command, or why the run stopped) takes the full width
    and hides the tile strip, so that the command is never cut */
-#p-status[data-wide] { width: 1680px; z-index: 2; background: var(--paper); }
+#p-status[data-wide] {
+  width: 1680px; height: 60px; z-index: 2; background: var(--paper); line-height: 30px;
+  white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere;
+}
 #p-status[data-wide] ~ #p-tiles { visibility: hidden; }
 #p-src {
-  left: 120px; top: calc(986px + var(--p-shift)); width: 1680px; height: 30px; font: 400 22px/30px var(--sans); color: var(--sec);
+  left: 120px; top: calc(972px + var(--p-shift)); width: 1680px; height: 30px; font: 400 22px/30px var(--sans); color: var(--sec);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -81,7 +86,7 @@
 .p-rc[data-from="done"]::after { border-left-color: var(--ink); }
 
 /* ---------- 4 tile strip ---------- */
-#p-tiles { left: 820px; top: calc(248px + var(--p-shift)); width: 980px; height: 32px; display: flex; align-items: center; gap: 14px; }
+#p-tiles { left: 920px; top: calc(238px + var(--p-shift)); width: 880px; height: 32px; display: flex; align-items: center; gap: 14px; }
 .p-tl-cand { flex: 0 0 auto; font: 500 22px/1 var(--sans); color: var(--ink); }
 .p-tl-grid { flex: 1 1 0; min-width: 0; height: 32px; display: flex; flex-wrap: wrap; align-content: center; gap: 2px; overflow: hidden; }
 .p-tile { flex: 0 0 auto; box-sizing: border-box; border: 2px solid var(--ink); background: var(--paper); }
@@ -111,78 +116,36 @@
 #p-nodes { position: absolute; left: 0; top: 0; width: 1680px; height: 866px; margin: 0; padding: 0; list-style: none; }
 .p-elabels { position: absolute; left: 0; top: 0; width: 0; height: 0; }
 
+/* a node: glyph and state word on top, the caption under them, one fact line at the bottom */
 .p-node {
-  position: absolute; width: 300px; height: 190px; box-sizing: border-box; margin: 0; padding: 3px 6px 0;
+  position: absolute; width: 300px; height: 170px; box-sizing: border-box; margin: 0; padding: 6px 10px;
   display: flex; flex-direction: column; overflow: hidden;
   border: 3px dotted var(--sec); background: var(--paper); color: var(--ink);
 }
-.p-top { flex: 0 0 80px; display: flex; gap: 10px; height: 80px; }
+.p-top { flex: 0 0 62px; display: flex; align-items: flex-start; gap: 14px; height: 62px; }
 .p-glyph {
-  flex: 0 0 96px; width: 96px; height: 72px; display: block; overflow: visible; color: inherit;
+  flex: 0 0 80px; width: 80px; height: 60px; display: block; overflow: visible; color: inherit;
   fill: none; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter;
 }
 .p-glyph .f-ink { stroke-width: 3; }
-.p-glyph .f-thin { stroke-width: 1.6; }
-.p-glyph .f-dash { stroke-width: 1.8; stroke-dasharray: 4 4; }
+.p-glyph .f-thin { stroke-width: 1.8; }
+.p-glyph .f-dash { stroke-width: 2; stroke-dasharray: 4 4; }
 .p-node.is-drawing .f-dash { visibility: hidden; }
 
-.p-badge { flex: 1 1 0; min-width: 0; height: 80px; display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
-.p-state { flex: 0 0 26px; display: flex; align-items: center; gap: 8px; font: 500 22px/26px var(--sans); white-space: nowrap; }
-.p-word { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.p-script {
-  flex: 0 0 30px; align-self: flex-start; display: flex; align-items: center; box-sizing: border-box; height: 30px;
-  padding-right: 10px; border: 3px dashed var(--ink); background: var(--paper); color: var(--ink);
-  font: 500 22px/1 var(--sans); letter-spacing: .03em; white-space: nowrap;
-}
-.p-script::before {
-  content: ""; align-self: stretch; flex: 0 0 18px; margin-right: 8px;
-  background: var(--hatch); border-right: 3px solid var(--ink);
-}
-/* a scripted node that also shows its state word has no room for the tag */
-.p-state:not([hidden]) ~ .p-script:not([hidden]) ~ .p-tag { display: none; }
-.p-tag {
-  flex: 1 1 0; min-height: 0; font: 400 22px/24px var(--sans); color: var(--lede);
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
-}
+.p-state { flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding-top: 3px; font: 500 22px/26px var(--sans); white-space: nowrap; overflow: hidden; }
+.p-script { font-weight: 400; }
 .p-cap {
-  flex: 0 0 50px; font: 400 24px/25px var(--sans); letter-spacing: -.018em; color: var(--ink);
+  flex: 1 1 auto; min-height: 0; margin-top: 2px; font: 400 22px/26px var(--sans); letter-spacing: -.01em; color: var(--ink);
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
 }
 .p-fact {
-  flex: 0 0 46px; font: 400 22px/23px var(--sans); letter-spacing: -.015em; color: var(--lede);
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
-}
-.p-f2 { display: block; }
-
-/* marker next to the state word: a different shape and pattern for every state */
-.p-mark { position: relative; flex: 0 0 20px; width: 20px; height: 20px; box-sizing: border-box; border: 3px solid currentColor; }
-.p-node[data-state="idle"] .p-mark, .p-node[data-state="skipped"] .p-mark, .p-node[data-state="error"] .p-mark { border-style: dotted; }
-.p-node[data-state="running"] .p-mark { border-style: dashed; }
-.p-node[data-state="done"] .p-mark::after {
-  content: ""; position: absolute; left: 3px; top: 3px; width: 6px; height: 6px; background: currentColor;
-}
-.p-node[data-state="pass"] .p-mark::after {
-  content: ""; position: absolute; left: 3px; top: -1px; width: 5px; height: 9px; box-sizing: border-box;
-  border: solid currentColor; border-width: 0 3px 3px 0; transform: rotate(45deg);
-}
-.p-node[data-state="fail"] .p-mark::before, .p-node[data-state="fail"] .p-mark::after {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 3px; height: 18px; margin: -9px 0 0 -1.5px;
-  background: currentColor; transform: rotate(45deg);
-}
-.p-node[data-state="fail"] .p-mark::after { transform: rotate(-45deg); }
-.p-node[data-state="scripted"] .p-mark { border-style: solid; background: var(--hatch); }
-.p-node[data-state="error"] .p-mark::after {
-  content: ""; position: absolute; left: 3px; right: 3px; top: 50%; height: 3px; margin-top: -1.5px; background: currentColor;
-}
-.p-node[data-state="skipped"] .p-mark::after {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 3px; height: 18px; margin: -9px 0 0 -1.5px;
-  background: currentColor; transform: rotate(45deg);
+  flex: 0 0 26px; font: 400 22px/26px var(--sans); color: var(--lede);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* ---------- 6 node states ---------- */
-.p-node[data-state="idle"] { color: var(--sec); }
+.p-node[data-state="idle"], .p-node[data-state="skipped"] { color: var(--sec); }
 .p-node[data-state="idle"] .p-cap, .p-node[data-state="skipped"] .p-cap { color: var(--sec); }
-.p-node[data-state="skipped"] { color: var(--sec); }
 .p-node[data-state="running"] { border-style: dashed; border-color: var(--ink); }
 .p-node[data-state="done"], .p-node[data-state="fail"], .p-node[data-state="pass"], .p-node[data-state="scripted"] {
   border-style: solid; border-color: var(--ink);
@@ -191,15 +154,16 @@
 /* REAL fail and REAL pass: the only solid alarm and ok fills */
 .p-node[data-fill="fail"] { background: var(--tc-bg); border-color: var(--tc-bg); color: var(--tc-fg); }
 .p-node[data-fill="pass"] { background: var(--fo-bg); border-color: var(--fo-bg); color: var(--fo-fg); }
-.p-node[data-fill] .p-cap, .p-node[data-fill] .p-fact, .p-node[data-fill] .p-tag { color: inherit; }
-/* scripted data: the underline cue of app.css is dropped (.is-sample); the hatch chip carries it */
+.p-node[data-fill] .p-cap, .p-node[data-fill] .p-fact { color: inherit; }
+/* scripted data: a hatch strip down the left edge, and the word Scripted in the state line */
+.p-node.is-sample { padding-left: 16px; background: var(--hatch) 0 0 / 10px 100% no-repeat, var(--paper); }
 
 /* ---------- 7 wires and wire labels ---------- */
-.p-e-base { fill: none; stroke: var(--sec); stroke-width: 2; stroke-dasharray: 2 5; stroke-linejoin: miter; }
+.p-e-base { fill: none; stroke: var(--sec); stroke-width: 1.5; stroke-dasharray: 2 4; stroke-linejoin: miter; }
 .p-e-head { fill: var(--sec); stroke: none; }
 .p-edge[data-state="done"] .p-e-base { stroke: var(--ink); stroke-dasharray: none; }
 .p-edge[data-state="done"] .p-e-head { fill: var(--ink); }
-.p-e-dash { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linejoin: miter; stroke-dasharray: 0 99999; }
+.p-e-dash { fill: none; stroke: var(--ink); stroke-width: 3; stroke-linejoin: miter; stroke-dasharray: 0 99999; }
 .p-elabel { position: absolute; font: 400 22px/1 var(--sans); color: var(--label); white-space: nowrap; padding: 3px 8px; }
 .p-elabel.is-mask { background: var(--paper); }
 .p-elabel[data-state="done"] { color: var(--ink); }

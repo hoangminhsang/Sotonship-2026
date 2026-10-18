@@ -41,16 +41,16 @@
 
   /* ---------- board geometry (board space) ---------- */
   var BOX_W = 300;
-  var BOX_H = 190;
+  var BOX_H = 170;
   var COL_PITCH = 320;
   var ROW_TOP = 180;
   var ROW_PITCH = 230;
-  var HEAD_LEN = 10;            /* arrowhead length */
-  var HEAD_HALF = 6;            /* arrowhead half width */
+  var HEAD_LEN = 8;             /* arrowhead length */
+  var HEAD_HALF = 5;            /* arrowhead half width */
   var TRUNK_LEFT_X = -22;
   var TRUNK_RIGHT_X = 1630;
   var AGAIN_Y = 155;            /* the "test again" run, stage y 305 */
-  var CHANNEL_Y = 390;          /* the "every change" run, between row 1 and row 2 */
+  var CHANNEL_Y = ROW_TOP + BOX_H + (ROW_PITCH - BOX_H) / 2;   /* the "every change" run, between row 1 and row 2 */
 
   var STATES = ['idle', 'running', 'done', 'fail', 'pass', 'scripted', 'error', 'skipped'];
   var DONE_STATES = ['done', 'fail', 'pass', 'scripted'];
@@ -290,23 +290,16 @@
       var g = sv('g');
       fillGlyph(g, n.id);
       svg.appendChild(g);
-      var badge = el('div', 'p-badge');
       var st = el('div', 'p-state');
-      var mark = el('span', 'p-mark');
-      mark.setAttribute('aria-hidden', 'true');
       var word = el('span', 'p-word');
       word.setAttribute('data-static', '');
-      st.appendChild(mark);
-      st.appendChild(word);
-      var scr = el('div', 'p-script');
+      var scr = el('span', 'p-script');
       scr.setAttribute('data-static', '');
       scr.hidden = true;
-      var tag = el('div', 'p-tag');
-      badge.appendChild(st);
-      badge.appendChild(scr);
-      badge.appendChild(tag);
+      st.appendChild(word);
+      st.appendChild(scr);
       top.appendChild(svg);
-      top.appendChild(badge);
+      top.appendChild(st);
       var cap = el('p', 'p-cap');
       cap.setAttribute('data-static', '');
       var fact = el('p', 'p-fact');
@@ -314,7 +307,7 @@
       li.appendChild(cap);
       li.appendChild(fact);
       ol.appendChild(li);
-      refs[n.id] = { li: li, g: g, row: st, word: word, script: scr, tag: tag, cap: cap, fact: fact, capSig: null, factSig: null, tagSig: null };
+      refs[n.id] = { li: li, g: g, word: word, script: scr, cap: cap, fact: fact, capSig: null, factSig: null };
     });
   }
 
@@ -474,23 +467,23 @@
     setAttr(li, 'data-scripted', look.scripted ? '1' : null);
     setAttr(li, 'aria-current', v && v.active === id ? 'step' : null);
     li.classList.toggle('is-sample', look.scripted);
-    var word = cState(look.state);
-    setText(r.word, word);
-    /* scripted data: the hatch strip with its word; the state word stays beside it, except for
-       a node whose state is itself "scripted" (the strip and its word are then the state) */
-    r.script.hidden = !look.scripted;
-    r.row.hidden = look.state === 'scripted';
-    if (look.scripted) setText(r.script, cState('scripted'));
+    /* one word per node. Scripted data adds the word Scripted after it (and the hatch strip);
+       a node whose state is itself "scripted" shows that word alone. */
+    var scriptedWord = cState('scripted');
+    setText(r.word, look.state === 'scripted' ? scriptedWord : cState(look.state));
+    r.script.hidden = !(look.scripted && look.state !== 'scripted');
+    if (!r.script.hidden) setText(r.script, String.fromCharCode(183) + ' ' + scriptedWord);
     var which = captionKey(id, nd, look.state);
     var text = cNode(id, which);
     var base = 'live:nodes.' + id;
-    var capSig = JSON.stringify([which, text, nd ? [nd.fact, nd.fact2, nd.tag, nd.verdict, nd.decision] : null, look.status]);
+    var capSig = JSON.stringify([which, text, nd ? [nd.fact, nd.verdict, nd.decision] : null, look.status]);
     if (r.capSig !== capSig) {
       r.capSig = capSig;
       clear(r.cap);
       r.cap.appendChild(tpl(text, nd, base, look.status));
     }
-    var factSig = JSON.stringify([nd ? [nd.fact, nd.fact2] : null, look.status]);
+    /* one fact line only; the second line (fact2) is not drawn on the board */
+    var factSig = JSON.stringify([nd ? nd.fact : null, look.status]);
     if (r.factSig !== factSig) {
       r.factSig = factSig;
       clear(r.fact);
@@ -499,21 +492,9 @@
         f1.className = 'p-f1';
         r.fact.appendChild(f1);
       }
-      if (nd && scalar(nd.fact2)) {
-        var f2 = valSpan(String(nd.fact2), base + '.fact2', look.status);
-        f2.className = 'p-f2';
-        r.fact.appendChild(f2);
-      }
     }
-    /* the tag sits under the state word, unless it only repeats that word (the gate's FAIL or PASS) */
-    var tagText = nd && scalar(nd.tag) ? String(nd.tag) : '';
-    if (tagText && tagText.toUpperCase() === word.toUpperCase()) tagText = '';
-    var tagSig = tagText + '|' + look.status;
-    if (r.tagSig !== tagSig) {
-      r.tagSig = tagSig;
-      clear(r.tag);
-      if (tagText) r.tag.appendChild(valSpan(tagText, base + '.tag', look.status));
-    }
+    var full = nd ? [nd.fact, nd.fact2].filter(scalar).join(' / ') : '';
+    setAttr(r.fact, 'title', full || null);
   }
 
   /* ---------- render: wires ---------- */
