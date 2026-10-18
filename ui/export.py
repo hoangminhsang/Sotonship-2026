@@ -1272,9 +1272,70 @@ def parse_verify(text: str) -> dict:
     return {"ok": ok, "bad_seq": bad, "detail": detail}
 
 
-def parse_manifest(text: str):
-    """Stub for the planned results/runs/<run_id>/manifest.json (not built yet)."""
-    return None
+RE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+RE_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def parse_manifest(text: str) -> dict:
+    """Check results/runs/<run_id>/manifest.json (written by lab/run_folder.py). Returns it, or raises SourceError.
+
+    A run folder is shown only when the run is locked and complete, its run_id is a plain folder name, every
+    listed file is a safe relative path with a sha256, and the manifest still matches the digest that was
+    written at the lock (an edit of the model, the digest or the defences after the run is caught here).
+    """
+    try:
+        m = json.loads(text)
+    except ValueError:
+        raise SourceError("manifest.json is not valid JSON")
+    if not isinstance(m, dict):
+        raise SourceError("manifest.json is not a JSON object")
+    if m.get("schema") != 1:
+        raise SourceError(f"manifest schema {m.get('schema')!r} is not the one this export reads")
+    if m.get("locked") is not True:
+        raise SourceError("run folder is not locked: the run did not finish")
+    if m.get("complete") is not True:
+        raise SourceError(f"run is not complete ({m.get('n_runs')} of {m.get('expected_runs')} runs)")
+    rid = m.get("run_id")
+    if not isinstance(rid, str) or not RE_RUN_ID.match(rid) or ".." in rid:
+        raise SourceError("manifest run_id is missing or not a plain folder name")
+    files = m.get("files")
+    if not isinstance(files, dict) or not files:
+        raise SourceError("manifest lists no files")
+    for rel, sha in files.items():
+        parts = str(rel).split("/")
+        if (not rel or str(rel).startswith("/") or "\\" in str(rel) or ".." in parts or "" in parts
+                or not RE_SHA256.match(str(sha))):
+            raise SourceError(f"manifest file entry {rel!r} is not a safe path with a sha256")
+    if not isinstance(m.get("model"), str) or not m["model"].strip():
+        raise SourceError("manifest names no model")
+    if parse_iso(m.get("started_at")) is None:
+        raise SourceError("manifest has no usable started_at")
+    body = {k: v for k, v in m.items() if k != "manifest_sha256"}
+    want = "sha256:" + hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    if m.get("manifest_sha256") != want:
+        raise SourceError("manifest.json was changed after the run was locked")
+    return m
+
+
+def verify_run_files(ctx: "Ctx", run_dir: str, manifest: dict) -> list:
+    """Problems between a run folder and its manifest: a file that changed, is missing, or is not listed."""
+    problems = []
+    for rel, sha in manifest["files"].items():
+        try:
+            data = read_bytes(ctx, f"{run_dir}/{rel}")
+        except SourceError:
+            problems.append(f"{rel} is missing")
+            continue
+        if "sha256:" + hashlib.sha256(data).hexdigest() != sha:
+            problems.append(f"{rel} was changed after the run was locked")
+    base = (ctx.repo_root / run_dir).resolve()
+    if ctx.repo_root.resolve() in base.parents and base.is_dir():
+        for p in sorted(base.rglob("*")):
+            rel = p.relative_to(base).as_posix()
+            if p.is_file() and rel != "manifest.json" and not any(x.startswith(".") for x in rel.split("/")) \
+                    and rel not in manifest["files"]:
+                problems.append(f"{rel} is not in the manifest")
+    return problems
 
 
 def model_default_from_agent(text: str):
@@ -1550,11 +1611,104 @@ def read_trace(ctx: Ctx, traces_dir: str, rec: dict):
     return "ok", obj, path
 
 
-def build_batch(ctx: Ctx, cfg: dict, kind: str):
-    """Build one Batch from the legacy results/ layout. kind: 'pinned' | 'local'."""
+def pending_batch(ctx: Ctx, bid: str, title: str, reason: str) -> dict:
+    """A batch that shows nothing: every field PENDING, with the reason."""
+    return {"id": bid, "title": title, "status": PENDING, "reason": reason, "source_files": [],
+            "produced": not_recorded_produced(), "replay_label": "REPLAY · run time not recorded",
+            "model": ctx.field(NOT_RECORDED, PENDING), "digest": ctx.field(NOT_RECORDED, PENDING),
+            "defences": ctx.field(NOT_RECORDED, PENDING), "driver": ctx.field(NOT_RECORDED, PENDING),
+            "has_blocked_info": False, "blocked_note": "Blocked: not recorded in this batch",
+            "shape": ctx.field("not available", PENDING), "counts": {"attack": {}, "benign": {}},
+            "summary": {}, "groups": [], "runs": {}, "error_note": ctx.field("not available", PENDING)}
+
+
+def build_run_folder_batch(ctx: Ctx, cfg: dict, kind: str) -> dict:
+    """Build one Batch from a locked run folder, results/runs/<run_id>/ (lab/run_folder.py).
+
+    The manifest is checked first (locked, complete, its own digest, the sha256 of every file); a folder that
+    fails any check shows nothing. The numbers come from runs.csv, summary.csv, the traces and records.jsonl by
+    the same code as the legacy batch. Model, digest, defences and driver come from the manifest, and the REPLAY
+    label from its started_at.
+    """
     bid = cfg["id"]
     if not RE_SAFE_ID.match(bid):
         raise SourceError(f"bad batch id {bid!r}")
+    title = cfg.get("title") or bid
+    run_dir = rel_path(cfg["run_dir"])
+    mpath = f"{run_dir}/manifest.json"
+    try:
+        m = parse_manifest(read_text(ctx, mpath)[0])
+        problems = verify_run_files(ctx, run_dir, m)
+    except SourceError as exc:
+        ctx.warn("integrity", f"{title}: {err_text(exc)}")
+        return pending_batch(ctx, bid, title, f"{run_dir} is not a usable run folder: {err_text(exc)}")
+    if problems:
+        why = "the run folder does not match its manifest (" + "; ".join(problems[:3]) + ")"
+        ctx.warn("integrity", f"{title}: {why}")
+        return pending_batch(ctx, bid, title, f"{run_dir}: {why}")
+    files = {"id": bid, "title": title, "adapter": "legacy-results", "agent_source": False,
+             "runs_csv": f"{run_dir}/runs.csv", "summary_csv": f"{run_dir}/summary.csv",
+             "traces_dir": f"{run_dir}/traces", "corpus": {"path": f"{run_dir}/records.jsonl", "rev": None}}
+    batch = build_batch(ctx, files, "local")
+
+    def mf(name, key, text):
+        return ctx.pfield(f"{bid}.{name}", text, REAL, raw_of(m.get(key)), "as written in the manifest", mpath, None,
+                          {"kind": "text", "json_path": key})
+
+    defs = m.get("defences") if isinstance(m.get("defences"), list) else []
+    batch["model"] = mf("model", "model", m["model"])
+    if isinstance(m.get("model_digest"), str) and m["model_digest"]:
+        batch["digest"] = ctx.pfield(f"{bid}.digest", short_digest(m["model_digest"]), REAL, m["model_digest"],
+                                     "first 12 hex digits of the sha256", mpath, None,
+                                     {"kind": "text", "json_path": "model_digest"})
+    batch["defences"] = mf("defences", "defences", ", ".join(str(x) for x in defs) or "none")
+    if isinstance(m.get("driver"), str) and m["driver"]:
+        batch["driver"] = mf("driver", "driver", m["driver"])
+    when = parse_iso(m["started_at"]).isoformat(timespec="seconds")
+    pid = ctx.add_prov(f"{bid}.produced", REAL, f"run of {when}", m["started_at"], "as written in the manifest",
+                       mpath, None, {"kind": "text", "json_path": "started_at"})
+    batch["replay_label"] = f"REPLAY · run of {when}"
+    batch["produced"] = {"basis": "manifest-started_at", "text": f"run of {when}", "raw": m["started_at"],
+                         "prov": pid}
+    batch["source_files"] = [mpath] + [f for f in batch["source_files"] if f != mpath]
+    batch["run_id"], batch["candidate"] = m["run_id"], m.get("candidate")
+    batch["pinned"], batch["rev"], batch["traces_note"] = False, None, None
+    return batch
+
+
+def run_folder_configs(ctx: Ctx, rf: dict) -> list:
+    """Batch configs for the run folders that sources.json run_folders asks for, newest run first.
+
+    Order is by the started_at in each manifest (content time, never the file time), at most max_batches.
+    A folder with an unreadable manifest is listed last: its batch shows the reason.
+    """
+    pattern = rel_path(rf.get("glob") or "results/runs/*/manifest.json")
+    found = []
+    for mp in sorted(ctx.repo_root.glob(pattern)):
+        run_dir = mp.parent.relative_to(ctx.repo_root).as_posix()
+        try:
+            m = json.loads(mp.read_text(encoding="utf-8"))
+            started = parse_iso(m.get("started_at")) if isinstance(m, dict) else None
+            cand = str(m.get("candidate") or "run") if isinstance(m, dict) else "run"
+        except (OSError, ValueError):
+            started, cand = None, "run"
+        found.append((started.isoformat() if started else "", mp.parent.name, run_dir, cand))
+    found.sort(reverse=True)
+    cap = rf.get("max_batches") if isinstance(rf.get("max_batches"), int) and rf["max_batches"] > 0 else 4
+    out = []
+    for _started, name, run_dir, cand in found[:cap]:
+        out.append({"id": "run_" + re.sub(r"[^A-Za-z0-9_-]", "-", name), "title": f"Run {cand} ({name})",
+                    "adapter": "run-folder", "run_dir": run_dir})
+    return out
+
+
+def build_batch(ctx: Ctx, cfg: dict, kind: str):
+    """Build one Batch from the legacy results/ layout or from a run folder. kind: 'pinned' | 'local'."""
+    bid = cfg["id"]
+    if not RE_SAFE_ID.match(bid):
+        raise SourceError(f"bad batch id {bid!r}")
+    if cfg.get("adapter") == "run-folder":
+        return build_run_folder_batch(ctx, cfg, kind)
     if cfg.get("adapter", "legacy-results") != "legacy-results":
         raise SourceError(f"{bid}: adapter {cfg.get('adapter')!r} is not built yet")
     title = cfg.get("title") or bid
@@ -1614,6 +1768,8 @@ def build_batch(ctx: Ctx, cfg: dict, kind: str):
     agent_cfg = cfg.get("agent_source") or {"path": "lab/agent.py", "rev": None}
     model_field = ctx.field(NOT_RECORDED, PENDING)
     try:
+        if cfg.get("agent_source") is False:   # a run folder names its model in the manifest
+            raise SourceError("the manifest names the model")
         arev = agent_cfg.get("rev") if ctx.git_ok else None
         atext, _ = read_text(ctx, agent_cfg["path"], arev)
         mdl, mline = model_default_from_agent(atext)
@@ -1621,7 +1777,8 @@ def build_batch(ctx: Ctx, cfg: dict, kind: str):
                                  '"not recorded (lab default: {raw})"', rel_path(agent_cfg["path"]), arev,
                                  {"kind": "text", "line": mline, "key": "agent.model_default"})
     except Exception as exc:  # noqa: BLE001
-        ctx.warn("info", f"{title}: lab default model unknown ({err_text(exc)}).")
+        if cfg.get("agent_source") is not False:
+            ctx.warn("info", f"{title}: lab default model unknown ({err_text(exc)}).")
 
     if recs is None and summary_rows is None:
         batch["reason"] = batch["reason"] or "No readable results files."
@@ -2982,14 +3139,7 @@ def build_demo(ctx: Ctx) -> dict:
             continue
         b = safe(ctx, f"Batch {cfg.get('id')}", build_batch, ctx, cfg, "pinned")
         if b is None:
-            b = {"id": cfg["id"], "title": cfg.get("title") or cfg["id"], "status": PENDING,
-                 "reason": "The batch could not be built.", "source_files": [], "produced": not_recorded_produced(),
-                 "replay_label": "REPLAY \u00b7 run time not recorded",
-                 "model": ctx.field(NOT_RECORDED, PENDING), "digest": ctx.field(NOT_RECORDED, PENDING),
-                 "defences": ctx.field(NOT_RECORDED, PENDING), "driver": ctx.field(NOT_RECORDED, PENDING),
-                 "has_blocked_info": False, "blocked_note": "Blocked: not recorded in this batch",
-                 "shape": ctx.field("not available", PENDING), "counts": {"attack": {}, "benign": {}},
-                 "summary": {}, "groups": [], "runs": {}, "error_note": ctx.field("not available", PENDING)}
+            b = pending_batch(ctx, cfg["id"], cfg.get("title") or cfg["id"], "The batch could not be built.")
         if b["id"] in batches:
             ctx.warn("integrity", f"sources.json repeats batch id {b['id']}; second one skipped.")
             continue
@@ -3003,14 +3153,29 @@ def build_demo(ctx: Ctx) -> dict:
     if ll.get("enabled"):
         safe(ctx, "Latest local run", add_latest_local, ctx, ll, batches, order)
 
+    run_ids = []
     rf = src.get("run_folders") or {}
     if rf.get("enabled"):
-        ctx.warn("info", "run_folders adapter is not built yet; provisional until docs/DATA_CONTRACT.md exists.")
+        found = safe(ctx, "Run folders", run_folder_configs, ctx, rf) or []
+        if not found:
+            ctx.warn("info", f"run_folders is on, but no run folder matches {rf.get('glob') or 'results/runs/*'}.")
+        for cfg in found:
+            b = safe(ctx, f"Run folder {cfg['id']}", build_batch, ctx, cfg, "local")
+            if b is None:
+                b = pending_batch(ctx, cfg["id"], cfg["title"], "The run folder could not be read.")
+            if b["id"] not in batches:
+                batches[b["id"]] = b
+                order.append(b["id"])
+                run_ids.append(b["id"])
 
     for bid in order:
         safe(ctx, f"Batch {bid} checks", consistency_checks_batch, ctx, batches[bid])
 
     current = src.get("current_batch")
+    if current == "newest-run":   # the newest run folder, if there is one; else the first batch
+        current = run_ids[0] if run_ids else (order[0] if order else None)
+        if not run_ids:
+            ctx.warn("info", "current_batch is newest-run, but there is no run folder; showing the first batch.")
     if current not in batches:
         ctx.warn("integrity", f"current_batch {current!r} is not a known batch.")
         current = order[0] if order else None

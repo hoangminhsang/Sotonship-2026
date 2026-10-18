@@ -1055,3 +1055,189 @@ def test_main_writes_numbers_json_beside_demo_js_and_embeds_the_same_object(ex, 
     assert sheet["policy.max_asr"]["text"] == f"{limit:.1%}"
     text = (tmp_path / "out" / "numbers.json").read_text(encoding="utf-8")
     assert "/Users/" not in text and str(Path.home()) not in text
+
+
+# --------------------------------------------------------------------------- #
+# A5.1: run folders (results/runs/<run_id>/) replace the rehearsal batch.
+# The folders are made by the real runner with a stub agent: offline, locked, hashed.
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def run_repo(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from lab import corpus, runner
+
+    def fake_run_task(ag, task):
+        return SimpleNamespace(final_text="ok", tool_calls=[{"name": "query_assets", "args": {"asset_id": "VAULT-01"}}],
+                               error=None)
+
+    def boom(*a, **k):
+        raise AssertionError("must not be called on the run path")
+
+    monkeypatch.setattr(runner.agent, "run_task", fake_run_task)
+    monkeypatch.setattr(runner, "model_digest", boom)
+    monkeypatch.setattr(runner, "clear_traces", boom)
+    monkeypatch.setattr(runner, "TRACES", tmp_path / "legacy-traces")
+    tests = corpus.read_jsonl(corpus.TEST_PATH)
+    records = [t for t in tests if t["kind"] == "attack"][:2] + [t for t in tests if t["kind"] == "benign"][:2]
+
+    def make(candidate="RC-001", defences=()):
+        list(runner.run_split(records, reps=2, digest="sha256:" + "cd" * 32, make_agent=lambda w, t: (object(), []),
+                              runs_root=tmp_path / "results" / "runs", candidate=candidate, split="test",
+                              defences=defences))
+        return sorted((tmp_path / "results" / "runs").glob(f"*_{candidate}"))[-1]
+
+    return SimpleNamespace(root=tmp_path, make=make, records=records)
+
+
+def _rewrite_manifest(run_dir: Path, **changes) -> str:
+    """Change fields of a locked manifest and fix its own digest, as a careful forger would."""
+    from lab import run_folder
+
+    path = run_dir / "manifest.json"
+    path.chmod(0o644)
+    m = json.loads(path.read_text(encoding="utf-8"))
+    m.update(changes)
+    for k in [k for k, v in changes.items() if v is ...]:
+        m.pop(k)
+    m["manifest_sha256"] = run_folder.manifest_digest(m)
+    text = json.dumps(m, indent=2, sort_keys=True)
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
+def test_parse_manifest_accepts_a_locked_complete_run(ex, run_repo):
+    run_dir = run_repo.make()
+    text = (run_dir / "manifest.json").read_text(encoding="utf-8")
+    m = ex.parse_manifest(text)
+    assert m["run_id"] == run_dir.name and m["locked"] is True and m["complete"] is True
+
+
+@pytest.mark.parametrize("changes, why", [
+    ({"schema": 2}, "schema"),
+    ({"locked": False}, "locked"),
+    ({"complete": False}, "complete"),
+    ({"run_id": "../elsewhere"}, "run_id"),
+    ({"run_id": ""}, "run_id"),
+    ({"files": {"../outside.csv": "sha256:" + "0" * 64}}, "safe path"),
+    ({"files": {"runs.csv": "md5:abc"}}, "safe path"),
+    ({"files": {}}, "no files"),
+    ({"model": ""}, "model"),
+])
+def test_parse_manifest_refuses_a_manifest_that_is_not_a_finished_run(ex, run_repo, changes, why):
+    text = _rewrite_manifest(run_repo.make(), **changes)
+    with pytest.raises(ex.SourceError, match=why):
+        ex.parse_manifest(text)
+
+
+def test_parse_manifest_refuses_a_manifest_edited_after_the_lock(ex, run_repo):
+    run_dir = run_repo.make()
+    path = run_dir / "manifest.json"
+    path.chmod(0o644)
+    text = path.read_text(encoding="utf-8").replace('"model": "', '"model": "x-', 1)
+    with pytest.raises(ex.SourceError, match="changed after"):
+        ex.parse_manifest(text)
+    for broken in ("{not json", "[]", ""):
+        with pytest.raises(ex.SourceError):
+            ex.parse_manifest(broken)
+
+
+def test_run_files_are_checked_against_the_manifest_hashes(ex, run_repo):
+    run_dir = run_repo.make()
+    ctx = make_ctx(ex, run_repo.root)
+    rel = run_dir.relative_to(run_repo.root).as_posix()
+    manifest = ex.parse_manifest((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert ex.verify_run_files(ctx, rel, manifest) == []
+    (run_dir / "runs.csv").chmod(0o644)
+    (run_dir / "runs.csv").write_text((run_dir / "runs.csv").read_text(encoding="utf-8") + "extra\n", encoding="utf-8")
+    (run_dir / "notes.txt").write_text("added later", encoding="utf-8")
+    (run_dir / "records.jsonl").unlink()
+    ctx = make_ctx(ex, run_repo.root)
+    problems = ex.verify_run_files(ctx, rel, manifest)
+    assert any("runs.csv" in p and "changed" in p for p in problems), problems
+    assert any("records.jsonl" in p and "missing" in p for p in problems), problems
+    assert any("notes.txt" in p for p in problems), problems
+
+
+def _run_cfg(run_dir: Path, root: Path, bid: str = "rc001") -> dict:
+    return {"id": bid, "title": "Run RC-001", "adapter": "run-folder", "run_dir": run_dir.relative_to(root).as_posix()}
+
+
+def test_a_run_folder_becomes_a_real_batch_from_its_manifest(ex, run_repo):
+    import datetime as dt
+
+    run_dir = run_repo.make(defences=("D2",))
+    ctx = make_ctx(ex, run_repo.root)
+    batch = ex.build_batch(ctx, _run_cfg(run_dir, run_repo.root), "local")
+    m = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert batch["status"] == ex.REAL and not batch["reason"]
+    assert (batch["model"]["text"], batch["model"]["status"]) == (m["model"], ex.REAL)
+    assert (batch["digest"]["text"], batch["digest"]["status"]) == ("sha256:" + "cd" * 6, ex.REAL)
+    assert (batch["defences"]["text"], batch["driver"]["text"]) == ("D2", "native")
+    when = dt.datetime.fromisoformat(m["started_at"]).isoformat(timespec="seconds")
+    assert batch["replay_label"] == f"REPLAY · run of {when}"
+    assert batch["produced"]["text"] == f"run of {when}" and batch["produced"]["raw"] == m["started_at"]
+    # the counts are the rows of runs.csv
+    import csv
+
+    rows = list(csv.DictReader((run_dir / "runs.csv").open(encoding="utf-8")))
+    assert batch["counts"]["attack"]["runs"]["text"] == str(sum(1 for r in rows if r["kind"] == "attack"))
+    assert batch["counts"]["benign"]["runs"]["text"] == str(sum(1 for r in rows if r["kind"] == "benign"))
+    assert batch["summary"]["attack_success_rate"]["measured"] is True
+    assert batch["runs"], "the tiles come from runs.csv and the traces"
+    assert any(f.endswith("manifest.json") for f in batch["source_files"])
+    assert ex.self_check(ctx, list(ctx.prov.values())) == []
+    assert not [w for w in ctx.warnings if w["level"] == "integrity"], ctx.warnings
+
+
+def test_a_run_folder_that_no_longer_matches_its_manifest_is_pending_with_a_warning(ex, run_repo):
+    run_dir = run_repo.make()
+    (run_dir / "runs.csv").chmod(0o644)
+    (run_dir / "runs.csv").write_text("test_id,kind\n", encoding="utf-8")
+    ctx = make_ctx(ex, run_repo.root)
+    batch = ex.build_batch(ctx, _run_cfg(run_dir, run_repo.root), "local")
+    assert batch["status"] == ex.PENDING and "runs.csv" in batch["reason"] and "manifest" in batch["reason"]
+    assert any(w["level"] == "integrity" and "runs.csv" in w["text"] for w in ctx.warnings), ctx.warnings
+    assert batch["model"]["status"] == ex.PENDING          # nothing of this run is shown
+
+
+def test_an_unfinished_run_folder_is_pending(ex, run_repo):
+    run_dir = run_repo.make()
+    _rewrite_manifest(run_dir, complete=False, n_runs=3)
+    ctx = make_ctx(ex, run_repo.root)
+    batch = ex.build_batch(ctx, _run_cfg(run_dir, run_repo.root), "local")
+    assert batch["status"] == ex.PENDING and "not complete" in batch["reason"]
+
+
+def test_run_folders_are_listed_newest_first_and_capped(ex, run_repo):
+    first = run_repo.make("RC-001")
+    second = run_repo.make("RC-002")
+    _rewrite_manifest(first, started_at="2026-10-18T06:00:00+00:00")
+    _rewrite_manifest(second, started_at="2026-10-18T07:30:00+00:00")
+    ctx = make_ctx(ex, run_repo.root)
+    cfgs = ex.run_folder_configs(ctx, {"enabled": True, "glob": "results/runs/*/manifest.json", "max_batches": 4})
+    assert [c["run_dir"].rsplit("_", 1)[-1] for c in cfgs] == ["RC-002", "RC-001"]
+    assert all(c["adapter"] == "run-folder" and ex.RE_SAFE_ID.match(c["id"]) for c in cfgs)
+    assert len({c["id"] for c in cfgs}) == 2
+    assert len(ex.run_folder_configs(ctx, {"enabled": True, "max_batches": 1})) == 1
+    for bad in ("/etc/*/manifest.json", "../x/*/manifest.json"):
+        with pytest.raises(ex.SourceError):
+            ex.run_folder_configs(ctx, {"enabled": True, "glob": bad})
+
+
+def test_the_screens_can_show_the_newest_run_folder_instead_of_the_rehearsal(ex, run_repo):
+    older = run_repo.make("RC-001")
+    newer = run_repo.make("RC-002", defences=("D2",))
+    _rewrite_manifest(older, started_at="2026-10-18T06:00:00+00:00")
+    _rewrite_manifest(newer, started_at="2026-10-18T07:30:00+00:00")
+    sources = {"schema": ex.SOURCES_SCHEMA, "repo_root": ".", "current_batch": "newest-run", "batches": [],
+               "run_folders": {"enabled": True, "glob": "results/runs/*/manifest.json", "max_batches": 4}}
+    ctx = ex.Ctx(ex.parse_args(["--no-git"]), run_repo.root / "sources.json", sources, run_repo.root)
+    ex.init_git(ctx)
+    demo = ex.build_demo(ctx)
+    ids = [b["id"] for b in demo["batches"]]
+    assert len(ids) == 2 and demo["current_batch"] == ids[0], (ids, demo["current_batch"])   # newest first
+    newest = demo["batches"][0]
+    assert newest["status"] == ex.REAL and newest["defences"]["text"] == "D2"
+    assert demo["console"]["evidence_batch"] == demo["current_batch"]
+    assert not [w for w in demo["warnings"] if "not built yet" in w["text"]]
