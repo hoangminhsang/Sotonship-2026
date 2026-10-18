@@ -77,11 +77,14 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 SCHEMA_LIVE = "ui-live/1"
 SCHEMA_REPLAY = "ui-replay/1"
@@ -1718,6 +1721,149 @@ def bake(src, out_path, speed: float = DEFAULT_SPEED, scale: float = 1.0, limit:
 
 
 # --------------------------------------------------------------------------- #
+# --serve: the ui/ folder on http://127.0.0.1:<port>/ (this computer only).
+#   GET and HEAD only; files under ui/ only (the resolved path is checked, so a
+#   symbolic link out of ui/ is refused); no directory listing; every answer says
+#   Cache-Control: no-store and X-Content-Type-Options: nosniff; no CORS headers;
+#   a Host header that is not this server is refused (DNS rebinding).
+# --------------------------------------------------------------------------- #
+SERVE_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+}   # a fixed table: the Windows registry can map .js to text/plain
+
+
+class UiHandler(BaseHTTPRequestHandler):
+    server_version = "RedlineBridge"
+    sys_version = ""
+    ui_root: Path = UI_DIR.resolve()
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        super().end_headers()
+
+    def log_message(self, format, *args) -> None:  # noqa: A002 - quiet: no request log on the console
+        return
+
+    def _reply(self, code: int, body: bytes = b"", ctype: str = "text/plain; charset=utf-8", extra=None) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _host_ok(self) -> bool:
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return True
+        port = self.server.server_address[1]
+        return host in (f"127.0.0.1:{port}", f"localhost:{port}", "127.0.0.1", "localhost")
+
+    def _target(self) -> Optional[Path]:
+        """The file a request path names, or None. Anything odd is None (a 404)."""
+        raw = self.path.split("?", 1)[0].split("#", 1)[0]
+        if not raw.startswith("/"):
+            return None
+        try:
+            decoded = unquote(raw, errors="strict")
+        except UnicodeDecodeError:
+            return None
+        if "\x00" in decoded or "\\" in decoded:
+            return None
+        parts = [p for p in decoded.split("/") if p]
+        if parts and decoded.endswith("/"):
+            return None                     # a folder (or a file written as one): no listing
+        if any(p in (".", "..") or p.startswith(".") for p in parts):
+            return None
+        root = self.ui_root
+        candidate = root.joinpath(*parts) if parts else root / "index.html"
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        if not resolved.is_file() or resolved.suffix.lower() not in CONTENT_TYPES:
+            return None
+        return resolved
+
+    def _serve(self) -> None:
+        if not self._host_ok():
+            self._reply(403, b"forbidden\n")
+            return
+        target = self._target()
+        if target is None:
+            self._reply(404, b"not found\n")
+            return
+        try:
+            data = target.read_bytes()
+        except OSError:
+            self._reply(404, b"not found\n")
+            return
+        self._reply(200, data, CONTENT_TYPES[target.suffix.lower()])
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._serve()
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self._serve()
+
+    def _not_allowed(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if 0 < length <= 1_000_000:
+            self.rfile.read(length)         # read the body so the client sees the answer, not a reset
+        self._reply(405, b"method not allowed\n", extra={"Allow": "GET, HEAD"})
+
+    def __getattr__(self, name: str):
+        if name.startswith("do_"):
+            return self._not_allowed          # POST, PUT, DELETE, OPTIONS, anything else
+        raise AttributeError(name)
+
+
+class UiServer(ThreadingHTTPServer):
+    allow_reuse_address = not IS_WINDOWS     # on Windows, reuse would let another program share the port
+    daemon_threads = True
+
+
+def make_server(port: int = DEFAULT_PORT, root=UI_DIR) -> UiServer:
+    """A web server for the ui/ folder on 127.0.0.1 (never any other address)."""
+    handler = type("BoundUiHandler", (UiHandler,), {"ui_root": Path(root).resolve()})
+    try:
+        return UiServer((SERVE_HOST, port), handler)
+    except OSError as exc:
+        raise BridgeError(f"port {port} is already in use or not allowed ({exc.strerror or exc}); "
+                          f"try another with --port") from exc
+
+
+def serve_in_thread(server: UiServer) -> threading.Thread:
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
+    thread.start()
+    return thread
+
+
+# --------------------------------------------------------------------------- #
 # Command line.
 # --------------------------------------------------------------------------- #
 USAGE_TEXT = """\
@@ -1755,6 +1901,16 @@ def _non_negative_float(text: str) -> float:
     return value
 
 
+def _port(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a port number")
+    if not 0 <= value <= 65535:
+        raise argparse.ArgumentTypeError("a port is a number from 0 to 65535")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="bridge.py", description="Feed the pipeline screen from a run's progress.jsonl "
@@ -1768,6 +1924,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--speed", type=_positive_float, default=DEFAULT_SPEED, metavar="N",
                    help="replay speed: recorded gaps divided by N, at most 3 s each (default 4)")
     p.add_argument("--loop", action="store_true", help="with --replay: start again after a pause")
+    p.add_argument("--serve", action="store_true",
+                   help="also serve the ui/ folder on http://127.0.0.1:PORT/ (this computer only)")
+    p.add_argument("--port", type=_port, default=None, metavar="PORT", help="with --serve (default 8765)")
     p.add_argument("--data-dir", metavar="DIR", default=None, help="folder for live.js and replay.js (default ui/data)")
     p.add_argument("--pace-scale", type=_non_negative_float, default=1.0, help=argparse.SUPPRESS)
     return p
@@ -1819,30 +1978,54 @@ def _run_replay(args, data_dir: Path) -> int:
     return 0
 
 
+def _wait_for_ctrl_c() -> None:
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        _say("bridge: stopped")
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not (args.follow or args.follow_latest or args.replay or args.bake):
-        parser.error("choose a mode: --follow, --follow-latest, --replay or --bake")
+    if not (args.follow or args.follow_latest or args.replay or args.bake or args.serve):
+        parser.error("choose a mode: --follow, --follow-latest, --replay, --bake or --serve")
     if args.loop and not args.replay:
         parser.error("--loop needs --replay")
+    if args.port is not None and not args.serve:
+        parser.error("--port needs --serve")
     data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
+    server = None
     try:
         clean_stale_temp(data_dir)
+        if args.serve:
+            server = make_server(DEFAULT_PORT if args.port is None else args.port)
+            serve_in_thread(server)
+            _say(f"bridge: serving ui/ at http://{SERVE_HOST}:{server.server_address[1]}/ "
+                 "(this computer only). Ctrl-C stops.")
+        rc = 0
         if args.bake:
             out = data_dir / "replay.js"
             frames = bake(args.bake, out, speed=args.speed, scale=args.pace_scale)
             _say(f"bridge: wrote {display_path(out)} ({frames} frames)")
-            return 0
-        if args.replay:
-            return _run_replay(args, data_dir)
-        return _run_follow(args, data_dir)
+        elif args.replay:
+            rc = _run_replay(args, data_dir)
+        elif args.follow or args.follow_latest:
+            rc = _run_follow(args, data_dir)
+        if server is not None and not (args.follow or args.follow_latest):
+            _wait_for_ctrl_c()              # bake and replay end by themselves; keep the page served
+        return rc
     except BridgeError as exc:
         print(f"bridge: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print("bridge: stopped", file=sys.stderr)
         return 0
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":  # pragma: no cover

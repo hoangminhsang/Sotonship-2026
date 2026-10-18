@@ -1855,3 +1855,220 @@ def test_main_without_a_mode_prints_help_and_fails(capsys):
     with pytest.raises(SystemExit) as exc:
         bridge.main([])
     assert exc.value.code == 2
+
+
+# --------------------------------------------------------------------------- #
+# Step 4: --serve (127.0.0.1 only, GET and HEAD only, files under ui/ only).
+# --------------------------------------------------------------------------- #
+import http.client  # noqa: E402
+import socket  # noqa: E402
+import threading  # noqa: E402
+
+
+@pytest.fixture
+def served(tmp_path):
+    """A running bridge web server over a small temporary ui/ folder, plus a secret outside it."""
+    root = tmp_path / "ui"
+    (root / "data").mkdir(parents=True)
+    (root / "fonts").mkdir()
+    (root / "index.html").write_text("<!doctype html><title>t</title>", encoding="utf-8")
+    (root / "app.js").write_text("var a = 1;", encoding="utf-8")
+    (root / "app.css").write_text("body{}", encoding="utf-8")
+    (root / "data" / "live.js").write_text("window.LIVE = null;\n", encoding="utf-8")
+    (root / "data" / "demo.json").write_text("{}", encoding="utf-8")
+    (root / "fonts" / "x.woff2").write_bytes(b"wOF2\x00\x01")
+    (root / "bridge.py").write_text("print('secret source')", encoding="utf-8")
+    (root / "notes.md").write_text("# notes", encoding="utf-8")
+    (root / ".hidden.js").write_text("var hidden = 1;", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("TOP SECRET", encoding="utf-8")
+    server = bridge.make_server(port=0, root=root)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    yield server, server.server_address[1], root
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
+def fetch(port, method, path, headers=None, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        data = resp.read()
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, data
+    finally:
+        conn.close()
+
+
+def test_server_binds_to_loopback_only(served):
+    server, port, _ = served
+    assert server.server_address[0] == "127.0.0.1"
+    assert bridge.SERVE_HOST == "127.0.0.1"
+
+
+def test_get_serves_files_under_ui_with_the_right_headers(served):
+    _, port, root = served
+    expect = {"/index.html": ("text/html; charset=utf-8", b"<!doctype html><title>t</title>"),
+              "/app.js": ("text/javascript; charset=utf-8", b"var a = 1;"),
+              "/app.css": ("text/css; charset=utf-8", b"body{}"),
+              "/data/live.js": ("text/javascript; charset=utf-8", b"window.LIVE = null;\n"),
+              "/data/demo.json": ("application/json; charset=utf-8", b"{}"),
+              "/fonts/x.woff2": ("font/woff2", b"wOF2\x00\x01")}
+    for path, (ctype, body) in expect.items():
+        status, headers, data = fetch(port, "GET", path)
+        assert status == 200, path
+        assert data == body and headers["content-type"] == ctype
+        assert headers["cache-control"] == "no-store"
+        assert headers["x-content-type-options"] == "nosniff"
+        assert headers["content-length"] == str(len(body))
+        assert not any(h.startswith("access-control-") for h in headers)
+
+
+def test_the_root_path_serves_index_html(served):
+    _, port, _ = served
+    status, _, data = fetch(port, "GET", "/")
+    assert status == 200 and data.startswith(b"<!doctype html>")
+
+
+def test_a_query_string_is_ignored(served):
+    _, port, _ = served
+    assert fetch(port, "GET", "/app.js?x=1&y=2")[0] == 200
+
+
+def test_head_sends_the_headers_and_no_body(served):
+    _, port, _ = served
+    status, headers, data = fetch(port, "HEAD", "/app.js")
+    assert status == 200 and data == b""
+    assert headers["content-length"] == str(len(b"var a = 1;"))
+    assert headers["cache-control"] == "no-store" and headers["x-content-type-options"] == "nosniff"
+    assert fetch(port, "HEAD", "/nope.js")[0] == 404
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "PROPFIND"])
+def test_other_methods_get_405_with_the_security_headers(served, method):
+    _, port, _ = served
+    status, headers, _ = fetch(port, method, "/app.js", body=b"x" if method in ("POST", "PUT", "PATCH") else None)
+    assert status == 405
+    assert headers["allow"] == "GET, HEAD"
+    assert headers["cache-control"] == "no-store" and headers["x-content-type-options"] == "nosniff"
+    assert not any(h.startswith("access-control-") for h in headers)
+
+
+def test_missing_files_and_directories_are_404_and_never_listed(served):
+    _, port, _ = served
+    for path in ("/nope.js", "/data/", "/data", "/fonts/", "/fonts", "/data/missing.js", "/index.html/"):
+        status, headers, data = fetch(port, "GET", path)
+        assert status == 404, path
+        assert b"live.js" not in data and b"app.js" not in data         # no listing
+        assert headers["cache-control"] == "no-store" and headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize("path", [
+    "/../secret.txt", "/%2e%2e/secret.txt", "/..%2fsecret.txt", "/%2e%2e%2fsecret.txt",
+    "/data/../../secret.txt", "/data/%2e%2e/%2e%2e/secret.txt", "/..\\secret.txt", "/data/..\\..\\secret.txt",
+    "//secret.txt", "///etc/passwd", "/data/%00.js", "/app.js%00.png", "/%2e%2e/%2e%2e/etc/passwd",
+    "/./app.js", "/data/./live.js", "/.hidden.js", "/data/.live-1.tmp", "/..", "/%2e%2e", "/%252e%252e/secret.txt",
+])
+def test_paths_that_leave_ui_or_look_odd_are_404(served, path):
+    _, port, _ = served
+    status, _, data = fetch(port, "GET", path)
+    assert status == 404, path
+    assert b"TOP SECRET" not in data
+
+
+def test_a_symlink_that_points_outside_ui_is_not_followed(served, tmp_path):
+    _, port, root = served
+    link = root / "linked.js"
+    try:
+        link.symlink_to(tmp_path / "secret.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available here")
+    status, _, data = fetch(port, "GET", "/linked.js")
+    assert status == 404 and b"TOP SECRET" not in data
+
+
+def test_only_web_file_types_are_served(served):
+    _, port, _ = served
+    for path in ("/bridge.py", "/notes.md"):
+        assert fetch(port, "GET", path)[0] == 404, path
+
+
+def test_a_foreign_host_header_is_refused(served):
+    _, port, _ = served
+    assert fetch(port, "GET", "/app.js", headers={"Host": "evil.example"})[0] == 403
+    assert fetch(port, "GET", "/app.js", headers={"Host": f"evil.example:{port}"})[0] == 403
+    assert fetch(port, "GET", "/app.js", headers={"Host": f"localhost:{port}"})[0] == 200
+    assert fetch(port, "GET", "/app.js", headers={"Host": f"127.0.0.1:{port}"})[0] == 200
+
+
+def test_the_page_always_gets_the_latest_live_js(served):
+    _, port, root = served
+    assert fetch(port, "GET", "/data/live.js")[2] == b"window.LIVE = null;\n"
+    bridge.write_atomic(root / "data" / "live.js", 'window.LIVE = {"rev":2};\n')
+    status, headers, data = fetch(port, "GET", "/data/live.js")
+    assert data == b'window.LIVE = {"rev":2};\n' and headers["cache-control"] == "no-store"
+
+
+def test_the_real_ui_folder_is_served_from_its_index():
+    server = bridge.make_server(port=0)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        assert fetch(port, "GET", "/index.html")[0] == 200
+        assert fetch(port, "GET", "/data/live.js")[0] == 200
+        assert fetch(port, "GET", "/bridge.py")[0] == 404
+        assert fetch(port, "GET", "/export.py")[0] == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_busy_port_is_reported_in_one_line(served):
+    _, port, _ = served
+    with pytest.raises(bridge.BridgeError) as exc:
+        bridge.make_server(port=port)
+    assert str(port) in str(exc.value) and "in use" in str(exc.value)
+
+
+def test_the_server_never_listens_on_other_interfaces(served):
+    _, port, _ = served
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        pytest.skip("this computer's name does not resolve")
+    others = {info[4][0] for info in infos} - {"127.0.0.1"}
+    for ip in others:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        try:
+            assert s.connect_ex((ip, port)) != 0, ip
+        finally:
+            s.close()
+
+
+def test_main_serve_alone_serves_until_interrupted(tmp_path, monkeypatch, capsys):
+    calls = {"n": 0}
+
+    def interrupt(_s):
+        calls["n"] += 1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bridge.time, "sleep", interrupt)
+    assert bridge.main(["--serve", "--port", "0", "--data-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:" in out and calls["n"] >= 1
+
+
+@pytest.mark.parametrize("argv", [
+    ["--port", "9000"],                          # --port without --serve
+    ["--serve", "--port", "70000"],
+    ["--serve", "--port", "-1"],
+    ["--serve", "--port", "abc"],
+])
+def test_main_rejects_bad_serve_arguments(argv):
+    with pytest.raises(SystemExit) as exc:
+        bridge.main(argv)
+    assert exc.value.code == 2
