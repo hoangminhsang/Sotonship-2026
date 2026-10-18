@@ -315,7 +315,13 @@ def run(args: argparse.Namespace) -> int:
     if saved_before is not None:
         tests = saved_before[1]  # the exact records the saved run used
     else:
-        corpus.build_and_write()
+        # Read-only check. The old build_and_write() rewrote corpus/*.jsonl on every
+        # run, so two runs started together raced each other on the same files.
+        try:
+            corpus.check_matches_generator()
+        except corpus.CorpusMismatch as exc:
+            print(f"error: {' '.join(str(exc).split())}", file=sys.stderr)
+            return 2
         tests = corpus.read_jsonl(corpus.TEST_PATH)
     tests_by_id = {t["id"]: t for t in tests}
     n_attack = sum(t["kind"] == "attack" for t in tests)

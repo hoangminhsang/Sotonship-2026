@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lab import corpus
 from lab.governance import audit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -221,3 +222,38 @@ def test_help_text_states_real_defaults(gov):
     assert "--no-tamper-demo" in text
     joined = re.sub(r"\n\s+", "", text)  # argparse wraps the long absolute default path
     assert "governance_out/cli_demo" in joined
+
+
+# --------------------------------------------------------------------------- #
+# Race fix: a DEMO run reads the corpus, it never rewrites it.
+# --------------------------------------------------------------------------- #
+def _corpus_state() -> dict:
+    return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (corpus.DEV_PATH, corpus.TEST_PATH)}
+
+
+def test_demo_run_leaves_the_corpus_untouched(gov, tmp_path):
+    """Two runs at once must not rewrite corpus/*.jsonl under each other (bytes AND mtime)."""
+    before = _corpus_state()
+    assert _demo(gov, tmp_path / "gov") == 0
+    assert _corpus_state() == before
+
+
+def test_corpus_mismatch_exits_2_with_one_line_and_writes_nothing(gov, tmp_path, monkeypatch, capsys):
+    """A corpus that differs from the generator stops the run (exit 2); it is never rewritten."""
+    def mismatch(*a, **k):
+        raise corpus.CorpusMismatch("corpus file(s) ['test.jsonl'] differ from the seed-7 generator output.")
+
+    def no_rewrite(*a, **k):
+        raise AssertionError("the CLI must not rewrite the corpus")
+
+    monkeypatch.setattr(corpus, "check_matches_generator", mismatch)
+    monkeypatch.setattr(corpus, "build_and_write", no_rewrite)
+    before = _corpus_state()
+    out = tmp_path / "gov"
+    assert _demo(gov, out) == 2
+    captured = capsys.readouterr()
+    lines = [ln for ln in captured.err.splitlines() if ln.strip()]
+    assert len(lines) == 1 and "test.jsonl" in lines[0] and lines[0].startswith("error:"), captured.err
+    assert not (out / "audit_log.jsonl").exists()      # stopped before any artifact
+    assert _corpus_state() == before
+
