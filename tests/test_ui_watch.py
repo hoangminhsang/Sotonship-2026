@@ -290,3 +290,9 @@ def test_once_with_null_missing_or_half_written_file(tmp_path, capsys):
     p.write_text('window.LIVE = {"state"', encoding="utf-8")
     assert watch.main(["--file", str(p), "--once", "--no-color"]) == 0
     assert "waiting for a run" in capsys.readouterr().out
+
+
+def test_tickets_item_uses_the_bridge_first_field():
+    # ui/bridge.py names the first ticket's title "first"
+    line = watch.Watcher._item_line({"seq": 1, "type": "tickets", "rows": 3, "first": "Build D2 for V_read_restricted"})
+    assert line is not None and line[0] == "fix raised  Build D2 for V_read_restricted"

@@ -315,7 +315,7 @@ class Watcher:
             text = "chain  " + ("intact" if item["ok"] else "broken") + (f"  {n} entries" if n is not None else "")
             return clip(text), "green" if item["ok"] else "red"
         if kind == "tickets":
-            title = _s(item.get("title"))
+            title = _s(item.get("title")) or _s(item.get("first"))
             return (clip(f"fix raised  {title}"), "yellow") if title else None
         return None
 

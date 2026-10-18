@@ -664,7 +664,7 @@
     if (it.type === 'gate') {
       var bg = bub(null), ok = d.verdict === 'PASS', bad = d.verdict === 'FAIL';
       if (ok || bad) bg.appendChild(el('span', 'pill ' + (ok ? 'good' : 'bad'), S.gate + ': ' + d.verdict));
-      if (d.reason) bg.appendChild(el('span', 'sub', String(d.reason)));
+      if (d.reason) { var cl = ((window.DEMO || {}).labels || {}).checks || {}; bg.appendChild(el('span', 'sub', String(cl[d.reason] || d.reason))); }
       put(msg('', icon(ok ? 'held' : 'caught', ok ? 'good' : bad ? 'bad' : ''), bg));
       return 1500;
     }
@@ -688,7 +688,7 @@
     if (it.type === 'tickets') {
       var bt = bub(null);
       bt.appendChild(document.createTextNode(S.ticket));
-      if (d.title) bt.appendChild(el('span', 'sub', String(d.title)));
+      var tt = d.title || d.first; if (tt) bt.appendChild(el('span', 'sub', String(tt)));
       put(msg('', icon('wrench'), bt));
       return 1300;
     }
