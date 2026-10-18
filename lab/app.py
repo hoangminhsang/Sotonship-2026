@@ -212,14 +212,16 @@ def _rel(p: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def ensure_corpus() -> None:
-    """Read the committed split; build it only if a file is missing (B-31, D-21).
+    """Check, read-only, that the committed split equals the generator (B-31, D-21).
 
-    Rewriting the tracked corpus on every start dirtied the checkout and, on a
-    different Python, could silently change every fingerprint's test_set hash.
+    The app never writes corpus/*.jsonl, not even when a file is missing:
+    rewriting the tracked corpus dirtied the checkout, raced a CLI run started
+    at the same time, and on a different Python could silently change every
+    fingerprint's test_set hash. Raises :class:`corpus.CorpusMismatch` (a
+    missing file counts as a mismatch); :func:`main` shows it and stops.
+    Regenerating is a deliberate ``python -m lab.corpus``.
     """
-    if not (corpus.DEV_PATH.exists() and corpus.TEST_PATH.exists()):
-        print("  (corpus files missing -- building the dev/test split once)")
-        corpus.build_and_write()
+    corpus.check_matches_generator()
 
 
 def _load_state_json(path: Path) -> dict:
@@ -1155,6 +1157,9 @@ def main(work: Path | None = None) -> None:
         s = GovState(work)
     except PolicyError as e:
         print(f"cannot start: policy.yaml is invalid -- {e}")
+        return
+    except corpus.CorpusMismatch as e:
+        print(f"cannot start: {' '.join(str(e).split())}")
         return
     print("=" * 64)
     print(" Agent Release Gate  --  sandbox lab, all data synthetic")

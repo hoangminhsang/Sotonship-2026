@@ -544,14 +544,61 @@ def test_app_start_reads_the_corpus_and_never_rewrites_it(tmp_path, monkeypatch,
     assert "test split: 46 records" in out
 
 
-def test_app_start_builds_the_corpus_only_when_missing(tmp_path, monkeypatch, capsys):
+def test_app_start_with_a_missing_corpus_stops_and_builds_nothing(tmp_path, monkeypatch, capsys):
+    # Was test_app_start_builds_the_corpus_only_when_missing: the app now only
+    # checks the corpus (read-only, like the CLI) and never writes it, even when
+    # a file is missing; regenerating is a deliberate `python -m lab.corpus`.
     from lab import corpus
     monkeypatch.setattr(corpus, "CORPUS_DIR", tmp_path / "corpus")
     monkeypatch.setattr(corpus, "DEV_PATH", tmp_path / "corpus" / "dev.jsonl")
     monkeypatch.setattr(corpus, "TEST_PATH", tmp_path / "corpus" / "test.jsonl")
-    run_app(monkeypatch, capsys, tmp_path / "governance_out", ["4"])
-    assert corpus.DEV_PATH.exists() and corpus.TEST_PATH.exists()
-    assert len(corpus.read_jsonl(corpus.TEST_PATH)) == 46
+    out = run_app(monkeypatch, capsys, tmp_path / "governance_out", [])  # no prompt is reached
+    assert not corpus.DEV_PATH.exists() and not corpus.TEST_PATH.exists()
+    assert len(_lines_with(out, "cannot start")) == 1 and "(missing)" in out
+    assert "MAIN MENU" not in out
+
+
+# --------------------------------------------------------------------------- #
+# Read-only corpus check (as lane A did in scripts/run_governance.py): a menu
+# run never rewrites corpus/*.jsonl; a mismatch stops the app with one line.
+# --------------------------------------------------------------------------- #
+
+def _corpus_stamp():
+    from lab import corpus
+    return [(p.read_bytes(), p.stat().st_mtime_ns) for p in (corpus.DEV_PATH, corpus.TEST_PATH)]
+
+
+def test_menu_run_leaves_the_corpus_bytes_and_mtime_unchanged(tmp_path, monkeypatch, capsys):
+    before = _corpus_stamp()
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [*NEW_DEMO_CANDIDATE, *SECOND_D2D3, "3", "4"])
+    assert "RC-002" in out and (work / "RC-002" / "runs.csv").exists()
+    assert _corpus_stamp() == before
+
+
+def test_corpus_mismatch_stops_the_app_with_one_message(tmp_path, monkeypatch, capsys):
+    from lab import corpus
+
+    def mismatch(*a, **k):
+        raise corpus.CorpusMismatch("corpus file(s) ['test.jsonl'] differ from the seed-7 generator output.")
+
+    def no_rewrite(*a, **k):
+        raise AssertionError("the menu app must not rewrite the corpus")
+
+    monkeypatch.setattr(corpus, "check_matches_generator", mismatch)
+    monkeypatch.setattr(corpus, "build_and_write", no_rewrite)
+    before = _corpus_stamp()
+    work = tmp_path / "governance_out"
+    out = run_app(monkeypatch, capsys, work, [])  # stops before the first prompt
+    msg = _lines_with(out, "cannot start")
+    assert len(msg) == 1 and "test.jsonl" in msg[0] and "generator" in msg[0]
+    assert "MAIN MENU" not in out and "Traceback" not in out
+    assert _corpus_stamp() == before
+    assert not (work / "candidates.json").exists()
+
+
+def test_app_source_has_no_corpus_rewrite_call():
+    assert "build_and_write(" not in (app.ROOT / "lab" / "app.py").read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
