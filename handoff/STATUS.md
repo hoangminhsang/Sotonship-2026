@@ -64,6 +64,19 @@ Not verified on Windows. The server part needs lane W (bridge run API) in the pu
 
 If the run bar does not appear, the bridge has no run API. Copy the `bridge:` lines to the owner.
 
+## Watch the backend in a second window
+
+Not verified on Windows. `ui\watch.py` prints the backend work as clean lines, in step with the page.
+It reads `ui\data\live.js`, which `ui\bridge.py --serve` writes. It only reads the file and never changes it.
+
+1. Start the bridge as in the section above. In a second terminal, run `python ui/watch.py` (Windows: `& $PY ui\watch.py`, with the `$PY` variable of runbook V1).
+2. Flags: `--file PATH` (read another `live.js`), `--once` (print the current state once and exit), `--no-color` (plain text).
+   Ctrl-C exits. With no run yet, it prints `waiting for a run`.
+3. Layout for the pitch: the browser on one half of the screen, the `watch.py` terminal on the other half. The bridge runs in a third window, which stays hidden.
+4. Not verified on Windows: the Unicode glyphs and the colours on the Windows console. If the glyphs look wrong or the colours show as raw codes, add `--no-color` and tell the owner what you saw.
+5. The page demo ("Scripted demo (no model)") takes about 21 s on the owner's Mac. The time on the Windows PC is not measured.
+6. Check: runbook V15, step 2.
+
 ## Known effects
 
 - A bridge run rewrites the tracked files `ui\data\live.js` (and `replay.js` with `--bake`). `git status` then shows them as modified.

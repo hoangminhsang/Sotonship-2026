@@ -41,6 +41,7 @@ The pipeline screen is now on the details page (`details.html#s=6`). The run bar
 16. Run bar (needs lane W). Stop the bridge of check 15 first. Start `& $PY ui\bridge.py --serve`, open `http://127.0.0.1:8765/`, press any key. Check:
     - The run bar shows above the flow on Live run. If it does not, copy the `bridge:` lines and go on.
     - Pick "Scripted demo (no model)" and press "Run". The text says "Running" and the flow moves.
+    - Terminal check (not verified on Windows): open a second window, do V1, and run `& $PY ui\watch.py`. Press Run on "Scripted demo (no model)" on the page (about 21 s on the owner's Mac). Check that the terminal prints the task, the hidden VAULT-01 instruction, the tool call, and CAUGHT or HELD. Ctrl-C exits. If the glyphs or colours look wrong, use `--no-color`.
     - Start it again and press "Stop". The text says "Stopping", then the run ends. The process check of V2 shows no python process left (not verified on Windows).
 17. Replay of a real run: `& $PY ui\bridge.py --replay results\governance\<STAMP>_<slug>\progress.jsonl --speed 4 --loop --serve`. Check that it plays and starts again. Ctrl-C stops it.
 18. Clean up: `git checkout -- ui/data`. Run the process check of V2 (no python process left).

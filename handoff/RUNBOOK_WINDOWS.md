@@ -422,6 +422,18 @@ Choose "Scripted demo (no model)" in the list labelled "Run" and press "Run". Th
 Start it again and press "Stop". The text says "Stopping" and the run ends. Then run the process check of V2: no python process stays.
 The kinds "Quick live check" and "Full run" need Ollama running with the model pulled. "Scripted demo (no model)" does not.
 
+**The watch.py terminal window** (not verified on Windows). A second window shows the backend in step with the page. `ui\watch.py` reads `ui\data\live.js`, which the bridge writes. It only reads the file.
+Open a new PowerShell window, do V1, then run:
+
+```powershell
+& $PY ui\watch.py
+```
+
+Flags: `--file PATH` reads another `live.js`. `--once` prints the current state once and exits. `--no-color` prints plain text. Ctrl-C exits.
+Layout for the pitch: the browser on one half of the screen and this terminal on the other half. The bridge runs in a third window, which stays hidden.
+Check: with `watch.py` running, press Run on "Scripted demo (no model)" on the page. The page demo takes about 21 s on the owner's Mac. Check that the terminal prints the task, the hidden VAULT-01 instruction, the tool call, and CAUGHT or HELD.
+Not verified on Windows: the Unicode glyphs and the colours on the Windows console. If they look wrong, add `--no-color` and tell the owner what you saw.
+
 3. **Replay of a real log.** Use the `out` folder of a finished full run (`results\governance\<STAMP>_<slug>`):
 
 ```powershell
