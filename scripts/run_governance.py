@@ -215,6 +215,9 @@ def rotate_log(audit_path: Path) -> Path:
         n += 1
         target = audit_path.with_name(f"{audit_path.stem}.{stamp}-{n}{audit_path.suffix}")
     audit_path.rename(target)
+    anchor = audit.anchor_path(audit_path)      # its head anchor moves with it, so the
+    if anchor.exists():                         # fresh log starts clean and the old one
+        anchor.rename(audit.anchor_path(target))  # still verifies against its own anchor
     return target
 
 

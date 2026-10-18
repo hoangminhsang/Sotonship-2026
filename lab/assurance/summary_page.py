@@ -28,7 +28,9 @@ from lab.governance.decision import APPROVE, OVERRIDE, override_expired
 @dataclass
 class Summary:
     open_risks: list[str] = field(default_factory=list)
+    register_candidate: str | None = None  # whose risk register open_risks come from
     current_asr: float | None = None
+    asr_candidate: str | None = None  # whose attack rate current_asr is
     live_version: str | None = None
     last_decision: str = ""
     expiring_overrides: list[str] = field(default_factory=list)
@@ -81,6 +83,9 @@ def build_summary(
     audit_events: list[dict],
     current_asr: float | None = None,
     today: date | None = None,
+    asr_by_candidate: dict[str, float] | None = None,
+    asr_candidate: str | None = None,
+    register_candidate: str | None = None,
     *,
     summaries: dict[str, dict] | None = None,
     current_candidate: str | None = None,
@@ -94,6 +99,13 @@ def build_summary(
     mode. ``current_candidate`` names whose rate ``current_asr`` is; when
     ``current_asr`` is None it is taken from ``summaries``. ``log_head`` is
     ``audit.head(path)``: ``(entry_count, last_hash)``.
+
+    Pass ``asr_by_candidate`` (candidate id -> ASR) so "current attack rate" is
+    the *live* version's own number, labelled with its id; it never mixes in
+    another candidate's. ``current_asr`` + ``asr_candidate`` remain for a caller
+    that already knows which candidate's rate it is reporting.
+    ``register_candidate`` names the candidate ``register`` was built for, so
+    its open risks are labelled too.
     """
     summaries = summaries or {}
     open_risks = [f"{r.id} {r.title}" for r in register if r.status in ("Open", "Re-opened")]
@@ -101,7 +113,11 @@ def build_summary(
 
     live = live_version(audit_events, today)
     live_summary = summaries.get(live) if live else None
+    if asr_by_candidate is not None:
+        asr_candidate = live
+        current_asr = asr_by_candidate.get(live) if live else None
 
+    # The newest real decision, even if submissions or refusals were logged after it.
     decisions = [e for e in audit_events if e.get("event") == "decision"]
     last = decisions[-1] if decisions else None
     last_decision = (
@@ -123,7 +139,9 @@ def build_summary(
 
     return Summary(
         open_risks=open_risks,
+        register_candidate=register_candidate,
         current_asr=current_asr,
+        asr_candidate=asr_candidate,
         live_version=live,
         last_decision=last_decision,
         expiring_overrides=expiring,
@@ -169,8 +187,9 @@ def to_markdown(summary: Summary) -> str:
         "**Manager summary**",
         "",
         f"- **Live version:** {live}",
-        f"- **Current attack rate:** {current}",
-        f"- **Open risks ({len(summary.open_risks)}):** "
+        f"- **Current attack rate{f' ({summary.asr_candidate})' if summary.asr_candidate else ''}:** {current}",
+        f"- **Open risks{f' in {summary.register_candidate}' if summary.register_candidate else ''} "
+        f"({len(summary.open_risks)}):** "
         + (", ".join(summary.open_risks) or "none"),
         f"- **Last decision:** {summary.last_decision}",
     ]

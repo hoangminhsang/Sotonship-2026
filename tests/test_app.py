@@ -587,7 +587,8 @@ def test_full_demo_flow_writes_only_under_its_workspace(tmp_path, monkeypatch, c
     assert "Chain intact" in out and "TAMPERING DETECTED at entry #2" in out
     assert "bye." in out and "Traceback" not in out
     assert sorted(p.name for p in work.iterdir()) == [
-        "RC-001", "audit_log.jsonl", "candidates", "candidates.json", "tamper_demo"]
+        "RC-001", "audit_log.jsonl", "audit_log_head.json",  # + PR #2's head anchor
+        "candidates", "candidates.json", "tamper_demo"]
     assert audit.verify_log(work / "audit_log.jsonl").ok
     assert json.loads((work / "candidates.json").read_text())["RC-001"]["decision"] == "BLOCK"
 

@@ -10,17 +10,26 @@ entry, a reordered entry and a line that is no longer valid JSON. In every
 case :func:`verify_log` names the *position* in the file (not the entry's own
 ``seq`` field, which a forger controls) and a kind.
 
-What the chain does NOT catch (honest limits): re-chaining (edit an entry and
-recompute every later hash), truncating entries off the end, and deleting the
-whole file. Plain SHA-256 has no key, so anyone with write access can recompute
-it. The cheap anchor is :func:`head`: record the entry count and last hash
-somewhere outside the file (the gate report, the manager summary) and compare.
-A real product would add an HMAC key held by the rule owner or a second copy.
+A chain alone cannot see its own tail being cut off: drop the newest lines and
+every remaining link still holds. So each append also writes a small *head
+anchor* file next to the log (``audit_log.jsonl`` -> ``audit_log_head.json``,
+holding the newest ``seq`` and ``hash``), and :func:`verify_log` checks the
+log's last entry against it. That catches truncating entries off the end,
+deleting the whole log, and re-chaining (edit an entry and recompute every
+later hash): kinds ``truncated`` and ``anchor``. A log written before anchors
+existed still verifies, with a caveat in ``detail``.
+
+Honest limits: plain SHA-256 has no key, so someone with full disk access can
+rewrite the log *and* the anchor, or delete both. :func:`head` gives the same
+``(count, last_hash)`` to record somewhere else (the gate report, the manager
+summary). A real product would add an HMAC key held by the rule owner, or a
+second copy of the log (or at least its head) in another place.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,8 +41,11 @@ GENESIS = "0" * 64
 #: list it) and lets :func:`verify_log` name the position.
 MALFORMED_EVENT = "malformed_line"
 
-#: Kinds of tampering :func:`verify_log` can name.
-KINDS = ("edited", "missing", "inserted", "reordered", "malformed")
+#: Kinds of tampering :func:`verify_log` can name. ``truncated`` and ``anchor``
+#: come from the head anchor file: entries cut off the end (or the whole log
+#: deleted), and a last entry that no longer matches the anchor (or an anchor
+#: file that is itself damaged).
+KINDS = ("edited", "missing", "inserted", "reordered", "malformed", "truncated", "anchor")
 
 
 class AuditError(RuntimeError):
@@ -45,6 +57,37 @@ def _hash_record(record: dict) -> str:
     body = {k: v for k, v in record.items() if k != "hash"}
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def anchor_path(path: Path | str) -> Path:
+    """Where the head anchor for ``path`` lives (``audit_log.jsonl`` -> ``audit_log_head.json``)."""
+    p = Path(path)
+    return p.with_name(f"{p.stem}_head.json")
+
+
+def read_anchor(path: Path | str) -> dict | None:
+    """The stored ``{"seq", "hash"}`` of the newest entry, or ``None`` if absent.
+
+    Raises :class:`json.JSONDecodeError` for a garbled anchor file;
+    :func:`verify_log` reports that as kind ``anchor`` instead.
+    """
+    a = anchor_path(path)
+    if not a.exists():
+        return None
+    return json.loads(a.read_text(encoding="utf-8"))
+
+
+def _write_anchor(path: Path | str, record: dict) -> None:
+    """Record the newest entry's ``seq`` and ``hash`` (temp file, then swapped in)."""
+    target = anchor_path(path)
+    text = json.dumps({"seq": record["seq"], "hash": record["hash"]}, sort_keys=True) + "\n"
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        os.replace(tmp, target)
+    except PermissionError:  # e.g. Windows, while another process holds the anchor open
+        target.write_text(text, encoding="utf-8")
+        tmp.unlink(missing_ok=True)
 
 
 def _parse_line(position: int, line: str) -> dict:
@@ -76,9 +119,9 @@ def read_log(path: Path | str) -> list[dict]:
 def head(path: Path | str) -> tuple[int, str | None]:
     """``(entry_count, last_hash)`` -- a cheap anchor to record outside the file.
 
-    Compare it later with a fresh call: a changed count with the same intact
-    chain means entries were cut off the end or the chain was rebuilt, which
-    :func:`verify_log` alone cannot see. ``(0, None)`` for a missing or empty log.
+    The same pair the head anchor file holds; record it somewhere else too
+    (the gate report, the manager summary) and compare it later with a fresh
+    call. ``(0, None)`` for a missing or empty log.
     """
     entries = read_log(path)
     if not entries:
@@ -90,18 +133,21 @@ def head(path: Path | str) -> tuple[int, str | None]:
 def append(path: Path | str, event: dict) -> dict:
     """Append ``event`` as the next chained entry and return the stored record.
 
-    The chain is verified first. Appending onto a tampered or malformed log
-    raises :class:`AuditError` instead of silently linking a good entry to a
-    forged one (B-27). An empty or missing log starts a new chain.
+    The chain and the head anchor are verified first. Appending onto a
+    tampered, malformed or truncated log raises :class:`AuditError` instead of
+    silently linking a good entry to a forged one (B-27), or re-anchoring a log
+    whose newest entries were cut off. An empty or missing log with no anchor
+    starts a new chain; every append then updates the anchor.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     existing = read_log(p)
-    check = _verify_entries(existing)
+    check = _check_anchor(p, existing, _verify_entries(existing))
     if not check.ok:
+        where = f" at entry #{check.bad_seq}" if check.bad_seq is not None else ""
         raise AuditError(
             f"refusing to append to {p}: the audit log is not intact "
-            f"({check.kind} at entry #{check.bad_seq}: {check.detail}). "
+            f"({check.kind}{where}: {check.detail}). "
             "Investigate the log before adding to it."
         )
 
@@ -117,17 +163,20 @@ def append(path: Path | str, event: dict) -> dict:
 
     with p.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
+    _write_anchor(p, record)
     return record
 
 
 @dataclass
 class LogCheck:
-    """Result of verifying the chain.
+    """Result of verifying the chain and its head anchor.
 
     ``bad_seq`` is the 1-based *position* in the file of the first entry that
-    does not hold (never the entry's own ``seq`` field). ``kind`` is one of
-    :data:`KINDS` when ``ok`` is False, else ``None``. ``entries`` and
-    ``last_hash`` are the head anchor (see :func:`head`).
+    does not hold (never the entry's own ``seq`` field); it is ``None`` only
+    when the anchor file itself is damaged. ``kind`` is one of :data:`KINDS`
+    when ``ok`` is False, else ``None``. ``entries`` and ``last_hash`` are the
+    head (see :func:`head`). ``truncated_after`` is set when the newest entries
+    were cut off: the last position still there (0 when the whole log is gone).
     """
 
     ok: bool
@@ -136,19 +185,58 @@ class LogCheck:
     kind: str | None = None
     entries: int = 0
     last_hash: str | None = None
+    truncated_after: int | None = None
 
 
 def verify_log(path: Path | str) -> LogCheck:
-    """Recompute the chain and report the first position that does not hold.
+    """Recompute the chain, then check the tail against the head anchor.
 
-    Never raises on a malformed line. A missing or empty log is ``ok`` (there
-    is nothing to be tampered) but says so in ``detail`` so a caller can warn.
+    Never raises on a malformed line or a garbled anchor. A missing or empty
+    log with no anchor is ``ok`` (there is nothing to be tampered) but says so
+    in ``detail`` so a caller can warn. A log with no anchor (written before
+    anchors existed) is ``ok`` with a caveat that truncation cannot be checked.
     """
-    return _verify_entries(read_log(path))
+    entries = read_log(path)
+    return _check_anchor(path, entries, _verify_entries(entries))
 
 
 def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_anchor(path: Path | str, entries: list[dict], check: LogCheck) -> LogCheck:
+    """Compare an intact chain's head with the anchor file next to the log."""
+    if not check.ok:
+        return check  # the chain already names the first bad position
+    n, last = check.entries, check.last_hash
+    name = anchor_path(path).name
+    try:
+        anchor = read_anchor(path)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return LogCheck(False, None, f"head anchor {name} is not valid JSON", "anchor", n, None)
+    if anchor is None:
+        if n:
+            check.detail += " (no head anchor yet, so truncation cannot be checked)"
+        return check
+    if not (isinstance(anchor, dict) and _is_int(anchor.get("seq"))
+            and isinstance(anchor.get("hash"), str)):
+        return LogCheck(False, None, f"head anchor {name} is not a JSON object with seq and hash",
+                        "anchor", n, None)
+
+    a = anchor["seq"]
+    if a > n:
+        return LogCheck(False, n + 1,
+                        f"log truncated after entry {n}: the head anchor records entry {a}",
+                        "truncated", n, None, truncated_after=n)
+    if a == n and anchor["hash"] == (last or GENESIS):
+        return check
+    if 1 <= a < n and entries[a - 1].get("hash") == anchor["hash"]:
+        return LogCheck(False, a + 1,
+                        f"entries #{a + 1} to #{n} were added without updating the head anchor "
+                        f"(it records entry {a})", "inserted", n, None)
+    return LogCheck(False, n,
+                    f"last entry #{n} does not match the head anchor (entry {a}): "
+                    "the log was rebuilt or its last entry replaced", "anchor", n, None)
 
 
 def _verify_entries(entries: list[dict]) -> LogCheck:

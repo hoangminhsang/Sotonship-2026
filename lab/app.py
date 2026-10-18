@@ -23,6 +23,8 @@ import copy
 import json
 import re
 import shutil
+import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,13 +63,35 @@ class Cancelled(Exception):
     """Ctrl-C or end of input at a prompt."""
 
 
+def clean_input(text: str) -> tuple[str, int]:
+    """Drop characters nobody meant to type; return (clean text, how many were dropped).
+
+    A keyboard IME (e.g. Vietnamese Telex turning "es" into "é" and back) can leave
+    half of a UTF-8 character on stdin. Python surfaces that byte as a lone
+    surrogate such as '\\udcc3', invisible on screen, so "es-003" stops matching a
+    real candidate id. Surrogates, control and invisible format characters (e.g.
+    zero-width spaces) and U+FFFD are removed; real letters such as "é" are kept.
+    """
+    kept = [ch for ch in text
+            if ch != "�" and unicodedata.category(ch) not in ("Cs", "Cc", "Cf")]
+    return unicodedata.normalize("NFC", "".join(kept)).strip(), len(text) - len(kept)
+
+
 def ask(prompt: str, default: str = "") -> str:
+    """One prompt. Ctrl-C or EOF raises :class:`Cancelled`, never a default.
+
+    A closed stdin (Ctrl-D, end of piped input) cancels the current action;
+    every later prompt hits EOF too, so the menus unwind and the app ends with
+    "bye." instead of looping on "(not a valid choice)".
+    """
     suffix = f" [{default}]" if default else ""
     try:
-        got = input(f"{prompt}{suffix}: ").strip()
+        got, dropped = clean_input(input(f"{prompt}{suffix}: "))
     except (EOFError, KeyboardInterrupt):
         print("\n(cancelled)")
         raise Cancelled()
+    if dropped:
+        print(f"  (ignored {dropped} unreadable character(s) in your input; read it as {got!r})")
     return got or default
 
 
@@ -198,6 +222,29 @@ def ensure_corpus() -> None:
         corpus.build_and_write()
 
 
+def _load_state_json(path: Path) -> dict:
+    """Read a workspace JSON file; on corruption, stop with a clear message.
+
+    Never repairs or replaces the file: it may be evidence, so a person decides.
+    """
+    folder = path.parent.name
+    name = f"{folder}/{path.name}"
+    fix = f"Restore it from a backup, or delete {folder}/ to start a fresh workspace."
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise SystemExit(f"ERROR: {name} is not valid JSON ({e}).\n{fix}") from None
+    if not isinstance(data, dict):
+        raise SystemExit(f"ERROR: {name} should hold a JSON object, not {type(data).__name__}.\n{fix}")
+    return data
+
+
+def _evidence_exists(work: Path, candidates: dict, cid: str) -> bool:
+    """``cid`` is in the record, or evidence is already on disk under that id."""
+    return (cid in candidates or (work / cid).exists()
+            or (work / "candidates" / f"{cid}.json").exists())
+
+
 class GovState:
     """Loads/saves the whole workspace: policy+roles, candidates, audit log."""
 
@@ -218,7 +265,7 @@ class GovState:
         self.tests_by_id = {t["id"]: t for t in self.test}
 
         self.candidates: dict[str, dict] = (
-            json.loads(self.cand_file.read_text()) if self.cand_file.exists() else {}
+            _load_state_json(self.cand_file) if self.cand_file.exists() else {}
         )
         self._refresh_legacy_summaries()
 
@@ -249,7 +296,7 @@ class GovState:
     # -- roles overlay (so edits survive without clobbering the commented yaml)
     def _apply_roles_overlay(self) -> None:
         if self.roles_file.exists():
-            self.policy["roles"].update(json.loads(self.roles_file.read_text()))
+            self.policy["roles"].update(_load_state_json(self.roles_file))
 
     def save_roles(self) -> None:
         self.roles_file.write_text(json.dumps(self.policy["roles"], indent=2, sort_keys=True))
@@ -266,8 +313,7 @@ class GovState:
 
     def candidate_exists(self, cid: str) -> bool:
         """Known in the record, or evidence already on disk under that id."""
-        return (cid in self.candidates or (self.work / cid).exists()
-                or self.fingerprint_path(cid).exists())
+        return _evidence_exists(self.work, self.candidates, cid)
 
     def traces_path(self, cid: str) -> Path:
         return self.work / cid / "traces.json"
@@ -296,6 +342,20 @@ class GovState:
 
     def events(self) -> list[dict]:
         return audit.read_log(self.audit_file)
+
+    def require_intact_log(self) -> None:
+        """Raise :class:`AuditError` now if the audit log is damaged, before an
+        action writes anything it could then not log (no unlogged submissions,
+        decisions or role changes). Checks the chain and its head anchor."""
+        check = audit.verify_log(self.audit_file)
+        if not check.ok:
+            kind = getattr(check, "kind", None) or "damaged"
+            where = f" at entry #{check.bad_seq}" if check.bad_seq is not None else ""
+            raise AuditError(
+                f"{_rel(self.audit_file)} is not intact ({kind}{where}: {check.detail}). "
+                "Nothing more can be logged until it is restored; "
+                "Governance > Verify audit log shows the damage"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -334,16 +394,31 @@ def _norm(name: str) -> str:
     return " ".join(str(name).strip().split()).lower()
 
 
+def _id_problem(s: GovState, cid: str) -> str | None:
+    """Why ``cid`` cannot be a new candidate id, or ``None`` (B-20, D-06)."""
+    if not CANDIDATE_ID_RE.match(cid):
+        return f"{cid!r} is not a candidate id; use the form RC-001"
+    if _evidence_exists(s.work, s.candidates, cid):
+        return f"{cid} already exists and its evidence is kept; next free id is {s.next_candidate_id()}"
+    return None
+
+
+def _defence_problem(codes: list[str]) -> str | None:
+    """Why ``codes`` are not all known defence codes, or ``None`` (B-19)."""
+    valid = list(defences.ALL_DEFENCES)
+    bad = [c for c in codes if c not in valid]
+    if bad:
+        return f"unknown defence code(s): {', '.join(bad)}; valid: {', '.join(valid)}"
+    return None
+
+
 def ask_candidate_id(s: GovState) -> str:
     """A fresh id of the form RC-NNN; an existing id is refused (B-20, D-06)."""
     while True:
         cid = ask("Candidate id", s.next_candidate_id())
-        if not CANDIDATE_ID_RE.match(cid):
-            print(f"  ({cid!r} is not a candidate id; use the form RC-001)")
-            continue
-        if s.candidate_exists(cid):
-            print(f"  ({cid} already exists and its evidence is kept; "
-                  f"next free id is {s.next_candidate_id()})")
+        problem = _id_problem(s, cid)
+        if problem:
+            print(f"  ({problem})")
             continue
         return cid
 
@@ -362,15 +437,61 @@ def pick_engineer(s: GovState) -> str | None:
 
 def ask_defences() -> list[str]:
     """Only known defence codes, de-duplicated and sorted (B-19)."""
-    valid = list(defences.ALL_DEFENCES)
     while True:
         raw = ask("Defences ON (comma, e.g. D2 or D1,D2,D3; blank = none)", "")
         codes = sorted({d.strip().upper() for d in raw.split(",") if d.strip()})
-        bad = [c for c in codes if c not in valid]
-        if bad:
-            print(f"  (unknown defence code(s): {', '.join(bad)}; valid: {', '.join(valid)})")
+        problem = _defence_problem(codes)
+        if problem:
+            print(f"  ({problem})")
             continue
         return codes
+
+
+LIVE_DEFAULT_SAMPLE = 8
+
+
+def parse_sample(raw: str, default: int = LIVE_DEFAULT_SAMPLE) -> tuple[int, str]:
+    """LIVE sample size from user text -> (n, note). Bad input falls back to ``default``.
+
+    A pure helper (from PR #2). The menu itself re-asks on bad input
+    (:func:`ask_int`), so a typo never silently starts a slow LIVE sweep.
+    """
+    try:
+        n = int(raw)
+    except ValueError:
+        return default, f"  ({raw!r} is not a whole number; using {default})"
+    if n < 1:
+        return default, f"  (sample size must be at least 1; using {default})"
+    return n, ""
+
+
+def live_subset(tests: list[dict], sample: int) -> list[dict]:
+    """The first ``sample`` attacks PLUS the first ``sample`` benign tests (X-05).
+
+    Never ``tests[:N]``, and no test id twice even when ``sample`` is larger
+    than either list (PR #2: a sample above 26 duplicated benign tests).
+    """
+    attacks = [t for t in tests if t["kind"] == "attack"]
+    benign = [t for t in tests if t["kind"] == "benign"]
+    return attacks[:sample] + benign[:sample]
+
+
+def _refuse_new_candidate(s: GovState, cid: str, submitted_by: str, codes: list[str]) -> str | None:
+    """Why a new candidate submission is refused, or ``None`` if it may run.
+
+    The last check before a run, on the same rules the prompts re-ask on: a
+    fresh RC-NNN id, a submitter from ``roles.engineers``, known defence codes.
+    """
+    problem = _id_problem(s, cid)
+    if problem:
+        return f"REFUSED: {problem}"
+    engineers = sorted({_norm(e) for e in s.policy["roles"].get("engineers", []) if _norm(e)})
+    if _norm(submitted_by) not in engineers:
+        return f"REFUSED: {submitted_by} is not an engineer (engineers: {', '.join(engineers) or 'none'})"
+    problem = _defence_problem(codes)
+    if problem:
+        return f"REFUSED: {problem}"
+    return None
 
 
 def redteam_run(s: GovState) -> None:
@@ -379,7 +500,16 @@ def redteam_run(s: GovState) -> None:
     if submitted_by is None:
         return pause()
     codes = ask_defences()
-    live = choose("Run mode", ["DEMO (offline, scripted traces)", "LIVE (real Ollama model)"]) == 2
+    refusal = _refuse_new_candidate(s, cid, submitted_by, codes)
+    if refusal:
+        print(f"\n{refusal}")
+        return pause()
+    s.require_intact_log()  # a damaged log blocks the submit before anything is run or written
+
+    mode = -1
+    while mode == -1:
+        mode = choose("Run mode", ["DEMO (offline, scripted traces)", "LIVE (real Ollama model)"])
+    live = mode == 2
     if not live and "D1" in codes:
         print("  WARNING: D1 (trust labels) cannot be replayed offline -- the SCRIPTED numbers "
               "ignore it; run LIVE to measure D1")
@@ -387,11 +517,17 @@ def redteam_run(s: GovState) -> None:
     print(f"\nRunning {cid}  defences={codes or 'none'}  mode={LIVE if live else SCRIPTED} ...")
     if live:
         from lab import runner
-        sample = ask_int("Sample size per split (LIVE is slow)", 8, lo=1)
-        # X-05: the first N attacks PLUS the first N benign records, never tests[:N].
-        attacks = [t for t in s.test if t["kind"] == "attack"][:sample]
-        benign = [t for t in s.test if t["kind"] == "benign"][:sample]
-        subset = attacks + benign
+        min_runs = s.policy["release_limits"]["min_attack_runs"]
+        need = -(-min_runs // REPS)  # ceil
+        print(f"  (the gate needs {min_runs} attack runs: use a sample of {need} or more, "
+              f"at {REPS} reps each)")
+        sample = ask_int("Sample size per split (LIVE is slow)", LIVE_DEFAULT_SAMPLE, lo=1)
+        subset = live_subset(s.test, sample)
+        attacks = [t for t in subset if t["kind"] == "attack"]
+        benign = [t for t in subset if t["kind"] == "benign"]
+        if len(attacks) * REPS < min_runs:
+            print(f"  (note: {len(attacks) * REPS} attack runs is under {min_runs}; "
+                  f"this run will fail the min_attack_runs check)")
         print(f"  LIVE sample: {len(attacks)} attacks + {len(benign)} benign = "
               f"{len(subset) * REPS} runs ({REPS} reps each)")
         print("  (Ctrl-C aborts the sweep and returns to the menu)")
@@ -580,6 +716,7 @@ def gov_verdict(s: GovState) -> None:
 
 
 def gov_decide(s: GovState) -> None:
+    s.require_intact_log()
     cid = pick_candidate(s)
     if not cid:
         return pause()
@@ -616,6 +753,7 @@ def gov_decide(s: GovState) -> None:
 
 
 def gov_roles(s: GovState) -> None:
+    s.require_intact_log()
     print("\nCurrent roles:")
     for k, v in s.policy["roles"].items():
         print(f"  {k}: {v}")
@@ -675,7 +813,14 @@ def _print_check(check, label: str) -> None:
             print("  Chain intact. ✔")
     else:
         kind = getattr(check, "kind", None)
-        print(f"  >>> TAMPERING DETECTED at entry #{check.bad_seq}{f' ({kind})' if kind else ''} <<<")
+        truncated = getattr(check, "truncated_after", None)
+        if truncated is not None:
+            where = f": log truncated after entry {truncated}"
+        elif check.bad_seq is not None:
+            where = f" at entry #{check.bad_seq}"
+        else:
+            where = ""
+        print(f"  >>> TAMPERING DETECTED{where}{f' ({kind})' if kind else ''} <<<")
 
 
 def gov_verify_log(s: GovState) -> None:
@@ -802,36 +947,66 @@ def _register_for(s: GovState, cid: str, runs: pd.DataFrame):
 
     Returns ``(register, prior)``; ``prior`` is ``None`` or a dict with the
     prior candidate's ``id``, ``runs`` and ``register`` (the "before" story).
+    An id that is not a candidate is asked again (a typo must not silently
+    drop the comparison); a prior newer than ``cid`` is warned about.
     """
-    prior_id = ask("Compare against prior candidate for status? (id or blank)", "")
     prior = None
+    while True:
+        prior_id = ask("Compare against prior candidate for status? (id or blank)", "")
+        if prior_id and prior_id not in s.candidates:
+            print(f"  no such candidate {prior_id!r} -- enter a listed id, or leave blank for no comparison")
+            continue
+        break
     if prior_id:
-        prior_runs = s.load_runs(prior_id) if prior_id in s.candidates else None
+        prior_runs = s.load_runs(prior_id)
         if prior_runs is None:
             print(f"  (no stored runs for {prior_id!r}; building without a prior)")
         else:
             prior_reg = _build_register(s, prior_runs, s.candidates[prior_id].get("defences", []))
             prior = {"id": prior_id, "runs": prior_runs, "register": prior_reg}
+            newer = thread.newer_prior_warning(prior_id, s.candidates[prior_id], cid, s.candidates[cid])
+            if newer:
+                print(f"  {newer}")
     reg = _build_register(s, runs, s.candidates[cid].get("defences", []),
                           prior=risks.prior_from(prior["register"]) if prior else None)
     return reg, prior
 
 
-def assurance_thread(s: GovState, cid: str, runs: pd.DataFrame, reg, prior=None) -> None:
-    """X-06: the story starts at the PRIOR candidate's runs and tickets, as the CLI does."""
-    before_runs = prior["runs"] if prior else runs
-    tickets = risks.fix_tickets(prior["register"] if prior else reg)
-    attacks = before_runs[(before_runs["kind"] == "attack") & before_runs["violated"]]
+def _default_finding(runs: pd.DataFrame | None) -> str | None:
+    """The first landed attack in ``runs``, a leak first (the CLI's choice)."""
+    if runs is None:
+        return None
+    attacks = runs[(runs["kind"] == "attack") & runs["violated"]]
     leaked = attacks[attacks["violation_classes"].str.contains("V_exfiltration", na=False)]
-    pick = leaked if not leaked.empty else attacks          # the CLI's choice: a leak first
-    default = pick.iloc[0]["test_id"] if not pick.empty else "ATK-0021"
-    finding = ask("Finding id", default)
+    pick = leaked if not leaked.empty else attacks
+    return pick.iloc[0]["test_id"] if not pick.empty else None
+
+
+def assurance_thread(s: GovState, cid: str, runs: pd.DataFrame, reg, prior=None) -> None:
+    """X-06: the story starts where the finding landed -- the PRIOR candidate's
+    runs and tickets when it landed there, as the CLI does -- and ends at this
+    candidate's re-test (:func:`thread.trace_finding`, with its evidence warnings).
+
+    Status comes from ``reg``, the same register the risk screen shows (built
+    with this candidate's defences and the prior).
+    """
+    before_runs = prior["runs"] if prior else None
+    default = _default_finding(before_runs) or _default_finding(runs)
+    if default is None:
+        print(f"  (no attack landed in {prior['id'] + ' or ' if prior else ''}{cid})")
+    finding = ask("Finding id", default or "ATK-0021")
     if prior:
         print(f"  (before: {prior['id']}'s runs and fix tickets; re-test: {cid})")
     else:
         print("  (no prior chosen: the story starts and ends at this candidate; "
               "choose a prior to see the finding, the fix ticket and the re-test)")
-    tr = thread.build_thread(finding, before_runs, reg, tickets, s.events(), retest_candidate=cid)
+    tr = thread.trace_finding(
+        finding, candidate_id=cid, candidate_runs=runs, candidate=s.candidates[cid],
+        policy=s.policy, control_map=s.control_map, audit_events=s.events(),
+        prior_id=prior["id"] if prior else None, prior_runs=before_runs,
+        prior=s.candidates.get(prior["id"]) if prior else None,
+        register=reg, prior_register=prior["register"] if prior else None,
+    )
     print("\n" + thread.to_markdown(tr))
 
 
@@ -872,8 +1047,11 @@ def manager_summary_text(s: GovState, cid: str, reg) -> str:
     summaries = {c: dict(r["summary"], mode=mode_of(r))
                  for c, r in s.candidates.items() if r.get("summary")}
     try:
+        # The current rate is the live version's, so it is labelled with the live
+        # id and CI (PR #2), never the viewed candidate's; the open risks are cid's.
         sm = summary_page.build_summary(reg, events, current_asr=live_asr, summaries=summaries,
-                                        current_candidate=cid, log_head=_log_head(s))
+                                        current_candidate=live if live_asr is not None else None,
+                                        register_candidate=cid, log_head=_log_head(s))
     except TypeError as e:
         if not _kw_unsupported(e):
             raise
@@ -960,7 +1138,19 @@ def write_reports(s: GovState, cid: str, runs: pd.DataFrame, reg) -> None:
 # Main loop.
 # ---------------------------------------------------------------------------
 
+def _windows_safe_stdout() -> None:
+    """Never crash on a character the console cannot show (e.g. the check mark
+    on a cp1252 Windows console when output is piped or redirected)."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):  # a stream that cannot be reconfigured
+            pass
+
+
 def main(work: Path | None = None) -> None:
+    _windows_safe_stdout()
     try:
         s = GovState(work)
     except PolicyError as e:
