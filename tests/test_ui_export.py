@@ -961,6 +961,7 @@ def test_the_tamper_entry_comes_only_from_a_tamper_block_that_checks_out(ex, liv
     path = live_repo / "governance_out" / "audit_verify.json"
     base = json.loads(path.read_text(encoding="utf-8"))
     for block in ({"ok": True, "bad_seq": None, "detail": "6 entries, chain intact (head abcdef123456)"},
+                  {"ok": True, "bad_seq": 3, "detail": "6 entries, chain intact (head abcdef123456)"},
                   {"ok": False, "bad_seq": 3, "detail": "nothing to see here"},
                   {"ok": False, "bad_seq": "3", "detail": "entry #3 edited (contents changed after it was written)"},
                   None):
@@ -1027,6 +1028,18 @@ def test_validate_demo_refuses_a_number_without_a_source(ex, tmp_path):
     for bad in ("A.b", "a..b", "1a", "a b", "a.B", ".a", "a."):            # lowercase dotted names only
         assert problems({bad: good}), bad
     assert problems({})                                                    # an empty sheet is a bug
+
+
+def test_sample_numbers_of_the_committed_config_can_be_read_again(ex):
+    """The sample audit log is a fixture: its entry count has its own way to be re-read by --check."""
+    path = ROOT / "ui" / "sources.json"
+    ctx = ex.Ctx(ex.parse_args(["--no-git", "--allow-sample"]), path, ex.load_sources(path), ROOT)
+    ex.init_git(ctx)
+    demo = ex.build_demo(ctx)
+    entry = demo["numbers"]["audit.entries"]
+    assert entry["status"] == ex.SAMPLE and entry["mode"] is None and "SAMPLE" in entry["source"]
+    assert entry["prov"] in {p["id"] for p in demo["provenance"]}
+    assert ex.self_check(ctx, demo["provenance"]) == []
 
 
 def test_main_writes_numbers_json_beside_demo_js_and_embeds_the_same_object(ex, tmp_path):
