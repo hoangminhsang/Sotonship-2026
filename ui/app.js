@@ -532,7 +532,7 @@
             'Normal requests handled: ', benign ? F(benign.x_of_n) : F(null),
             benign && benign.measured && benign.rate ? [', ', F(benign.rate)] : null, '.'
           ]),
-          el('li', null, [F(counts.runs), ' runs in the file, ', F(counts.error), ' errored. Summary file: ', F(sm.error_runs), ' errored.'])
+          el('li', null, [F(counts.runs), ' runs in the file, ', F(counts.error), ' errored. Summary file: ', F(sm.error_runs), '.'])
         ])
       ]);
     }
@@ -1100,7 +1100,6 @@
 
     var ks = $('k-src');
     fill(ks, [
-      !aPending ? src(['Side A: ', V(c.a.title), ', from summary files only.']) : null,
       src('Compare uses summary files only. SAMPLE data is never compared.')
     ]);
   }

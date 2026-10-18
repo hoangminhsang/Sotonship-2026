@@ -30,8 +30,8 @@
   /* layout */
   --pad:120px;          /* stage side margin */
   --head-h:136px;       /* header, incl. room for the deck line under the nav */
-  --foot-h:52px;
-  --row:26px;           /* vertical gap between blocks on a screen */
+  --foot-h:64px;        /* fixed: two lines of 22px text. The footer never grows, so no screen loses height */
+  --row:22px;           /* vertical gap between blocks on a screen */
 
   /* strokes */
   --hair:rgba(17,17,17,.16);   /* structural rules only, never state */
@@ -40,7 +40,7 @@
   --hatch:repeating-linear-gradient(45deg,#111111 0 2.5px,transparent 3.5px 9px,#111111 10px);
 
   /* board: tile size, gap inside a group, gap between groups, mark size, mark stroke, mark inset */
-  --ts:112px; --tg:12px; --gg:40px;
+  --ts:104px; --tg:10px; --gg:40px;
   --mk:30px; --mw:5px; --mx:12px;
 }
 
@@ -72,11 +72,11 @@ code,kbd,samp,pre{font-family:var(--mono);font-size:.92em}
   background:var(--paper);display:flex;flex-direction:column}
 /* A screen scrolls only as a last resort (content taller than the stage); it never clips silently. */
 .screen{flex:1 1 auto;min-height:0;display:grid;align-content:stretch;column-gap:112px;row-gap:var(--row);
-  padding:14px var(--pad) 12px;font:400 26px/1.45 var(--sans);color:var(--lede);
+  padding:10px var(--pad) 8px;font:400 26px/1.45 var(--sans);color:var(--lede);
   overflow:hidden auto;scrollbar-width:thin;scrollbar-color:var(--ink) transparent}
 .screen > .screen-title{grid-area:title}
 /* when the SAMPLE banner takes a row, titles and gaps give the space back */
-#stage:has(> #banner:not([hidden])){--row:18px}
+#stage:has(> #banner:not([hidden])){--row:16px}
 #stage:has(> #banner:not([hidden])) .screen-title{font-size:64px}
 
 /* ---------- 4 header, nav, chips, REPLAY, deck, footer ---------- */
@@ -104,12 +104,19 @@ code,kbd,samp,pre{font-family:var(--mono);font-size:.92em}
 #deck::after{right:0}
 #deck.draw{transition:width 1.8s var(--glide) .25s}
 
-#foot{flex:0 0 var(--foot-h);display:flex;align-items:center;gap:44px;padding:0 var(--pad);
+/* The footer is a fixed strip of two rows. Left: the export time over the key hints.
+   Right: the warnings, one line each, cut with an ellipsis (the full text is in the title). */
+#foot{flex:0 0 var(--foot-h);height:var(--foot-h);min-height:0;overflow:hidden;display:grid;
+  grid-template-columns:auto minmax(0,1fr);grid-template-rows:1fr 1fr;
+  grid-template-areas:"stamp warn" "hints warn";column-gap:44px;align-items:center;padding:0 var(--pad);
   font:400 22px/1.3 var(--sans);color:var(--sec);min-width:0}
-#stamp,#hints{white-space:nowrap}
-#warn{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:2px;text-align:right;min-width:0}
+#stamp{grid-area:stamp;align-self:end;white-space:nowrap}
+#hints{grid-area:hints;align-self:start;white-space:nowrap}
+body.presenter #stamp{grid-row:1 / 3;align-self:center}
+#warn{grid-area:warn;justify-self:end;display:flex;flex-direction:column;align-items:flex-end;gap:0;text-align:right;
+  min-width:0;max-width:100%}
 #warn:empty{display:none}
-#warn > *{max-width:1000px}
+#warn > *{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #warn [data-level="integrity"],#warn .integrity{color:var(--ink);font-weight:500}
 #warn [data-level="integrity"]::before,#warn .integrity::before{content:"";display:inline-block;width:14px;height:14px;
   margin-right:12px;background:var(--ink);vertical-align:0}
@@ -118,7 +125,7 @@ code,kbd,samp,pre{font-family:var(--mono);font-size:.92em}
 .screen-title{font:300 84px/1.04 var(--serif);letter-spacing:-.012em;color:var(--ink);margin:0}
 .display{font:300 132px/1.04 var(--serif);letter-spacing:-.012em;color:var(--ink)}
 .display-m{font:300 96px/1.08 var(--serif);letter-spacing:-.01em;color:var(--ink)}
-.num-hero{font:300 168px/.9 var(--serif);letter-spacing:-.02em;color:var(--ink)}
+.num-hero{font:300 116px/.9 var(--serif);letter-spacing:-.02em;color:var(--ink)}
 .num-big{font:300 120px/.92 var(--serif);letter-spacing:-.015em;color:var(--ink)}
 .num-mid{font:300 72px/1 var(--serif);letter-spacing:-.01em;color:var(--ink)}
 .screen-title,.display,.display-m,.num-hero,.num-big,.num-mid,.quote,#d-title{font-variant-numeric:lining-nums}
@@ -129,8 +136,10 @@ code,kbd,samp,pre{font-family:var(--mono);font-size:.92em}
 .body,.lede{font:400 30px/1.5 var(--sans);color:var(--lede)}
 .quote{font:italic 300 36px/1.25 var(--serif);color:var(--lede)}
 .quote em,.quote i{font-style:italic}
-.src{font:400 22px/1.45 var(--sans);color:var(--sec)}
+.src{font:400 22px/1.45 var(--sans);color:var(--sec);overflow-wrap:anywhere}
 #c-src,#b-src,#k-src,#a-src,#r-src{font:400 22px/1.45 var(--sans);color:var(--sec);min-width:0;align-self:end}
+/* a status tag at the end of a source line stays whole: the line grows to hold it, nothing clips it */
+.src .tag{margin:1px 0;line-height:1.2}
 .src code,#c-src code,#b-src code,#k-src code,#a-src code,#r-src code{font-size:21px;color:var(--label)}
 table,.calls,.entry,dd{font-variant-numeric:tabular-nums}
 /* key/value lists */
@@ -166,7 +175,7 @@ span[data-prov][data-status="PENDING"]{text-decoration:underline dotted var(--st
 .panel > .tag{margin-bottom:12px}
 .panel.is-sample{padding-left:42px}
 .panel.is-sample::before{content:"";position:absolute;left:0;top:0;bottom:0;width:18px;background:var(--hatch)}
-.panel.is-pending{border:var(--st) dotted var(--ink);padding:22px 28px}
+.panel.is-pending{border:var(--st) dotted var(--ink);padding:16px 24px}
 .panel.is-pending > :not(h2):not(.tag) + *{margin-top:8px}
 .pending-block{display:grid;gap:10px;justify-items:start;border:var(--st) dotted var(--ink);padding:22px 28px;
   font:400 26px/1.45 var(--sans);color:var(--lede)}
@@ -176,26 +185,31 @@ span[data-prov][data-status="PENDING"]{text-decoration:underline dotted var(--st
   font:500 24px/1.3 var(--sans);color:var(--ink);background:var(--paper)}
 #banner::before{content:"";position:absolute;left:0;top:0;bottom:0;width:38px;background:var(--hatch);border-right:var(--st) solid var(--ink)}
 
-/* ---------- 8 console: facts row (candidate | limits), result row (evidence | verdict) ---------- */
-#screen-1{grid-template-columns:minmax(0,1fr) 640px;grid-template-rows:auto auto minmax(auto,1fr) auto;
-  grid-template-areas:"title title" "cand lim" "evid verd" "src src";column-gap:120px}
-#c-candidate{grid-area:cand;min-width:0}
-#c-limits{grid-area:lim;min-width:0}
-#c-evidence{grid-area:evid;min-width:0}
-#c-verdict{grid-area:verd;min-width:0;align-self:start}
+/* ---------- 8 console: two stacks. Left: candidate, then the evidence. Right: the verdict, then the limits.
+   Two independent stacks keep the evidence right under the candidate, so the screen fits the stage
+   even with the SAMPLE banner on. ---------- */
+#screen-1{grid-template-columns:minmax(0,1fr) 600px;grid-template-rows:auto minmax(auto,1fr) auto;
+  grid-template-areas:"title title" "left right" "src src";column-gap:96px}
+#c-left{grid-area:left;min-width:0;display:flex;flex-direction:column;gap:var(--row)}
+#c-right{grid-area:right;min-width:0;align-self:start;display:flex;flex-direction:column;gap:var(--row)}
+#c-left > .panel,#c-right > .panel{margin-top:0}
+#c-candidate,#c-evidence,#c-verdict,#c-limits{min-width:0}
 #c-src{grid-area:src}
 /* candidate: label-over-value pairs, two per row */
 #c-candidate dl{grid-template-columns:max-content minmax(0,1fr);column-gap:56px;row-gap:14px}
 #c-candidate dl > div{display:grid;gap:2px;align-content:start;min-width:0}
-#c-candidate dl:not(:has(> div)){grid-template-columns:max-content minmax(0,.6fr) max-content minmax(0,1fr);column-gap:20px;row-gap:10px}
+#c-candidate dl:not(:has(> div)){grid-template-columns:auto auto auto minmax(0,1fr);column-gap:20px;row-gap:6px}
 /* limits: a compact table; the panel heading names it, so the column heads are for screen readers only */
 #c-limits thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 #c-limits table.grid td{padding:5px 16px 5px 0}
 #c-limits table.grid tr:first-child td{border-top:2px solid var(--ink)}
 /* hero: "12 of 24 attack runs broke a rule" reads as one line */
-#c-evidence .num-hero{display:inline-block;margin:2px 26px 14px 0;vertical-align:baseline}
-#c-evidence .num-hero + :is(p,span,.body,.lede){display:inline-block;vertical-align:baseline;margin:0 0 14px;
+#c-evidence .num-hero{display:inline-block;margin:0 24px 8px 0;vertical-align:baseline}
+#c-evidence .num-hero + :is(p,span,.body,.lede){display:inline-block;vertical-align:baseline;margin:0 0 8px;
   font:400 30px/1.3 var(--sans);color:var(--lede)}
+#c-evidence .rate-line .num-mid{font-size:60px}
+#c-evidence .meter{margin-top:4px}
+#c-evidence .facts{display:grid;gap:4px;margin-top:6px}
 .rate-line{display:flex;align-items:baseline;gap:28px;flex-wrap:wrap}
 .rate-line > :not(.num-mid):not(.num-big){font:400 26px/1.3 var(--sans);color:var(--lede)}
 /* the verdict block: solid fill only for REAL backend output */
@@ -223,16 +237,16 @@ span[data-prov][data-status="PENDING"]{text-decoration:underline dotted var(--st
 
 /* ---------- 9 attack board ---------- */
 #screen-2{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto auto auto minmax(auto,1fr) auto;
-  grid-template-areas:"title batches" "filter filter" "legend legend" "attack attack" "benign benign" "src src";row-gap:22px}
+  grid-template-areas:"title batches" "filter filter" "legend legend" "attack attack" "benign benign" "src src";row-gap:14px}
 #b-batches{grid-area:batches;align-self:end;justify-self:end;text-align:right;font:400 24px/1.4 var(--sans);color:var(--lede);
   display:flex;flex-direction:column;align-items:flex-end;gap:4px;padding-bottom:8px}
 #b-batches strong,#b-batches h2{font:500 24px/1.3 var(--sans);color:var(--ink)}
-#b-filter{grid-area:filter;display:flex;flex-wrap:wrap;gap:12px}
+#b-filter{grid-area:filter;display:flex;flex-wrap:wrap;gap:8px}
 #b-legend{grid-area:legend;display:flex;flex-wrap:wrap;align-items:center;column-gap:40px;row-gap:12px}
 #b-attack{grid-area:attack;min-width:0}
 #b-benign{grid-area:benign;min-width:0;align-self:start}
 #b-src{grid-area:src}
-#b-filter button,#b-batches button{font:400 22px/1 var(--sans);padding:11px 16px;border:2px solid var(--ink);
+#b-filter button,#b-batches button{font:400 22px/1 var(--sans);padding:9px 12px;border:2px solid var(--ink);
   color:var(--ink);background:var(--paper);white-space:nowrap}
 #b-filter button:hover,#b-batches button:hover{background:rgba(17,17,17,.06)}
 #b-filter button[aria-pressed="true"],#b-batches button[aria-pressed="true"]{background:var(--ink);color:var(--white);font-weight:500}
@@ -370,17 +384,22 @@ circle.m-rate,rect.m-rate{fill:var(--ink);stroke:var(--paper);stroke-width:3}
 .chain[data-ok="false"] .tag{background:transparent;color:inherit;border-color:currentColor}
 .chain[data-ok="pending"]{border-style:dotted}
 .chain .src{color:inherit;opacity:.8}
-/* entry row: bar | seq | time | event | who | what */
-.entry{position:relative;display:grid;grid-template-columns:52px 332px 236px 120px minmax(0,1fr);column-gap:22px;
+/* entry row: bar | seq | time | event | who | what.
+   The time column holds a full ISO time with microseconds (32 characters of 22px mono, about 420px).
+   If a longer value ever arrives, it wraps inside its own column instead of running into the event. */
+.entry{position:relative;display:grid;grid-template-columns:52px 430px 172px 120px minmax(0,1fr);column-gap:22px;
   align-items:baseline;padding:14px 0 14px 30px;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
 .entry:last-child{border-bottom:1px solid var(--hair)}
 .entry .seq{font-weight:500}
-.entry .time{font:400 21px/1.5 var(--mono);color:var(--sec);white-space:nowrap;letter-spacing:-.01em}
-.entry .event{font-weight:500}
+.entry .time{font:400 22px/1.5 var(--mono);color:var(--sec);letter-spacing:-.01em;min-width:0;overflow-wrap:anywhere}
+.entry .event{font-weight:500;min-width:0}
 .entry .who{overflow-wrap:anywhere}
 .entry .what{color:var(--lede);min-width:0;overflow-wrap:anywhere}
-.entry .hash{display:block;margin-top:2px}
-.entry .hash,.entry code{font:400 21px/1.5 var(--mono);color:var(--sec)}
+/* the entry text, its reason and its hash are three separate lines, never run together */
+.entry .what > span{display:block}
+.entry .what > span + span{margin-top:2px}
+.entry .hash{display:inline;margin-top:0}
+.entry .hash,.entry code{font:400 22px/1.5 var(--mono);color:var(--sec)}
 /* a decision: solid 8px bar. A refusal: dashed bar. An unreadable line: dotted bar. */
 .entry[data-event="decision"]::before,.entry[data-event="decision_refused"]::before,.entry[data-readable="false"]::before{
   content:"";position:absolute;left:0;top:14px;bottom:14px;width:8px}
@@ -399,21 +418,22 @@ circle.m-rate,rect.m-rate{fill:var(--ink);stroke:var(--paper);stroke-width:3}
 #k-note{grid-area:note;min-width:0}
 #k-tech{grid-area:tech;min-width:0}
 #k-src{grid-area:src}
-#k-a .replay,#k-b .replay{white-space:normal;margin:0 0 16px}
+#k-a .replay,#k-b .replay{white-space:normal;margin:0 0 10px;padding:4px 12px;font-size:22px}
 #k-a .num-big,#k-b .num-big{margin:10px 0 8px}
 #k-a dl,#k-b dl{margin-bottom:6px}
 #k-note:not(:empty){font:400 24px/1.4 var(--sans);color:var(--ink);padding-left:18px;border-left:var(--st) solid var(--ink)}
 
 table.grid{width:100%;font:400 24px/1.35 var(--sans);color:var(--ink)}
 table.grid th{font:500 22px/1.3 var(--sans);color:var(--label);padding:0 20px 8px 0;border-bottom:2px solid var(--ink);vertical-align:bottom}
-table.grid td{padding:9px 20px 9px 0;border-bottom:1px solid var(--hair);vertical-align:top;overflow-wrap:anywhere}
+/* break-word: a word wraps only when it cannot fit its column alone, and a column never shrinks below its longest word */
+table.grid td{padding:9px 20px 9px 0;border-bottom:1px solid var(--hair);vertical-align:top;overflow-wrap:break-word}
 table.grid th:last-child,table.grid td:last-child{padding-right:0}
 table.grid .num{text-align:right;white-space:nowrap}
 table.grid code{font-size:21px}
 
 /* today: risks, evidence and tickets are short blocks on the left, controls on the right.
    once the risk register is a table it takes the full width and controls move under it. */
-#screen-5{grid-template-columns:600px minmax(0,1fr);grid-template-rows:auto auto auto minmax(auto,1fr) auto;
+#screen-5{grid-template-columns:640px minmax(0,1fr);grid-template-rows:auto auto auto minmax(auto,1fr) auto;
   grid-template-areas:"title title" "risks controls" "evidence controls" "tickets controls" "src src";column-gap:88px}
 #screen-5:has(#r-risks table){grid-template-columns:minmax(0,1fr) 560px;
   grid-template-areas:"title title" "risks risks" "controls evidence" "controls tickets" "src src"}
@@ -424,6 +444,9 @@ table.grid code{font-size:21px}
 #r-src{grid-area:src}
 #r-controls table.grid td:nth-child(n+3){font-size:22px}
 #r-controls table.grid td:first-child{font-weight:500}
+/* the standards columns wrap at spaces only: "Manage" is never cut in two */
+#r-controls table.grid :is(th,td){overflow-wrap:normal;word-break:normal;hyphens:none}
+#r-controls table.grid :is(th,td):last-child{min-width:7.5em}
 #r-controls .caveat,#r-controls .note{margin-top:12px}
 #r-tickets ul,#r-tickets ol{display:grid}
 #r-tickets li{padding:10px 0;border-top:1px solid var(--hair);font:400 24px/1.4 var(--sans);color:var(--ink)}
