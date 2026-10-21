@@ -14,9 +14,9 @@ internet.
 
 ## Watch the demo
 
-[![Redline: a release gate for AI agents (Team Gatekeepers, SotonShip 26)](https://img.youtube.com/vi/eiKCX80wphU/hqdefault.jpg)](https://youtu.be/eiKCX80wphU)
+[![Redline: a release gate for AI agents (Team Gatekeepers, SotonShip 26)](https://img.youtube.com/vi/zTsnOytnf68/hqdefault.jpg)](https://youtu.be/zTsnOytnf68)
 
-Video: [Redline: a release gate for AI agents](https://youtu.be/eiKCX80wphU) (Team Gatekeepers, SotonShip 26).
+Video: [Redline: a release gate for AI agents](https://youtu.be/zTsnOytnf68) (Team Gatekeepers, SotonShip 26).
 
 ---
 
